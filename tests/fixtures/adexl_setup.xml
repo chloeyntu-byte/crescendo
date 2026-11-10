@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<setupdb version="5" application="ADE XL">legacy setup
+  <active>Active Setup
+    <corners>
+      <corner enabled="1">TT</corner>
+      <corner enabled="0" name="SS">
+        <vars><var name="temperature"><value>125</value></var></vars>
+      </corner>
+    </corners>
+    <currentmode>ADE XL Sweeps and Corners</currentmode>
+    <tests>
+      <test enabled="1" name="opa_ac">
+        <tooloptions>
+          <option name="lib"><value>SMOKE_LIB</value></option>
+          <option name="cell"><value>TB_OPA</value></option>
+          <option name="view"><value>schematic</value></option>
+          <option name="sim"><value>spectre</value></option>
+        </tooloptions>
+        <vars><var name="VDD"><value>1.8</value></var></vars>
+        <analyses>
+          <analysis name="ac" enabled="1">
+            <field name="start">"1"</field>
+            <field name="stop">"1G"</field>
+          </analysis>
+        </analyses>
+        <outputs>
+          <output name="gain">
+            <expression>db20(VF("/out"))</expression>
+            <evalType>point</evalType>
+            <unit>dB</unit>
+          </output>
+          <output name="bandwidth">
+            <expression>cross(db20(VF("/out")) 0 1 "falling")</expression>
+            <evalType>point</evalType>
+            <unit>Hz</unit>
+          </output>
+        </outputs>
+      </test>
+    </tests>
+  </active>
+</setupdb>

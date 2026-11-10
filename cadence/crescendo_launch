@@ -1,0 +1,150 @@
+#!/bin/bash
+set -euo pipefail
+
+# Preserve the first native caller, before removing Python/Tk overrides.
+# A second launcher must keep the original snapshot, including unset/empty.
+if [[ ! ${CRESCENDO_NATIVE_ENV_SNAPSHOT+x} ]]; then
+  for cr_key in HOME PDK CRESCENDO_SPECTRE_MODEL_DIR CRESCENDO_ALPS_MODEL_DIR PATH CDS_LIC_FILE LM_LICENSE_FILE LD_LIBRARY_PATH LD_PRELOAD PYTHONHOME PYTHONPATH TCL_LIBRARY TK_LIBRARY QT_PLUGIN_PATH; do
+    # Bash supplies a local default PATH when the caller did not export one.
+    # Only exported variables belong to the original process environment.
+    if [[ $(declare -p "$cr_key" 2>/dev/null || true) =~ ^declare\ -[^[:space:]]*x[^[:space:]]*\  ]]; then
+      export "CRESCENDO_LAUNCH_STATE_${cr_key}=set"
+      export "CRESCENDO_LAUNCH_VALUE_${cr_key}=${!cr_key}"
+    else
+      export "CRESCENDO_LAUNCH_STATE_${cr_key}=unset"
+      unset "CRESCENDO_LAUNCH_VALUE_${cr_key}"
+    fi
+  done
+fi
+unset LD_LIBRARY_PATH LD_PRELOAD PYTHONHOME PYTHONPATH TCL_LIBRARY TK_LIBRARY QT_PLUGIN_PATH
+
+# Early failures have a private log even before Python can execute.
+umask 077
+# A full HOME-backed TMPDIR must not prevent bootstrap on a new host.
+if ! cr_log_dir=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/crescendo-launch.XXXXXX" 2>/dev/null); then
+  cr_log_dir=$(/usr/bin/mktemp -d "/tmp/crescendo-launch.XXXXXX") || {
+    printf '%s\n' 'Crescendo launch failed: no writable temporary directory' >&2
+    exit 2
+  }
+fi
+export CRESCENDO_LAUNCH_LOG="$cr_log_dir/launch.log"
+printf '%s\n' 'Crescendo launch stage: shell' > "$CRESCENDO_LAUNCH_LOG"
+printf 'Crescendo launch log: %s\n' "$CRESCENDO_LAUNCH_LOG" >&2
+cr_fail() {
+  printf 'Crescendo launch failed at %s: %s\n' "$1" "$2" >> "$CRESCENDO_LAUNCH_LOG"
+  printf 'Crescendo launch failed at %s: %s; log: %s\n' "$1" "$2" "$CRESCENDO_LAUNCH_LOG" >&2
+  exit 2
+}
+cr_script=$(/usr/bin/readlink -f -- "$0")
+cr_resource_dir="${cr_script%/*}"
+cr_module_root="$(cd -- "$cr_resource_dir/.." && pwd -P)"
+if [[ ! -f "$cr_module_root/crescendo_engine/__main__.py" ]]; then
+  cr_module_root="$(cd -- "$cr_resource_dir/../../.." && pwd -P)"
+fi
+[[ -f "$cr_module_root/crescendo_engine/launcher.py" ]] || cr_fail module_path 'Crescendo package is unavailable beside its launcher'
+
+if [[ ${CRESCENDO_PYTHON+x} ]]; then
+  [[ -n "$CRESCENDO_PYTHON" ]] || cr_fail python_exec 'explicit CRESCENDO_PYTHON is empty'
+  cr_python_bin="$CRESCENDO_PYTHON"
+fi
+  # The clean stdlib bootstrap also repairs an explicit runtime's GUI
+  # dependencies. It never selects another runtime for explicit CRESCENDO_PYTHON.
+  # A stdlib-only bootstrap may lack Tk. It discovers and checks the GUI
+  # interpreter before any application import, without installing components.
+  [[ -f "$cr_module_root/crescendo_engine/python_runtime.py" ]] || cr_fail module_path 'automatic Python discovery is unavailable beside the package'
+  [[ -x /usr/bin/timeout ]] || cr_fail python_exec 'the platform timeout utility is unavailable'
+  cr_bootstrap=''
+  cr_bootstrap_deadline=$((SECONDS + 12))
+  # Bash 4.2 treats an empty array as unset under nounset.
+  cr_bootstrap_seen=('')
+  cr_try_bootstrap() {
+    local cr_candidate="$1" cr_seen cr_marker
+    [[ -z "$cr_bootstrap" && $SECONDS -lt $cr_bootstrap_deadline ]] || return 0
+    [[ -f "$cr_candidate" && -x "$cr_candidate" ]] || return 0
+    for cr_seen in "${cr_bootstrap_seen[@]}"; do
+      [[ "$cr_seen" != "$cr_candidate" ]] || return 0
+    done
+    cr_bootstrap_seen+=("$cr_candidate")
+    cr_marker=$(/usr/bin/timeout --kill-after=1s 3s "$cr_candidate" -I -B -c 'import sys; sys.stdout.write("CRESCENDO_PYTHON_3_6_OK" if sys.version_info >= (3, 6) else "CRESCENDO_PYTHON_VERSION_OLD")' 2>> "$CRESCENDO_LAUNCH_LOG") || return 0
+    [[ "$cr_marker" != CRESCENDO_PYTHON_3_6_OK ]] || cr_bootstrap="$cr_candidate"
+    return 0
+  }
+  cr_try_directory() {
+    local cr_directory="$1" cr_candidate
+    for cr_candidate in "$cr_directory/python3" "$cr_directory"/python3.[0-9] "$cr_directory"/python3.[0-9][0-9] "$cr_directory/python"; do
+      cr_try_bootstrap "$cr_candidate"
+    done
+  }
+  if [[ ${CRESCENDO_PYTHON+x} ]]; then
+    cr_explicit=$(command -v -- "$CRESCENDO_PYTHON" || true)
+    [[ -z "$cr_explicit" ]] || cr_try_bootstrap "$cr_explicit"
+  fi
+  if [[ -n ${CRESCENDO_PREFERRED_PYTHON:-} ]]; then
+    cr_preferred=$(command -v -- "$CRESCENDO_PREFERRED_PYTHON" || true)
+    [[ -z "$cr_preferred" ]] || cr_try_bootstrap "$cr_preferred"
+  fi
+  for cr_parent in "$PWD" "$cr_module_root"; do
+    cr_try_directory "$cr_parent/.venv/bin"
+    cr_try_directory "$cr_parent/venv/bin"
+  done
+  IFS=: read -r -a cr_path_directories <<< "${PATH:-}"
+  for cr_directory in "${cr_path_directories[@]:-}"; do
+    cr_try_directory "${cr_directory:-.}"
+  done
+  if [[ -n ${HOME:-} ]]; then
+    for cr_suffix in .local/bin miniforge3/bin miniconda3/bin anaconda3/bin .venv/bin venv/bin; do
+      cr_try_directory "$HOME/$cr_suffix"
+    done
+  fi
+  for cr_directory in /usr/bin /usr/local/bin /bin /opt/miniforge3/bin /opt/miniconda3/bin /opt/conda/bin /opt/python*/bin /usr/local/python*/bin; do
+    cr_try_directory "$cr_directory"
+  done
+  [[ -n "$cr_bootstrap" ]] || cr_fail python_exec 'no existing Python 3.6+ could run its bounded bootstrap check'
+  printf '%s\n' 'Crescendo launch stage: python_discovery' >> "$CRESCENDO_LAUNCH_LOG"
+  cr_runtime_file="$cr_log_dir/gui-runtime.env"
+  if [[ ${CRESCENDO_PYTHON+x} ]]; then
+    if [[ "$cr_python_bin" != */* ]]; then
+      cr_python_bin=$(command -v -- "$cr_python_bin" || true)
+    fi
+    [[ -n "$cr_python_bin" && -f "$cr_python_bin" && -x "$cr_python_bin" ]] || cr_fail python_exec 'explicit interpreter is unavailable or not executable'
+    "$cr_bootstrap" -I -B "$cr_module_root/crescendo_engine/python_runtime.py" --python "$cr_python_bin" --result-file "$cr_runtime_file" > /dev/null 2>> "$CRESCENDO_LAUNCH_LOG" || cr_fail python_discovery 'explicit interpreter or its Tk/Tcl dependencies failed; see the private log'
+  else
+    cr_python_bin=$("$cr_bootstrap" -I -B "$cr_module_root/crescendo_engine/python_runtime.py" --caller-dir "$PWD" --module-root "$cr_module_root" --result-file "$cr_runtime_file" 2>> "$CRESCENDO_LAUNCH_LOG") || cr_fail python_discovery 'no existing compatible Python/Tk was found; see the discovery stages in the private log'
+  fi
+  [[ -n "$cr_python_bin" ]] || cr_fail python_discovery 'automatic discovery returned no interpreter'
+# Read literal NUL records rather than evaluating discovered paths as shell.
+[[ -f "$cr_runtime_file" && ! -L "$cr_runtime_file" && -O "$cr_runtime_file" ]] || cr_fail dependencies 'private GUI runtime result is unavailable'
+cr_runtime_schema=''
+while IFS= read -r -d '' cr_record; do
+  cr_key=${cr_record%%=*}
+  cr_value=${cr_record#*=}
+  case "$cr_key" in
+    CRESCENDO_RUNTIME_SCHEMA) cr_runtime_schema="$cr_value" ;;
+    CRESCENDO_RUNTIME_INTERPRETER) [[ -n "$cr_value" ]] || cr_fail dependencies 'missing runtime interpreter' ;;
+    LD_LIBRARY_PATH|TCL_LIBRARY|TK_LIBRARY) export "$cr_key=$cr_value" ;;
+    *) cr_fail dependencies 'unexpected GUI dependency variable' ;;
+  esac
+done < "$cr_runtime_file"
+[[ "$cr_runtime_schema" == crescendo.gui_dependencies.v1 ]] || cr_fail dependencies 'invalid GUI runtime schema'
+export CRESCENDO_GUI_RUNTIME_FILE="$cr_runtime_file"
+trap '/bin/rm -f -- "$cr_runtime_file"' EXIT
+# Preserve invocation symlinks: resolving a venv Python loses its environment.
+if [[ "$cr_python_bin" == */* ]]; then
+  [[ -f "$cr_python_bin" && -x "$cr_python_bin" ]] || cr_fail python_exec 'selected interpreter is unavailable or not executable'
+else
+  cr_python_bin=$(command -v -- "$cr_python_bin" || true)
+  [[ -n "$cr_python_bin" ]] || cr_fail python_exec 'explicit interpreter command is unavailable'
+fi
+[[ $# -gt 0 ]] || cr_fail arguments 'use a Maestro context file, --standalone, or --check'
+if [[ "$1" != --standalone && "$1" != --check ]]; then
+  [[ $# -eq 1 && -f "$1" ]] || cr_fail arguments 'expected one existing Maestro context file'
+fi
+printf '%s\n' 'Crescendo launch stage: python_exec' >> "$CRESCENDO_LAUNCH_LOG"
+cr_python_probe=$("$cr_python_bin" -c 'import sys; sys.stdout.write("CRESCENDO_PYTHON_3_6_OK" if sys.version_info >= (3, 6) else "CRESCENDO_PYTHON_VERSION_OLD")' 2>> "$CRESCENDO_LAUNCH_LOG") || cr_fail python_exec 'selected interpreter failed its execution probe'
+[[ "$cr_python_probe" == CRESCENDO_PYTHON_3_6_OK ]] || cr_fail version 'selected executable is not a supported Python 3.6+ interpreter'
+# Keep the caller cwd: relative config/run-root paths belong to that workspace.
+"$cr_python_bin" -B "$cr_module_root/crescendo_engine/launcher.py" "$@" 2>> "$CRESCENDO_LAUNCH_LOG" || {
+  cr_status=$?
+  printf 'Crescendo launch failed; see private log: %s\n' "$CRESCENDO_LAUNCH_LOG" >&2
+  exit "$cr_status"
+}

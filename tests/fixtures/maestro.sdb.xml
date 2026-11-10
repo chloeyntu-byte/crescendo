@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<setupdb version="6">maestro
+  <active>Active Setup
+    <corners>
+      <corner enabled="1">typical</corner>
+      <corner enabled="1">fast<vars><var>BIAS<value>2m</value></var></vars></corner>
+    </corners>
+    <currentmode>Single Run, Sweeps and Corners</currentmode>
+    <tests>
+      <test enabled="1">main
+        <tooloptions>
+          <option>lib<value>DEMO</value></option>
+          <option>cell<value>TOP</value></option>
+          <option>view<value>schematic</value></option>
+          <option>sim<value>spectre</value></option>
+          <option>state<value>active</value></option>
+        </tooloptions>
+        <vars><var>BIAS<value>1m</value></var></vars>
+        <outputs><output>gain<evalType>point</evalType></output></outputs>
+      </test>
+    </tests>
+  </active>
+</setupdb>
+

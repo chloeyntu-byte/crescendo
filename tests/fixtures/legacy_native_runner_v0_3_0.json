@@ -1,0 +1,8 @@
+{
+  "commit": "9cafccf9e48b4b7a6e9eca84fedfdec4bb698773",
+  "function": "_run_optimization_unleased",
+  "function_sha256": "ccc7dd4a3bb16281e215f3b8c8459f2526e0403fa99cd831dd4dc734e5424a4c",
+  "release": "0.3.0",
+  "source_path": "crescendo_engine/runner.py",
+  "source_sha256": "1e3b68347d1163ed5737acbe2b0d4f96198d46701e747b97b94023581b417951"
+}

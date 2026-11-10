@@ -1,0 +1,91 @@
+{
+  "cadence": {
+    "setup_mode": "auto",
+    "cadence_root": null,
+    "spectre_root": null,
+    "virtuoso_bin": null,
+    "ocean_bin": null,
+    "spectre_bin": null,
+    "cds_lib": null,
+    "license_file": null,
+    "extra_binary_paths": [],
+    "extra_library_paths": [],
+    "search_roots": [
+      "/opt/eda/cadence",
+      "/opt/cadence",
+      "/software/cadence",
+      "/software/cadence/spectre"
+    ],
+    "pdk_name": null,
+    "pdk_dir": null,
+    "pdk_adapter": "generic-cdf",
+    "pdk_adapter_policy": "auto",
+    "pdk_profiles": [],
+    "model_roots": [],
+    "model_path_remaps": [],
+    "startup_extensions": [],
+    "simulator": "spectre",
+    "alps_bin": null,
+    "alps_root": null,
+    "alps_model_dir": null,
+    "spectre_model_dir": null,
+    "alps_model_file_map": {},
+    "simulator_threads": null,
+    "simulator_result_reader": "spectre",
+    "alps_search_roots": [
+      "/software/empyrean/alps",
+      "/opt/eda/empyrean/alps",
+      "/opt/empyrean/alps"
+    ],
+    "spectre_result_reader": null,
+    "alps_result_reader": null
+  },
+  "runtime": {
+    "run_root": null,
+    "execution_backend": "auto",
+    "scheduler_receipt_grace_seconds": 10,
+    "execution_commands": {
+      "solver_templates": {
+        "spectre": "",
+        "alps": ""
+      },
+      "submission_template": "",
+      "scheduler_query_template": "",
+      "scheduler_cancel_template": ""
+    },
+    "max_parallel_jobs": 1,
+    "persistent_worker_lifetime": "run",
+    "spectre_submit_script": null,
+    "simulation_timeout_seconds": 900,
+    "candidate_timeout_seconds": 600,
+    "scheduler_watchdog_grace_seconds": 30,
+    "ocean_startup_timeout_seconds": 90,
+    "controller_startup_timeout_seconds": 30,
+    "controller_commit_timeout_seconds": 60,
+    "persistent_cleanup_timeout_seconds": 20,
+    "persistent_cleanup_termination_margin_seconds": 20,
+    "controller_close_timeout_seconds": 30,
+    "controller_term_grace_seconds": 5,
+    "controller_kill_grace_seconds": 5,
+    "controller_worker_cleanup_timeout_seconds": 15,
+    "persistent_health_enabled": true,
+    "persistent_active_health_interval_seconds": 2.0,
+    "persistent_identity_startup_timeout_seconds": 90,
+    "persistent_health_warmup_samples": 5,
+    "persistent_health_baseline_samples": 3,
+    "persistent_health_consecutive_limit": 3,
+    "persistent_rss_growth_limit_mib": 512,
+    "persistent_fd_growth_limit": 128,
+    "persistent_min_free_disk_mib": 1024,
+    "persistent_log_growth_limit_mib": 256,
+    "infrastructure_retries": 1,
+    "max_infrastructure_replacements": 0,
+    "command_timeout_seconds": 1800,
+    "command_scheduler": "auto"
+  },
+  "safety": {
+    "allow_source_writes": false,
+    "require_private_workspace": true,
+    "protect_existing_processes": true
+  }
+}

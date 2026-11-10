@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<statedb version="5">active
+  <Test Name="main">
+    <component Name="analyses" Type="skillTable">analyses
+      <analyses Name="analysis">
+        <analysis Name="ac"><partition Name="fields"><field Name="enable" Type="list">(t)</field><field Name="start" Type="string">"1"</field></partition></analysis>
+        <analysis Name="dc"><partition Name="fields"><field Name="enable" Type="list">(t)</field></partition></analysis>
+      </analyses>
+    </component>
+    <component Name="outputs" Type="skillTable">outputs
+      <field Name="outputList_0" Type="defstruct">sevOutputStruct
+        <field Name="name" Type="string">"gain"</field>
+        <field Name="expression" Type="string">value(mag(v("/out")) 1)</field>
+        <field Name="evalType" Type="symbol">point</field>
+        <field Name="value" Type="float">10.0</field>
+        <field Name="yaxisUnit" Type="string">"V/V"</field>
+      </field>
+      <field Name="outputList_1" Type="defstruct">sevOutputStruct
+        <field Name="name" Type="string">"bandwidth"</field>
+        <field Name="expression" Type="string">cross(mag(v("/out")) 1)</field>
+        <field Name="evalType" Type="symbol">point</field>
+      </field>
+    </component>
+  </Test>
+</statedb>
+

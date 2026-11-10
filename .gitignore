@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.bak-*
+/dist/
+/runs/
+.crescendo/
+media/raw/
+media/film/*.mp4
+media/film/*.webm
+media/film/poster.png

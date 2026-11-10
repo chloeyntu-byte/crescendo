@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cadence ADE Circuit Optimizer</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <div><h1>Cadence ADE Circuit Optimizer</h1><p>Recursive, isolated, closed-loop circuit optimization</p></div>
+    <div class="toolbar"><span id="health" class="badge">Connecting</span><button id="exitOptimizerButton" class="danger compact">Exit Optimizer</button></div>
+  </header>
+  <main>
+    <section class="panel">
+      <div class="section-title"><span>01</span><div><h2>Load ADE Setup</h2><p>Open a Maestro or ADE XL SetupDB from the local filesystem.</p></div></div>
+      <div class="toolbar path-toolbar">
+        <input id="maestroPath" placeholder="/path/to/library/cell/view/{maestro.sdb|data.sdb}">
+        <button class="secondary" id="nativeBrowseButton">Native Browse</button>
+        <button class="secondary" id="browseButton">Server Browser</button>
+        <button id="loadButton">Load and Inspect</button>
+      </div>
+      <div class="toolbar file-toolbar">
+        <button class="secondary" id="saveConfigButton" disabled>Save Config</button>
+        <button class="secondary" id="loadConfigButton">Load Config</button>
+        <input id="configFileInput" type="file" accept="application/json,.json" hidden>
+        <span id="configMessage" class="muted">Config files contain design settings only; EDA paths are detected again.</span>
+      </div>
+      <div id="setupSummary" class="summary muted">No setup loaded.</div>
+      <details class="eda-setup" id="edaSetupPanel">
+        <summary><span>Advanced EDA Setup</span><span id="edaSetupBadge" class="setup-state pending">Checking automatically...</span></summary>
+        <div class="eda-setup-body">
+          <p class="muted">Auto-detected values are used by default. Manual overrides are validated in isolated child processes and saved to your user config.</p>
+          <div id="edaDiscoverySummary" class="eda-discovery-summary muted"></div>
+          <div class="eda-fields">
+            <label>Cadence Root<input id="edaCadenceRoot" placeholder="/path/to/IC installation"></label>
+            <label>Spectre Root<input id="edaSpectreRoot" placeholder="/path/to/Spectre installation"></label>
+            <label>Virtuoso Executable<input id="edaVirtuosoBin" placeholder="/path/to/virtuoso"></label>
+            <label>Ocean Executable<input id="edaOceanBin" placeholder="/path/to/ocean"></label>
+            <label>Spectre Executable<input id="edaSpectreBin" placeholder="/path/to/spectre"></label>
+            <label>Installation cds.lib<input id="edaCdsLib" placeholder="/path/to/share/cdssetup/cds.lib"></label>
+            <label>License File or port@server<input id="edaLicense" placeholder="PORT@LICENSE-HOST or /path/to/license.dat"></label>
+            <label>PDK Name<input id="edaPdkName" placeholder="Example: examplekit18"></label>
+            <label>PDK Root<input id="edaPdkDir" placeholder="/path/to/pdk/library"></label>
+            <label>PDK Adapter Policy<select id="edaPdkPolicy"><option value="auto">Auto (Generic First)</option><option value="generic-only">Generic Only</option><option value="allow:builtin.examplekit18-1">Allow Example Kit Fallback</option><option value="allow:builtin.examplekit18pas-1">Allow Example Kit PAS Adapter</option><option value="custom">Custom Adapter</option></select></label>
+            <label id="edaPdkAdapterLabel" hidden>Custom Adapter SKILL<input id="edaPdkAdapter" placeholder="/path/to/adapter.il"></label>
+            <label>PDK Profiles (JSON)<textarea id="edaPdkProfiles" rows="3" placeholder='[{"name":"Foundry PDK","package_root":"/path/to/pdk","reference_libraries":["deviceLib"],"technology_libraries":["techLib"]}]'></textarea></label>
+            <label>Additional Binary Paths<textarea id="edaBinaryPaths" rows="2" placeholder="One directory per line"></textarea></label>
+            <label>Additional Library Paths<textarea id="edaLibraryPaths" rows="2" placeholder="One directory per line"></textarea></label>
+          </div>
+          <div class="toolbar"><button id="saveEdaSetup">Validate and Save Overrides</button><button class="secondary" id="resetEdaSetup">Reset to Auto</button><span id="edaSetupMessage" class="muted"></span></div>
+          <div id="pdkContextSummary" class="pdk-context muted">PDK context will be checked after loading the ADE setup.</div>
+        </div>
+      </details>
+    </section>
+
+    <div class="grid">
+      <section class="panel">
+        <div class="section-title"><span>02</span><div><h2>Hierarchy and Parameters</h2><p>Expand cells and devices, then select only the parameters you want to optimize.</p></div></div>
+        <div class="toolbar">
+          <input id="parameterFilter" placeholder="Filter cell, device, path, or parameter">
+          <span class="semantic-actions"><b>W</b><button class="secondary compact" data-semantic="width" data-selected="true">All</button><button class="secondary compact" data-semantic="width" data-selected="false">None</button></span>
+          <span class="semantic-actions"><b>L</b><button class="secondary compact" data-semantic="length" data-selected="true">All</button><button class="secondary compact" data-semantic="length" data-selected="false">None</button></span>
+          <button class="secondary compact" id="expandParameterTree">Expand All</button>
+          <button class="secondary compact" id="collapseParameterTree">Collapse All</button>
+          <button class="secondary compact" id="validateRangesButton" disabled>Validate All Ranges</button>
+          <button class="secondary compact range-apply-button" id="applyValidatedRangesButton" hidden disabled>Apply Legal Ranges</button>
+        </div>
+        <div id="rangeValidationSummary" class="summary muted">Optional PDK callback validation has not been run. If skipped, the first PDK-adjusted candidate stops the run.</div>
+        <div id="hierarchySummary" class="summary muted"></div>
+        <div id="parameterTree" class="parameter-tree"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-title"><span>03</span><div><h2>Objectives and Constraints</h2><p>Use any scalar output exported by the loaded ADE setup.</p></div></div>
+        <div id="analysisSummary" class="summary muted"></div>
+        <h3>Objectives</h3>
+        <div id="objectiveRows"></div>
+        <button class="secondary compact" id="addObjective">Add Objective</button>
+        <h3>Constraints</h3>
+        <div id="constraintRows"></div>
+        <button class="secondary compact" id="addConstraint">Add Constraint</button>
+      </section>
+    </div>
+
+    <section class="panel">
+      <div class="section-title"><span>04</span><div><h2>Optimization Run</h2><p>Choose an algorithm and tune its calculated defaults when needed.</p></div></div>
+      <div class="settings">
+        <label>Generations<input id="generations" type="number" min="10" max="100" value="20"></label>
+        <label title="Real EDA candidates are serialized through one persistent ADE session for the whole optimization.">ADE Sessions<input id="jobs" type="number" min="1" max="1" value="1" disabled></label>
+        <label>Candidate Timeout (s)<input id="candidateTimeout" type="number" min="30" value="600"></label>
+      </div>
+      <details class="algorithm-settings" id="algorithmSettings">
+        <summary><span>Advanced Algorithm Settings</span><span id="algorithmSummary" class="muted">NSGA-II · calculated defaults</span></summary>
+        <div class="algorithm-settings-body">
+          <label class="algorithm-choice">Algorithm<select id="algorithm"><option value="nsga2">NSGA-II</option><option value="differential_evolution">Differential Evolution</option><option value="bayesian_optimization">Bayesian Optimization</option></select></label>
+          <p id="algorithmDescription" class="muted"></p>
+          <div class="algorithm-fields" data-algorithm-panel="nsga2">
+            <label>Population<input id="nsgaPopulation" type="number" min="4" step="1"></label>
+            <label>Seed<input id="nsgaSeed" type="number" step="1"></label>
+            <label>Crossover Probability<input id="nsgaCrossoverProbability" type="number" min="0" max="1" step="0.01"></label>
+            <label>Crossover Eta<input id="nsgaCrossoverEta" type="number" min="0.01" step="0.1"></label>
+            <label>Mutation Probability<input id="nsgaMutationProbability" type="number" min="0" max="1" step="0.001"></label>
+            <label>Mutation Eta<input id="nsgaMutationEta" type="number" min="0.01" step="0.1"></label>
+          </div>
+          <div class="algorithm-fields" data-algorithm-panel="differential_evolution" hidden>
+            <label>Population<input id="dePopulation" type="number" min="4" step="1"></label>
+            <label>Seed<input id="deSeed" type="number" step="1"></label>
+            <label>Differential Weight<input id="deDifferentialWeight" type="number" min="0.01" max="2" step="0.01"></label>
+            <label>Crossover Rate<input id="deCrossoverRate" type="number" min="0" max="1" step="0.01"></label>
+          </div>
+          <div class="algorithm-fields" data-algorithm-panel="bayesian_optimization" hidden>
+            <label>Batch Population<input id="bayesPopulation" type="number" min="4" step="1"></label>
+            <label>Seed<input id="bayesSeed" type="number" step="1"></label>
+            <label>Initial Samples<input id="bayesInitialSamples" type="number" min="4" step="1"></label>
+            <label>Acquisition Exploration<input id="bayesExploration" type="number" min="0" step="0.01"></label>
+            <label>Candidate Pool<input id="bayesCandidatePool" type="number" min="4" step="1"></label>
+            <label>Surrogate Noise<input id="bayesNoise" type="number" min="0" step="0.000001"></label>
+            <label>Kernel Length Scale<input id="bayesKernelLengthScale" type="number" min="0" step="0.001"></label>
+            <label>Maximum Observations<input id="bayesMaxObservations" type="number" min="4" step="1"></label>
+          </div>
+          <div id="algorithmWarning" class="algorithm-warning muted"></div>
+          <button id="resetAlgorithmDefaults" class="secondary compact" type="button">Recalculate Defaults</button>
+        </div>
+      </details>
+      <div class="toolbar run-toolbar"><button id="runButton" disabled>Start Optimization</button><button id="stopButton" class="danger" disabled>Stop</button><button class="secondary" id="saveCheckpointButton" disabled>Save Checkpoint</button><button class="secondary" id="loadCheckpointButton">Load Checkpoint</button><input id="checkpointFileInput" type="file" accept="application/json,.json" hidden><span id="runState" class="muted">Waiting for setup.</span></div>
+      <div id="checkpointMessage" class="summary muted">A checkpoint keeps lightweight optimization state only, never simulation waveforms or OA workspaces.</div>
+      <details class="recent-runs">
+        <summary><span>Recent Local Runs</span><span id="recentRunsSummary" class="muted">Checking...</span></summary>
+        <div class="recent-runs-body">
+          <div class="toolbar"><button class="secondary compact" id="refreshRecentRuns" type="button">Refresh</button><span class="muted">Resume the newest server-side checkpoint after a UI or service restart.</span></div>
+          <div id="recentRunsList" class="recent-runs-list"><div class="muted">Checking local runs...</div></div>
+        </div>
+      </details>
+      <progress id="progress" max="1" value="0"></progress>
+    </section>
+
+    <section class="panel">
+      <div class="section-title"><span>05</span><div><h2>Live Individual Results</h2><p>Every objective and constraint value is shown for every individual in every generation.</p></div></div>
+      <div class="toolbar"><button class="secondary" id="exportCsvButton" disabled>Export CSV</button><span id="csvMessage" class="muted">Exports the same per-generation individual data shown below.</span></div>
+      <div id="resultSummary" class="summary muted">No run data.</div>
+      <div class="live-results-layout">
+        <div class="table-wrap result-table"><table><thead><tr id="resultHead"><th>Candidate</th><th>Generation</th><th>Status</th><th>Feasible</th><th>Objectives</th><th>Constraints</th></tr></thead><tbody id="resultRows"></tbody></table></div>
+        <aside class="candidate-detail">
+          <h3>Candidate Variables</h3>
+          <div id="candidateDetailBody" class="candidate-detail-empty">Select a candidate to inspect its variables.</div>
+        </aside>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-title"><span>06</span><div><h2>Multi-objective Trade-off</h2><p>Feasible points are plotted by generation. Choose any two objectives as axes.</p></div></div>
+      <div class="toolbar tradeoff-controls"><label>X Axis<select id="tradeoffX"></select></label><label>Y Axis<select id="tradeoffY"></select></label></div>
+      <div id="tradeoffEmpty" class="empty-state">Add at least two objectives to enable the trade-off view.</div>
+      <div id="tradeoffPlot" hidden><svg id="tradeoffChart" viewBox="0 0 960 420" role="img" aria-label="Objective trade-off scatter plot"></svg><div id="tradeoffLegend" class="legend"></div></div>
+    </section>
+  </main>
+
+  <div id="browserModal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="browserTitle">
+      <div class="modal-header"><div><h2 id="browserTitle">Select ADE Setup</h2><p id="browserPath" class="path"></p></div><button class="icon-button" id="closeBrowser" aria-label="Close">×</button></div>
+      <div class="toolbar"><button class="secondary" id="browserUp">Up</button><button id="useCurrent" hidden>Use This Setup</button></div>
+      <div id="browserRows" class="browser-list"></div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

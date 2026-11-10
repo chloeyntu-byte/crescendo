@@ -1,0 +1,32 @@
+# Reviewed false positives. Format: relative/path:regex applied to the matched text.
+# Each entry is preceded by the reason.
+#
+# Run/task identifiers built in local variables named "token" (format strings, not credentials).
+crescendo_engine/adexl_runner.py:^token \x3d \x22adexl-%s
+crescendo_engine/cleanroom.py:^token \x3d \x22crescendo-cleanroom-%s
+crescendo_engine/environment_diagnostics.py:^token \x3d \x27missing_output_expression:
+crescendo_engine/gui.py:^token \x3d \x22(range:|optimization)
+crescendo_engine/legacy_guardian.py:^token \x3d \x22crescendo2-
+crescendo_engine/native_point_parameters.py:^token\x3d\x27native_point_params_
+crescendo_engine/netlist_execution.py:^token ?\x3d ?\x22cr_netlist_task_%s
+crescendo_engine/netlist_measurement.py:^token\x3d\x22cr_netlist_measure_%s
+crescendo_engine/optimized_schematic.py:^token\x3d\x22optimized-export-
+crescendo_engine/private_netlist.py:^token\x3d\x22netlist-capture-
+crescendo_engine/resident_validation.py:^token \x3d \x22validation-%s-%s
+crescendo_engine/server.py:^token \x3d \x22v2:%x:%x:%x:%s
+crescendo_engine/setup_private_session.py:^token\x3d\x22setup-private-
+crescendo_engine/workspace.py:^token \x3d \x22legacy-%s-%s
+# Generic Cadence technology-file name used only to recognise a user's technology directory.
+crescendo_engine/environment_identity.py:^techfile\.tf$
+# Synthetic licence-server string (port 5280, placeholder host) for the CDS licence-file parsing test.
+tests/test_cadence_config.py:^5280\x40license(-host)?$
+# Synthetic PORT@HOST licence strings with placeholder hosts; the probe must read and redact them.
+tests/test_environment_probes.py:^2[789]000\x40(secret-host|caller-only-license|configured-license)$
+# Synthetic PORT@HOST licence string with a placeholder host for native-environment propagation.
+tests/test_maestro_context.py:^27000\x40native-license$
+# Synthetic PORT@HOST licence string with a placeholder host for native-environment propagation.
+tests/test_maestro_setup_selection.py:^27000\x40native-license$
+# Synthetic PORT@HOST licence strings with placeholder hosts to check precedence between sources.
+tests/test_server.py:^5280\x40(project|old-user|new-user)-license$
+# Synthetic PORT@HOST licence string with a placeholder host in a submission fixture.
+tests/test_submission.py:^5280\x40server$

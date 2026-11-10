@@ -1,0 +1,21 @@
+{
+  "schema_version": "crescendo.simulation_toolchain.v1",
+  "toolchain": {
+    "ocean_bin": "/path/from/local-install/bin/ocean",
+    "spectre_bin": "/path/from/local-install/bin/spectre",
+    "license_file": "PORT@LICENSE-HOST",
+    "extra_binary_paths": [],
+    "extra_library_paths": []
+  },
+  "simulation": {
+    "backends": {
+      "maestro": {
+        "enabled": true
+      },
+      "local_spectre": {
+        "enabled": false,
+        "extra_args": []
+      }
+    }
+  }
+}
