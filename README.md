@@ -131,10 +131,18 @@ python3 scripts/run_tests.py                   # engine test suite
 - Range checks are optional and only verify the end points of each range.
 - Real-site acceptance (your ALPS/batch scheduler setup, your PDK) is yours to run; this repository is tested locally with synthetic fixtures.
 
+## RF-FIELDWORK
+
+Product page: https://rf-fieldwork.pages.dev/crescendo/?lang=en
+
+Other open-source tools:
+
+- [Flux Studio](https://github.com/chloeyntu-byte/flux-studio): parametric RF passives, EMX sweeps, multi-objective search and SNPFit
+- [Cap Array Lab](https://github.com/chloeyntu-byte/cap-array-lab): capacitor-array C/Q, parasitic paths, resonance and Z11
+- [Layout 3D Viewer](https://github.com/chloeyntu-byte/layout-3d-viewer): read IC layouts in 3D, locate pins and trace connections
+- [VCO ISF Explorer](https://github.com/chloeyntu-byte/vco-isf-explorer): ISF, flicker-noise up-conversion and phase-noise contributions
+
 ## License
 
 MIT, see [LICENSE](LICENSE).
 
-## Related tools
-
-Flux Studio · Cap Array Lab · Layout 3D Viewer · VCO ISF Explorer

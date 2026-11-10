@@ -83,10 +83,18 @@ python3 scripts/run_tests.py                   # 引擎测试
 - 范围检查是可选的，只核对每个范围的两个端点。
 - 真实站点（你的 ALPS/批处理集群环境、你的 PDK）的验收需要你自己完成；本仓库只在本机用合成夹具测试。
 
+## RF-FIELDWORK
+
+产品介绍页：https://rf-fieldwork.pages.dev/crescendo/?lang=zh（含配音演示片的工具在页面上可直接观看）
+
+其他开源工具：
+
+- [Flux Studio](https://github.com/chloeyntu-byte/flux-studio)：参数化射频无源器件、EMX 扫参、多目标优化与 SNPFit 拟合
+- [Cap Array Lab](https://github.com/chloeyntu-byte/cap-array-lab)：电容阵列 C/Q、寄生路径、谐振与 Z11
+- [Layout 3D Viewer](https://github.com/chloeyntu-byte/layout-3d-viewer)：三维阅读版图、定位 pin、追踪连接
+- [VCO ISF Explorer](https://github.com/chloeyntu-byte/vco-isf-explorer)：ISF、闪烁噪声上变频与相噪贡献
+
 ## 许可
 
 MIT，见 [LICENSE](LICENSE)。
 
-## 相关工具
-
-Flux Studio · Cap Array Lab · Layout 3D Viewer · VCO ISF Explorer
