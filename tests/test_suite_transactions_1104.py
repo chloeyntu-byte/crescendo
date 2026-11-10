@@ -6,6 +6,7 @@ from unittest import mock
 
 from crescendo_engine import setup_private_session as session
 from crescendo_engine.same_library_views import MARKER
+from tests.test_setup_baseline import remove_file, write_file
 from tests.test_setup_private_session import SetupPrivateSessionTests
 
 
@@ -261,12 +262,11 @@ class RefreshSafetyGateTests(RefreshRecoveryTests):
     def test_changed_backup_is_retained_and_refused(self):
         controller = self.interrupted_refresh()
         backup = controller.refresh_pending['views'][0]['backup']
-        with open(os.path.join(backup, 'injected-change'), 'w') as stream:
-            stream.write('modified')
+        write_file(os.path.join(backup, 'injected-change'), 'modified')
         with self.assertRaisesRegex(ValueError, 'fingerprint changed'):
             session.recover_setup_private_session(self.reference, self.config)
         self.assertTrue(os.path.isdir(backup))
-        os.unlink(os.path.join(backup, 'injected-change'))
+        remove_file(os.path.join(backup, 'injected-change'))
         session.recover_setup_private_session(self.reference, self.config)
         session.reopen_setup_private_session(self.reference, self.config)
 

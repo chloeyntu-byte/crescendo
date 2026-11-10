@@ -6128,7 +6128,7 @@ class OptimizerGui(object):
             "run_name": getattr(self, "last_run_display_name", ""),
             "algorithm_parameters": {algorithm: {field: self.algorithm_parameter_vars[(algorithm, field)].get()
                                     for field in fields} for algorithm, fields in ALGORITHM_FIELDS.items()},
-            "algorithm_parameter_manual": [list(pair) for pair in self.algorithm_parameter_manual],
+            "algorithm_parameter_manual": [list(pair) for pair in sorted(self.algorithm_parameter_manual)],
             "job_command_override": self.job_command_override_var.get(),
             "job_command": self.job_command_var.get(), "job_max_override": self.job_max_override_var.get(),
             "job_max_jobs": self.job_max_var.get(), "maestro_candidate_mode": self.maestro_candidate_mode_var.get(),

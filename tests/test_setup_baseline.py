@@ -14,6 +14,32 @@ from crescendo_engine.workspace import (source_design_identity, build_workspace,
 from crescendo_engine.server import OptimizerService
 
 
+def _with_owner_write(path, action):
+    """Run action with owner write permission on path's directory.
+
+    Private views are read-only on disk; fixtures that simulate another
+    program dropping a file there must lift that bit when not running as root.
+    """
+    directory = os.path.dirname(path) or "."
+    mode = os.stat(directory).st_mode
+    os.chmod(directory, mode | 0o200)
+    try:
+        return action()
+    finally:
+        os.chmod(directory, mode)
+
+
+def write_file(path, text):
+    def write():
+        with open(path, "w") as stream:
+            stream.write(text)
+    _with_owner_write(path, write)
+
+
+def remove_file(path):
+    _with_owner_write(path, lambda: os.unlink(path))
+
+
 class SetupBaselineTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -47,8 +73,7 @@ class SetupBaselineTests(unittest.TestCase):
         self.prepared["source_identity"] = source_design_identity(self.prepared["setup"], self.hierarchy, self.config)
 
     def write(self, path, text):
-        with open(path, "w") as stream:
-            stream.write(text)
+        write_file(path, text)
 
     def freeze(self):
         baseline = freeze_setup_baseline(self.prepared, self.config)

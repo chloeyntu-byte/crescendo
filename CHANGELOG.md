@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.3 (2026-11-10)
+
+- Range checks report integers too large for a float as non-finite on every Python version (Python 3.11+ refuses to print them).
+- The saved configuration lists manually edited algorithm parameters in a stable order.
+- Tests run on Python 3.6 to 3.13 with Tk 8.5 or 8.6, as a normal user as well as root: no writes to the shared `/tmp`, no dependence on a desktop file chooser, and fixtures that simulate another program's lock lift the read-only bit only while they write.
+- The test runner keeps each Tk interpreter alive until the main thread releases it, so a slow worker thread can no longer abort the run.
+
 ## 1.0.2 (2026-11-10)
 
 First public release (1.0.0 and 1.0.1 were not published).

@@ -3,12 +3,20 @@ import os
 import tempfile
 import threading
 import unittest
+import shutil
 from unittest import mock
 
 from crescendo_engine import unified_configuration as config
 from crescendo_engine.cadence import CommandCancelled
 from crescendo_engine.private_suite_service import PrivateSuiteServiceMixin
 from crescendo_engine.server import OptimizerService
+
+
+def _scratch_root(test):
+    """Private run root for one test; never the shared system /tmp."""
+    root = tempfile.mkdtemp(prefix="crescendo-test-")
+    test.addCleanup(shutil.rmtree, root, True)
+    return root
 
 
 class PersistenceTests(unittest.TestCase):
@@ -92,7 +100,7 @@ class SuiteFailureTests(unittest.TestCase):
         self.assertEqual(svc.config, {'source': 'old'})
 
     def test_configuration_does_not_reopen_saved_suite(self):
-        svc = OptimizerService({'runtime': {'run_root': '/tmp'}})
+        svc = OptimizerService({'runtime': {'run_root': _scratch_root(self)}})
         svc.setup_private_sessions['active'] = {'session_id': 'active'}
         document = config.build_configuration({})
         document['source_setup']['path'] = '/tmp/example'

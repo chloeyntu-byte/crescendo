@@ -1,6 +1,7 @@
 import copy
 import json
 import os
+import shutil
 import tempfile
 import runpy
 import subprocess
@@ -119,13 +120,17 @@ class NativeEnvironmentTests(unittest.TestCase):
         self.assertEqual(child["DISPLAY"], ":owned")
 
     def test_eda_child_uses_snapshot_and_explicit_tool_paths_without_gui_leakage(self):
+        # child_environment creates the private home; use a writable temp dir
+        # so the test also runs as an unprivileged user.
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, True)
         for state in (None, "", "/native/lib"):
             snapshot = self.values(None)
             snapshot.update(LD_LIBRARY_PATH=state, PATH="/native/bin")
             config = {"cadence": {"launch_environment": snapshot}}
             caller = dict((name, "GUI_INJECTED") for name in NATIVE_ENV_NAMES)
             with self.subTest(state=state), mock.patch.dict(os.environ, caller, clear=True):
-                child = child_environment(config, "/private/home")
+                child = child_environment(config, home)
                 self.assertEqual(dict(os.environ), caller)
             self.assertEqual(child["PATH"], "/native/bin")
             if state is None:
@@ -139,7 +144,7 @@ class NativeEnvironmentTests(unittest.TestCase):
             self.assertNotIn("LM_LICENSE_FILE", child)
         config["cadence"].update(extra_binary_paths=["/explicit/bin"], extra_library_paths=["/explicit/lib"])
         with mock.patch.dict(os.environ, caller, clear=True):
-            child = child_environment(config, "/private/home")
+            child = child_environment(config, home)
         self.assertTrue(child["PATH"].startswith("/explicit/bin:"))
         self.assertTrue(child["LD_LIBRARY_PATH"].startswith("/explicit/lib:"))
 

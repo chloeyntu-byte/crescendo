@@ -1,6 +1,8 @@
-# Crescendo 1.0.2
+# Crescendo 1.0.3
 
-Crescendo is a guided circuit optimizer for Cadence Maestro. This first public release contains the window, the optimization engine, the Virtuoso menu loader and a synthetic demo.
+Crescendo is a guided circuit optimizer for Cadence Maestro. Each release contains the window, the optimization engine, the Virtuoso menu loader and a synthetic demo.
+
+This maintenance release makes the test suite pass on Python 3.6 to 3.13 with Tk 8.5 or 8.6, also when run as a normal user, and reports oversized integers in range checks as non-finite on every Python version. See CHANGELOG.md.
 
 Try it without any EDA tools:
 

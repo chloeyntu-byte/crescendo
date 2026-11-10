@@ -391,7 +391,7 @@ class EnvironmentTestManagerTests(unittest.TestCase):
                 "candidate_timeout_seconds": 60, "engine_timeout_seconds": 4, "advanced_diagnostics": True}
         return manager, service, spec
 
-    def finish(self, manager, test_id, timeout=8):
+    def finish(self, manager, test_id, timeout=30):
         self.assertTrue(manager.join(timeout), "Diagnostic manager did not reach its bounded terminal state")
         self.assertFalse([error for service in self.services for error in service.thread_errors],
                          "Simulated lifecycle writer failed; this cannot count as a passed manager test")

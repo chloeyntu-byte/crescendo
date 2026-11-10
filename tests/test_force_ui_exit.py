@@ -6,9 +6,17 @@ import tempfile
 import threading
 import time
 import unittest
+import shutil
 from unittest import mock
 
 from crescendo_engine import ui_exit
+
+
+def _scratch_root(test):
+    """Private run root for one test; never the shared system /tmp."""
+    root = tempfile.mkdtemp(prefix="crescendo-test-")
+    test.addCleanup(shutil.rmtree, root, True)
+    return root
 
 
 def run_gui_child(case):
@@ -135,7 +143,7 @@ class DetachTests(unittest.TestCase):
         service.range_validation_cancels = {}
         service.setup_private_sessions = {}
         service.session_run_names = set()
-        service.config = {'runtime': {'run_root': '/tmp'}}
+        service.config = {'runtime': {'run_root': _scratch_root(self)}}
         with mock.patch('crescendo_engine.ui_exit.atomic_write_json', side_effect=OSError('disk full')):
             result = ui_exit.detach_service(service)
         self.assertFalse(result['cleanup_confirmed'])

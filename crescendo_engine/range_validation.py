@@ -263,6 +263,14 @@ def _bound_state(raw_value):
         return "valid", normalized
     if isinstance(raw_value, float) and not math.isfinite(raw_value):
         return "non_finite", None
+    if isinstance(raw_value, int) and not isinstance(raw_value, bool):
+        # Huge integers overflow float; str() of them is also refused on
+        # Python 3.11+ (integer string conversion limit), so test directly.
+        try:
+            numeric = float(raw_value)
+        except OverflowError:
+            return "non_finite", None
+        return ("non_finite", None) if not math.isfinite(numeric) else ("malformed", None)
     try:
         numeric = float(str(raw_value).strip().strip('"'))
     except (TypeError, ValueError, OverflowError):

@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+import shutil
 from http.server import HTTPServer
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -43,6 +44,13 @@ from crescendo_engine.runner import (
     checkpoint_with_candidates, run_optimization,
 )
 from crescendo_engine.utils import load_json
+
+
+def _scratch_root(test):
+    """Private run root for one test; never the shared system /tmp."""
+    root = tempfile.mkdtemp(prefix="crescendo-test-")
+    test.addCleanup(shutil.rmtree, root, True)
+    return root
 
 
 _BASE_CANDIDATE_LAYOUT = [
@@ -248,7 +256,7 @@ class OptimizerServiceTest(unittest.TestCase):
 
     def test_prepare_preserves_simulation_submission_identity(self):
         setup_path = saved_setup(self, "maestro")
-        service = OptimizerService({"runtime": {"run_root": "/tmp/crescendo-test"}})
+        service = OptimizerService({"runtime": {"run_root": _scratch_root(self)}})
         submission = {
             "schema_version": "crescendo.simulation_submission.v1",
             "controller": "maestro", "simulator": "spectre",
@@ -280,7 +288,7 @@ class OptimizerServiceTest(unittest.TestCase):
 
     def test_prepare_defaults_to_generic_backend_auto_detection(self):
         setup_path = saved_setup(self, "adexl")
-        service = OptimizerService({"runtime": {"run_root": "/tmp/crescendo-test"}})
+        service = OptimizerService({"runtime": {"run_root": _scratch_root(self)}})
         prepared = {
             "setup": {"backend": "adexl"}, "hierarchy": {}, "eda_context": {},
             "source_identity": {
@@ -309,7 +317,7 @@ class OptimizerServiceTest(unittest.TestCase):
 
     def test_prepare_defers_native_validation_without_starting_resident(self):
         setup_path = saved_setup(self, "maestro")
-        service = OptimizerService({"runtime": {"run_root": "/tmp/crescendo-test"}})
+        service = OptimizerService({"runtime": {"run_root": _scratch_root(self)}})
         prepared = {
             "setup": {}, "hierarchy": {}, "eda_context": {},
             "source_identity": {
@@ -342,7 +350,7 @@ class OptimizerServiceTest(unittest.TestCase):
 
     def test_exit_optimizer_stops_runs_and_closes_resident_session(self):
         service = OptimizerService({"runtime": {
-            "run_root": "/tmp", "optimizer_exit_timeout_seconds": 1,
+            "run_root": _scratch_root(self), "optimizer_exit_timeout_seconds": 1,
         }})
         resident = mock.Mock()
         service.resident_validation = resident
@@ -760,7 +768,7 @@ class OptimizerServiceTest(unittest.TestCase):
             self.assertNotIn("maestro_path", spec)
 
     def test_start_refuses_stale_prepared_design_before_launch(self):
-        service = OptimizerService({"runtime": {"run_root": "/tmp"}})
+        service = OptimizerService({"runtime": {"run_root": _scratch_root(self)}})
         service.prepared["prepared-1"] = {"maestro_path": "/m"}
         with mock.patch(
                 "crescendo_engine.server.require_prepared_freshness",
@@ -773,7 +781,7 @@ class OptimizerServiceTest(unittest.TestCase):
         launch.assert_not_called()
 
     def test_start_rejects_missing_metric_outputs_and_corners_before_launch(self):
-        service = OptimizerService({"runtime": {"run_root": "/tmp"}})
+        service = OptimizerService({"runtime": {"run_root": _scratch_root(self)}})
         service.prepared["prepared-1"] = {
             "parameters": [{"parameter_id": "w", "optimizable": True}],
             "outputs": [{"key": "main::gain"}],
@@ -803,7 +811,7 @@ class OptimizerServiceTest(unittest.TestCase):
         launch.assert_not_called()
 
     def test_mock_start_keeps_dynamic_metric_output_behavior(self):
-        service = OptimizerService({"runtime": {"run_root": "/tmp"}})
+        service = OptimizerService({"runtime": {"run_root": _scratch_root(self)}})
         service.prepared["prepared-1"] = {
             "parameters": [{"parameter_id": "w", "optimizable": True}],
             "outputs": [],
@@ -824,7 +832,7 @@ class OptimizerServiceTest(unittest.TestCase):
         launch.assert_called_once()
 
     def test_validation_refuses_stale_prepared_design_before_resident_use(self):
-        service = OptimizerService({"runtime": {"run_root": "/tmp"}})
+        service = OptimizerService({"runtime": {"run_root": _scratch_root(self)}})
         service.prepared["prepared-1"] = {
             "parameters": [{"parameter_id": "w", "optimizable": True}],
         }
@@ -865,7 +873,7 @@ class OptimizerServiceTest(unittest.TestCase):
             validate.assert_called_once()
 
     def test_validation_refuses_duplicate_active_job(self):
-        service = OptimizerService({"runtime": {"run_root": "/tmp"}})
+        service = OptimizerService({"runtime": {"run_root": _scratch_root(self)}})
         service.prepared["prepared-1"] = {"parameters": [{"parameter_id": "w", "optimizable": True}]}
         service.range_validations["range_validation_active"] = {"state": "running"}
         with self.assertRaisesRegex(RuntimeError, "already running"):
@@ -952,7 +960,7 @@ class OptimizerServiceTest(unittest.TestCase):
             launch.assert_not_called()
 
     def test_no_validation_fast_path_does_not_enter_wait_clock(self):
-        service = OptimizerService({"runtime": {"run_root": "/tmp"}})
+        service = OptimizerService({"runtime": {"run_root": _scratch_root(self)}})
         with mock.patch("crescendo_engine.server.time.monotonic") as monotonic:
             self.assertEqual(service._cancel_and_wait_range_validations(), [])
         monotonic.assert_not_called()
@@ -2885,7 +2893,7 @@ class OptimizerServiceTest(unittest.TestCase):
 
     def test_eda_setup_exposes_discovery_without_full_config(self):
         service = OptimizerService({
-            "runtime": {"run_root": "/tmp"},
+            "runtime": {"run_root": _scratch_root(self)},
             "cadence": {
                 "setup_mode": "auto",
                 "user_config_path": "/tmp/crescendo.json",
@@ -2910,7 +2918,7 @@ class OptimizerServiceTest(unittest.TestCase):
         }
         configure_eda_mock.return_value = (discovery, "/tmp/user.json")
         service = OptimizerService({
-            "runtime": {"run_root": "/tmp"},
+            "runtime": {"run_root": _scratch_root(self)},
             "cadence": {
                 "setup_mode": "auto", "user_config_path": "/tmp/user.json",
                 "virtuoso_bin": "/stale/auto/virtuoso",
@@ -2948,7 +2956,7 @@ class OptimizerServiceTest(unittest.TestCase):
     def test_update_eda_setup_is_rejected_while_optimization_is_active(
             self, configure_eda_mock):
         service = OptimizerService({
-            "runtime": {"run_root": "/tmp"},
+            "runtime": {"run_root": _scratch_root(self)},
             "cadence": {"setup_mode": "auto", "user_config_path": "/tmp/user.json"},
         })
         service.threads["active-run"] = mock.Mock(is_alive=mock.Mock(return_value=True))
@@ -2960,7 +2968,7 @@ class OptimizerServiceTest(unittest.TestCase):
     def test_update_eda_setup_rejects_invalid_mode_before_transaction(
             self, configure_eda_mock):
         service = OptimizerService({
-            "runtime": {"run_root": "/tmp"},
+            "runtime": {"run_root": _scratch_root(self)},
             "cadence": {"setup_mode": "auto", "user_config_path": "/tmp/user.json"},
         })
         with mock.patch.object(
@@ -2985,7 +2993,7 @@ class OptimizerServiceTest(unittest.TestCase):
             "missing": [], "recommendations": [], "compatibility": {"ok": True},
         }
         service = OptimizerService({
-            "runtime": {"run_root": "/tmp"},
+            "runtime": {"run_root": _scratch_root(self)},
             "cadence": {
                 "setup_mode": "manual", "user_config_path": "/tmp/user.json",
                 "_file_overrides": {"license_file": "5280@project-license"},
@@ -3017,7 +3025,7 @@ class OptimizerServiceTest(unittest.TestCase):
             "virtuoso_bin": "/old/virtuoso", "_manual_overrides": {},
         }
         service = OptimizerService({
-            "runtime": {"run_root": "/tmp"},
+            "runtime": {"run_root": _scratch_root(self)},
             "cadence": copy.deepcopy(old_cadence),
         })
         prepared = {"setup": {}}
@@ -3073,6 +3081,7 @@ class OptimizerServiceTest(unittest.TestCase):
             self.assertEqual(selected["setup_backend"], "adexl")
             self.assertEqual(selected["setup_db"], data_sdb)
 
+    @mock.patch("crescendo_engine.server.shutil.which", lambda name: "/usr/bin/" + name)
     @mock.patch("crescendo_engine.server._desktop_session")
     @mock.patch("crescendo_engine.server.subprocess.check_output")
     def test_native_browse_returns_selected_maestro_directory(self, check_output, desktop_session):
@@ -3090,6 +3099,7 @@ class OptimizerServiceTest(unittest.TestCase):
             self.assertEqual(selected["path"], maestro)
             self.assertIn("DISPLAY=:0", check_output.call_args[0][0])
 
+    @mock.patch("crescendo_engine.server.shutil.which", lambda name: "/usr/bin/" + name)
     @mock.patch("crescendo_engine.server._desktop_session")
     @mock.patch("crescendo_engine.server.subprocess.check_output")
     def test_native_browse_returns_selected_adexl_directory(self, check_output, desktop_session):
@@ -3642,7 +3652,7 @@ class OptimizerServiceTest(unittest.TestCase):
                 thread.join(2)
 
     def test_http_exit_endpoint_returns_cleanup_result(self):
-        service = OptimizerService({"runtime": {"run_root": "/tmp"}})
+        service = OptimizerService({"runtime": {"run_root": _scratch_root(self)}})
         server = HTTPServer(("127.0.0.1", 0), make_handler(service))
         thread = threading.Thread(target=server.serve_forever)
         thread.daemon = True
@@ -3667,7 +3677,7 @@ class OptimizerServiceTest(unittest.TestCase):
             thread.join(2)
 
     def test_http_exit_requests_shutdown_before_writing_response(self):
-        service = OptimizerService({"runtime": {"run_root": "/tmp"}})
+        service = OptimizerService({"runtime": {"run_root": _scratch_root(self)}})
         handler = make_handler(service)
         original_json = handler._json
         response_attempts = []
@@ -3705,7 +3715,7 @@ class OptimizerServiceTest(unittest.TestCase):
             thread.join(2)
 
     def test_http_start_returns_explicit_reload_message_for_stale_prepared_design(self):
-        service = OptimizerService({"runtime": {"run_root": "/tmp"}})
+        service = OptimizerService({"runtime": {"run_root": _scratch_root(self)}})
         service.prepared["prepared-1"] = {"maestro_path": "/m"}
         server = HTTPServer(("127.0.0.1", 0), make_handler(service))
         thread = threading.Thread(target=server.serve_forever)
@@ -3774,7 +3784,7 @@ class OptimizerServiceTest(unittest.TestCase):
             launch.assert_called_once()
 
     def test_workspace_preflight_blocks_real_eda_but_not_mock(self):
-        service = OptimizerService({"runtime": {"run_root": "/tmp"}})
+        service = OptimizerService({"runtime": {"run_root": _scratch_root(self)}})
         service.prepared["prepared-1"] = {
             "parameters": [{"parameter_id": "w", "optimizable": True}],
             "workspace_preflight": {
@@ -3798,7 +3808,7 @@ class OptimizerServiceTest(unittest.TestCase):
         self.assertEqual(launch.call_count, 1)
 
     def test_unsafe_optional_validation_prepared_state_blocks_real_start(self):
-        service = OptimizerService({"runtime": {"run_root": "/tmp"}})
+        service = OptimizerService({"runtime": {"run_root": _scratch_root(self)}})
         service.prepared["prepared-1"] = {
             "parameters": [{"parameter_id": "w", "optimizable": True}],
             "resident_validation": {

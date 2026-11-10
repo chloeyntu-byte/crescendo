@@ -392,7 +392,7 @@ class SetupPrivateServiceIntegrationTests(unittest.TestCase):
         self.assertTrue(os.path.isfile(lock))
         self.assertTrue(os.path.isdir(reference['maestro']['path']))
         self.assertTrue(os.path.isfile(self.fixture.path))
-        os.unlink(lock)
+        baseline_fixtures.remove_file(lock)
 
     def test_failed_or_unsafe_suite_cannot_be_bypassed_with_another_copy(self):
         _token,preview=self.inspect()
@@ -520,7 +520,7 @@ class SetupPrivateServiceIntegrationTests(unittest.TestCase):
         self.assertTrue(result['warnings'])
         self.assertTrue(os.path.isfile(lock))
         self.assertTrue(os.path.isdir(reference['maestro']['path']))
-        os.unlink(lock)
+        baseline_fixtures.remove_file(lock)
 
     def test_resume_attaches_only_live_suite_with_same_baseline_scope_and_parameter_catalog(self):
         _token,preview=self.inspect()
