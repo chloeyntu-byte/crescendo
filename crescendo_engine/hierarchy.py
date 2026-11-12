@@ -8,6 +8,9 @@ import math
 import os
 import re
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .cadence import (
     check_command_cancellation, child_environment, run_command,
     write_readonly_cds_context,
@@ -164,7 +167,7 @@ def _skill_quote(value):
 def probe_skill(lib, cell, view, output_path, max_depth, cells_only=False,
                 selected_cell_paths=None):
     selected = list(selected_cell_paths or [])
-    return r'''crescOut = outfile("%s")
+    return _contract_text(r'''crescOut = outfile("%s")
 crescCellsOnly = %s
 crescScoped = %s
 crescSelectedCellPaths = list(%s)
@@ -420,7 +423,7 @@ unless(crescProbeResult
 )
 close(crescOut)
 exit()
-''' % (
+''') % (
         _skill_quote(output_path), "t" if cells_only else "nil",
         "t" if selected_cell_paths is not None else "nil",
         " ".join('"%s"' % _skill_quote(path) for path in selected),
@@ -812,7 +815,7 @@ def validate_native_hierarchy(hierarchy, design, evidence_path=None):
         elif error.get("kind") == "PROBE_FAILED":
             problems.append("native hierarchy scan aborted; inspect its Virtuoso log for the actual error, including any SKILL quota limit")
         elif error.get("kind") == "UNSUPPORTED_CONFIG":
-            problems.append("configuration binding traversal is unsupported; Crescendo will not substitute a schematic for the actual config")
+            problems.append(_contract_text("configuration binding traversal is unsupported; Crescendo will not substitute a schematic for the actual config"))
         elif str(error.get("kind") or "").startswith("CONFIG_"):
             detail = error.get("values", [])[1:]
             problems.append("%s at %s: %s" % (error["kind"], error.get("hierarchy_path") or "/",
@@ -1012,7 +1015,7 @@ def probe_hierarchy(setup, config, max_depth=32, work_root=None, cells_only=Fals
         )
         output_path = os.path.join(design_root, "hierarchy.records")
         skill_path = os.path.join(design_root, "probe_hierarchy.il")
-        log_path = os.path.join(design_root, "virtuoso.log")
+        log_path = os.path.join(design_root, _contract_text("virtuoso.log"))
         paths = scopes.get(design, []) if scopes is not None else None
         atomic_write_text(skill_path, probe_skill(library, cell, view, output_path, max_depth,
                                                 cells_only=cells_only, selected_cell_paths=paths))
@@ -1049,7 +1052,7 @@ def probe_hierarchy(setup, config, max_depth=32, work_root=None, cells_only=Fals
                 design_result[name] = normalized[name]
         all_designs.append(design_result)
     result = {
-        "schema_version": "crescendo.hierarchy.v1",
+        "schema_version": _contract_text("crescendo.hierarchy.v1"),
         "created_at": utc_timestamp(),
         "read_only": True,
         "probe_root": probe_root,
@@ -1057,7 +1060,7 @@ def probe_hierarchy(setup, config, max_depth=32, work_root=None, cells_only=Fals
         "designs": all_designs,
         "scan_mode": "cells_only" if cells_only else "selected_cells" if scopes is not None else "full",
     }
-    evidence_path = os.path.join(probe_root, "hierarchy.json")
+    evidence_path = os.path.join(probe_root, _contract_text("hierarchy.json"))
     check_command_cancellation()
     atomic_write_json(evidence_path, result)
     for design_result in all_designs:

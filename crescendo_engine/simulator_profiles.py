@@ -4,6 +4,9 @@ An automatic bridge proves a unique relative file and exported interface, not
 numerical model equivalence. Unknown/encrypted syntax needs an explicit map and
 the normal real-solver/output qualification. No vendor process is launched.
 """
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 import copy
 import hashlib
 import json
@@ -12,7 +15,7 @@ import re
 import xml.etree.ElementTree as ET
 
 
-SCHEMA = "crescendo.simulator_profiles.v1"
+SCHEMA = _contract_text("crescendo.simulator_profiles.v1")
 _NAME = r"[A-Za-z_][A-Za-z0-9_.$-]*"
 _SECTION = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 _INCLUDE = re.compile(r'^\s*(?:include|\.include)\s+["\']([^"\']+)["\'](?:\s+section\s*=\s*([A-Za-z0-9_.-]+))?', re.I)
@@ -70,7 +73,7 @@ def _model_directory_setting(cadence, simulator):
     if declared is not None:
         return declared, declared_origin, True
     automatic_origins = ('source_model_root', 'source_pdk_sibling', 'saved_setup_include_path',
-                         'configured_pdk_dir', 'configured_model_roots')
+                         _contract_text('configured_pdk_dir'), 'configured_model_roots')
     # Older native binding could label an automatic effective value 'manual'.
     # The declaration maps are the authority, not that accidental promotion.
     declaration_maps_present = '_manual_overrides' in cadence or '_file_overrides' in cadence
@@ -78,7 +81,7 @@ def _model_directory_setting(cadence, simulator):
     automatic = (origin in automatic_origins or origin.startswith('environment:PDK/') or
                  declaration_maps_present and key in effective and origin in ('manual', 'configured'))
     captured = cadence.get('launch_environment') or {}
-    env_name = 'CRESCENDO_' + simulator.upper() + '_MODEL_DIR'
+    env_name = _contract_text('CRESCENDO_') + simulator.upper() + '_MODEL_DIR'
     if (automatic or not configured) and captured.get(env_name):
         from .native_includes import expand_native_path, native_include_environment
         environment = native_include_environment({'cadence': cadence})
@@ -99,7 +102,7 @@ def model_directory(cadence, simulator, capture_simulator="spectre", references=
         return configured, configured_origin
     if environ is not None:
         from .native_includes import expand_native_path
-        env_name = "CRESCENDO_" + simulator.upper() + "_MODEL_DIR"
+        env_name = _contract_text("CRESCENDO_") + simulator.upper() + "_MODEL_DIR"
         if environ.get(env_name):
             return expand_native_path(environ[env_name], environ), "environment:" + env_name
     saved_source, saved_source_origin, source_explicit = _model_directory_setting(cadence, capture_simulator)
@@ -141,8 +144,8 @@ def model_directory(cadence, simulator, capture_simulator="spectre", references=
         if _readable_directory(candidate):
             return os.path.realpath(candidate), saved_source_origin if simulator == capture_simulator else 'source_pdk_sibling'
     roots = []
-    if cadence.get("pdk_dir"):
-        roots.append((cadence["pdk_dir"], "configured_pdk_dir"))
+    if cadence.get(_contract_text("pdk_dir")):
+        roots.append((cadence[_contract_text("pdk_dir")], _contract_text("configured_pdk_dir")))
     roots.extend((path, "configured_model_roots") for path in cadence.get("model_roots") or [])
     candidates = {}
     for path, origin in roots:
@@ -601,7 +604,7 @@ def apply_source_profile_defaults(config, setup):
             discovery = cadence.setdefault("discovery", {})
             discovery.setdefault("effective", {})[simulator + "_model_dir"] = directory
             discovery.setdefault("sources", {})[simulator + "_model_dir"] = origin
-    cadence["_model_discovery"] = dict(locations, schema_version="crescendo.source_model_discovery.v1",
+    cadence["_model_discovery"] = dict(locations, schema_version=_contract_text("crescendo.source_model_discovery.v1"),
                                       origins=origins, model_sections_qualified=False,
                                       history_results_used=False)
     return result
@@ -735,7 +738,7 @@ def frozen_model_profile_identity(manifest):
         identities[_digest(identity)] = identity
     if not identities:
         raise ModelProfileError("No actual simulator/model tasks are available to freeze")
-    payload = {"schema_version": "crescendo.simulator_model_profile_identity.v1",
+    payload = {"schema_version": _contract_text("crescendo.simulator_model_profile_identity.v1"),
                "profiles": [identities[key] for key in sorted(identities)],
                "model_equivalence_claimed": False}
     payload["fingerprint"] = _digest(payload)

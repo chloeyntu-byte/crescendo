@@ -9,6 +9,9 @@ import re
 import ast
 import shlex
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .native_environment import restore_native_environment
 
 
@@ -196,13 +199,13 @@ def freeze_native_includes(text, task, config, capture_simulator, allow_candidat
     references = []
     def replace(match):
         reference = match.group(2)
-        if allow_candidate_parameters and reference == "cr_candidate_parameters.scs":
+        if allow_candidate_parameters and reference == _contract_text("cr_candidate_parameters.scs"):
             return match.group(0)
         path = resolve_include_file(reference, cwd, directories, environ)
         references.append({"reference": reference, "path": path})
         return match.group(1) + '"' + path.replace('"', '\\"') + '"'
     frozen = _INCLUDE.sub(replace, text)
-    evidence = {"schema_version": "crescendo.native_include_resolution.v1", "capture_source_simulator": capture_simulator,
+    evidence = {"schema_version": _contract_text("crescendo.native_include_resolution.v1"), "capture_source_simulator": capture_simulator,
                 "native_cwd": cwd, "include_dirs": directories, "references": references,
                 "search_order": "captured_cwd_then_captured_I_then_source_model_dir",
                 "model_format_equivalence_claimed": False}

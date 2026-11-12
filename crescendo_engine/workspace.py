@@ -1,4 +1,8 @@
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
+from .pdk import adapter_entry_symbol
 
 import ast
 import fnmatch
@@ -40,7 +44,7 @@ from .same_library_views import enabled as same_library_enabled, build_same_libr
 CADENCE_STARTUP_LOCK = threading.Lock()
 MAX_CLONE_CELL_NAME = 32
 ADAPTER_ERROR_PATTERN = re.compile(
-    r"CRESCENDO_ADAPTER_ERROR:([a-z0-9_]+)", re.IGNORECASE,
+    _contract_text(r"CRESCENDO_ADAPTER_ERROR:([a-z0-9_]+)"), re.IGNORECASE,
 )
 
 
@@ -304,7 +308,7 @@ def workspace_reference_plan(setup, hierarchy, sources, primary_library, root, p
     Nested mutable branches are created by the existing native occurrence-clone
     DAG. They do not need a preliminary filesystem copy of their source cells.
     """
-    names = dict((library, "cr_w_" + hashlib.sha256(
+    names = dict((library, _contract_text("cr_w_") + hashlib.sha256(
         (os.path.realpath(root) + "\x1f" + library).encode("utf-8")).hexdigest()[:20])
         for library in sources)
     views = dict((library, {}) for library in sources)
@@ -341,9 +345,9 @@ def workspace_reference_plan(setup, hierarchy, sources, primary_library, root, p
         if config and not same_library:
             add_view(tuple(config["resolved_top"][name] for name in ("library", "cell", "view")))
         if same_library:
-            mappings[design] = (names[design[0]], design[1], design[2] if config else "cr_config")
+            mappings[design] = (names[design[0]], design[1], design[2] if config else _contract_text("cr_config"))
     return {
-        "schema_version": "crescendo.workspace_reference_plan.v1",
+        "schema_version": _contract_text("crescendo.workspace_reference_plan.v1"),
         "private_library_names": names,
         "copy_views": dict((lib, dict((cell, sorted(value)) for cell, value in cells.items()))
                            for lib, cells in views.items()),
@@ -403,28 +407,28 @@ def workspace_test_design_lines(workspace, read_only=False):
     for test in (workspace.get("setup") or {}).get("tests") or []:
         if test.get("enabled", True) and (test.get("simulator") or "spectre").lower() == "alps":
             lines.extend([
-                'crescAlpsTest = axlGetTest(mainSDB "%s")' % _skill_quote(test["name"]),
-                'unless(crescAlpsTest error("Crescendo saved ALPS test unavailable\\n"))',
-                'crescAlpsArgs = errset(axlGetTestToolArgs(crescAlpsTest) t)',
-                'unless(crescAlpsArgs && equal(cadr(assoc("sim" car(crescAlpsArgs))) "alps") error("Crescendo native ALPS simulator integration/readback unavailable\\n"))',
+                _contract_text('crescAlpsTest = axlGetTest(mainSDB "%s")') % _skill_quote(test["name"]),
+                _contract_text('unless(crescAlpsTest error("Crescendo saved ALPS test unavailable\\n"))'),
+                _contract_text('crescAlpsArgs = errset(axlGetTestToolArgs(crescAlpsTest) t)'),
+                _contract_text('unless(crescAlpsArgs && equal(cadr(assoc("sim" car(crescAlpsArgs))) "alps") error("Crescendo native ALPS simulator integration/readback unavailable\\n"))'),
             ])
         source = tuple(test.get(name) for name in ("library", "cell", "view"))
         target = private_design_identity(workspace, source)
         if target == source:
             continue
         binding_lines = [
-            'crescPrivateTest = axlGetTest(mainSDB "%s")' % _skill_quote(test["name"]),
-            'unless(crescPrivateTest error("Crescendo cannot find test for private design binding\\n"))',
-            'crescPrivateArgs = axlGetTestToolArgs(crescPrivateTest)',
-            'unless(crescPrivateArgs error("Crescendo cannot obtain source test design arguments\\n"))',
-            'crescPrivateArgs = append(list(list("lib" "%s") list("cell" "%s") list("view" "%s")) setof(item crescPrivateArgs !member(car(item) list("lib" "cell" "view"))))' % tuple(_skill_quote(v) for v in target),
-            'unless(axlSetTestToolArgs(crescPrivateTest crescPrivateArgs) error("Crescendo cannot bind private test design\\n"))',
-            'crescPrivateReadback = axlGetTestToolArgs(crescPrivateTest)',
-            'unless(equal(cadr(assoc("lib" crescPrivateReadback)) "%s") && equal(cadr(assoc("cell" crescPrivateReadback)) "%s") && equal(cadr(assoc("view" crescPrivateReadback)) "%s") error("Crescendo private test design readback mismatch\\n"))' % tuple(_skill_quote(v) for v in target),
+            _contract_text('crescPrivateTest = axlGetTest(mainSDB "%s")') % _skill_quote(test["name"]),
+            _contract_text('unless(crescPrivateTest error("Crescendo cannot find test for private design binding\\n"))'),
+            _contract_text('crescPrivateArgs = axlGetTestToolArgs(crescPrivateTest)'),
+            _contract_text('unless(crescPrivateArgs error("Crescendo cannot obtain source test design arguments\\n"))'),
+            _contract_text('crescPrivateArgs = append(list(list("lib" "%s") list("cell" "%s") list("view" "%s")) setof(item crescPrivateArgs !member(car(item) list("lib" "cell" "view"))))') % tuple(_skill_quote(v) for v in target),
+            _contract_text('unless(axlSetTestToolArgs(crescPrivateTest crescPrivateArgs) error("Crescendo cannot bind private test design\\n"))'),
+            _contract_text('crescPrivateReadback = axlGetTestToolArgs(crescPrivateTest)'),
+            _contract_text('unless(equal(cadr(assoc("lib" crescPrivateReadback)) "%s") && equal(cadr(assoc("cell" crescPrivateReadback)) "%s") && equal(cadr(assoc("view" crescPrivateReadback)) "%s") error("Crescendo private test design readback mismatch\\n"))') % tuple(_skill_quote(v) for v in target),
         ]
         if read_only:
             binding_lines = [line for line in binding_lines if not (
-                "axlSetTestToolArgs(" in line or "crescPrivateArgs = append(" in line)]
+                "axlSetTestToolArgs(" in line or _contract_text("crescPrivateArgs = append(") in line)]
         lines.extend(binding_lines)
     return lines
 
@@ -634,7 +638,7 @@ def tree_content_fingerprint(root, relative_paths=None):
                 "omitted_files": max(0, scope_file_count[0] - len(scope_files))})
     check_command_cancellation()
     return {
-        "schema_version": "crescendo.tree_content_fingerprint.v1",
+        "schema_version": _contract_text("crescendo.tree_content_fingerprint.v1"),
         "paths": scopes,
         "file_count": len(files),
         "directory_count": len(directories),
@@ -868,16 +872,16 @@ def _reference_library_policy(setup, hierarchy, config):
         rows = payload.get("contexts") or []
         if rows:
             context_rows.extend(rows)
-        elif payload.get("pdk_dir") or payload.get("pdk_name"):
+        elif payload.get(_contract_text("pdk_dir")) or payload.get("pdk_name"):
             context_rows.append({
-                "package_root": payload.get("pdk_dir"),
+                "package_root": payload.get(_contract_text("pdk_dir")),
                 "reference_libraries": [payload.get("pdk_name")],
                 "technology_libraries": [], "library_paths": {},
             })
     context_rows.extend(cadence.get("pdk_profiles") or [])
     for value in (
-            cadence.get("cadence_root"), cadence.get("spectre_root"), cadence.get("pdk_dir"),
-            prepared_pdk.get("pdk_dir"), detected_pdk.get("pdk_dir")):
+            cadence.get("cadence_root"), cadence.get("spectre_root"), cadence.get(_contract_text("pdk_dir")),
+            prepared_pdk.get(_contract_text("pdk_dir")), detected_pdk.get(_contract_text("pdk_dir"))):
         if value:
             roots.append(os.path.realpath(os.path.abspath(os.path.expanduser(str(value)))))
     for context in context_rows:
@@ -963,13 +967,13 @@ def _source_design_identity_from_sources(setup, hierarchy, sources, scopes=None,
             "fingerprint": snapshot["fingerprint"],
         })
     payload = {
-        "schema_version": "crescendo.source_design_identity.v2" if actual_views else "crescendo.source_design_identity.v1",
+        "schema_version": _contract_text("crescendo.source_design_identity.v2") if actual_views else _contract_text("crescendo.source_design_identity.v1"),
         "libraries": libraries,
     }
     if setup.get("baseline"):
         from .setup_baseline import verify_setup_baseline
         baseline = verify_setup_baseline(setup)
-        payload["schema_version"] = "crescendo.source_design_identity.v3"
+        payload["schema_version"] = _contract_text("crescendo.source_design_identity.v3")
         payload["setup_baseline"] = {"baseline_id": baseline["baseline_id"], "fingerprint": baseline["fingerprint"]}
     encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     payload["fingerprint"] = hashlib.sha256(encoded).hexdigest()
@@ -1010,7 +1014,7 @@ def config_dependency_identity(setup, hierarchy, config=None):
         rows.append({"library": library, "cell": cell, "view": view,
                      "fingerprint": fingerprint["fingerprint"],
                      "file_count": fingerprint["file_count"]})
-    identity = {"schema_version": "crescendo.config_dependency_identity.v1", "dependencies": rows}
+    identity = {"schema_version": _contract_text("crescendo.config_dependency_identity.v1"), "dependencies": rows}
     identity["fingerprint"] = hashlib.sha256(json.dumps(
         identity, sort_keys=True, separators=(",", ":"),
     ).encode("utf-8")).hexdigest()
@@ -1140,7 +1144,7 @@ def _build_same_library_workspace(setup, hierarchy, config, root, primary_name,
                                   parameters, build_started, fingerprint_seconds):
     from .same_library_views import config_designs_for_same_library, register_view, copy_setup_view
     simulation_root = ensure_dir(os.path.join(root, "simulation"))
-    workspace = {"schema_version": "crescendo.workspace.v1", "created_at": utc_timestamp(),
+    workspace = {"schema_version": _contract_text("crescendo.workspace.v1"), "created_at": utc_timestamp(),
                  "root": root, "primary_library": primary_name, "source_primary_library": primary_name,
                  "copy_policy": "same_library_views", "same_library_objects": True,
                  "run_display_name": (config.get("runtime") or {}).get("_run_display_name") or "optimization",
@@ -1197,14 +1201,14 @@ def _build_same_library_workspace(setup, hierarchy, config, root, primary_name,
                                    "loaded": False, "policy": "ignored_unless_explicitly_configured"}
     technology_path = os.path.join(root, "technology_bindings.records")
     workspace["technology"] = workspace_technology_manifest(hierarchy, sources, technology_path)
-    init_lines = ['; Crescendo uses exact owned views in original libraries; source views remain read only.']
+    init_lines = [_contract_text('; Crescendo uses exact owned views in original libraries; source views remain read only.')]
     init_lines.extend('load("%s")' % _skill_quote(row["private_copy"]) for row in extensions)
     init_lines.extend(technology_probe_skill(workspace["technology"]))
     from .storage_policy import native_workspace_storage, native_storage_init_lines, native_storage_capture_definitions
     workspace["native_storage"] = native_workspace_storage(root, setup.get("save_options"))
     init_lines.extend(native_storage_capture_definitions().splitlines())
     init_lines.extend(native_storage_init_lines(workspace["native_storage"]))
-    init_lines.append("crescWorkspaceStartupLoaded = t")
+    init_lines.append(_contract_text("crescWorkspaceStartupLoaded = t"))
     atomic_write_text(os.path.join(root, ".cdsinit"), "\n".join(init_lines) + "\n")
     workspace["rewritten_files"] = []
     for current, _directories, names in os.walk(workspace["setup_dir"]):
@@ -1212,7 +1216,7 @@ def _build_same_library_workspace(setup, hierarchy, config, root, primary_name,
             path = os.path.join(current, name)
             if _rewrite_text_file(path, [], dict((name, os.path.join(simulation_root, name)) for name in sources)):
                 workspace["rewritten_files"].append(path)
-    if os.path.isfile(workspace["setup_sdb"]) and setup.get("schema_version") == "crescendo.ade_setup.v1":
+    if os.path.isfile(workspace["setup_sdb"]) and setup.get("schema_version") == _contract_text("crescendo.ade_setup.v1"):
         workspace["model_paths"] = remap_workspace_setup_paths(workspace, config,
             pdk_context=detect_pdk_context(setup, hierarchy, config.get("cadence") or {}))
         workspace["rewritten_files"] = sorted(set(workspace["rewritten_files"] + workspace["model_paths"]["changed_files"]))
@@ -1227,7 +1231,7 @@ def _build_same_library_workspace(setup, hierarchy, config, root, primary_name,
     guard = verify_sources_unchanged(workspace)
     if not guard["ok"]:
         raise ValueError("source libraries changed while preparing owned Maestro view")
-    atomic_write_json(os.path.join(root, "workspace.json"), workspace)
+    atomic_write_json(os.path.join(root, _contract_text("workspace.json")), workspace)
     return workspace
 
 
@@ -1320,7 +1324,7 @@ def build_workspace(setup, hierarchy, config=None, root=None, expected_source_id
         copy_identity_seconds = time.monotonic() - copy_identity_started
         simulation_root = ensure_dir(os.path.join(root, "simulation"))
         workspace = {
-            "schema_version": "crescendo.workspace.v1",
+            "schema_version": _contract_text("crescendo.workspace.v1"),
             "created_at": utc_timestamp(),
             "root": root,
             "primary_library": reference_plan["private_library_names"][primary_name] if reference_plan else primary_name,
@@ -1389,7 +1393,7 @@ def build_workspace(setup, hierarchy, config=None, root=None, expected_source_id
             "policy": "ignored_unless_explicitly_configured",
         }
         init_lines = [
-            '; Crescendo isolated workspace. All design writes must remain below this directory.',
+            _contract_text('; Crescendo isolated workspace. All design writes must remain below this directory.'),
             '; Source-adjacent .cdsinit is intentionally not loaded.',
         ]
         for extension in startup_extensions:
@@ -1408,7 +1412,7 @@ def build_workspace(setup, hierarchy, config=None, root=None, expected_source_id
         workspace["native_storage"] = native_workspace_storage(root, setup.get("save_options"))
         init_lines.extend(native_storage_capture_definitions().splitlines())
         init_lines.extend(native_storage_init_lines(workspace["native_storage"]))
-        init_lines.append("crescWorkspaceStartupLoaded = t")
+        init_lines.append(_contract_text("crescWorkspaceStartupLoaded = t"))
         atomic_write_text(os.path.join(root, ".cdsinit"), "\n".join(init_lines) + "\n")
         rewrite_started = time.monotonic()
         source_setup = _setup_database_path(setup)
@@ -1432,7 +1436,7 @@ def build_workspace(setup, hierarchy, config=None, root=None, expected_source_id
         )
         if (
                 os.path.isfile(workspace["setup_sdb"])
-                and setup.get("schema_version") == "crescendo.ade_setup.v1"):
+                and setup.get("schema_version") == _contract_text("crescendo.ade_setup.v1")):
             workspace["model_paths"] = remap_workspace_setup_paths(
                 workspace, config, pdk_context=detected_pdk,
             )
@@ -1459,7 +1463,7 @@ def build_workspace(setup, hierarchy, config=None, root=None, expected_source_id
             "rewrite_seconds": rewrite_seconds,
             "library_count": len(copies),
         }
-        atomic_write_json(os.path.join(root, "workspace.json"), workspace)
+        atomic_write_json(os.path.join(root, _contract_text("workspace.json")), workspace)
         return workspace
     except Exception as error:
         # A pre-registered staging directory can outlive interrupted copying.
@@ -1479,9 +1483,9 @@ def build_workspace(setup, hierarchy, config=None, root=None, expected_source_id
                 except Exception as intent_error:
                     raise WorkspaceBuildFailure(error, {"ok": False, "removed": False,
                         "cleanup_error": "creation staging identity unavailable: %s" % intent_error})
-        if os.path.isfile(os.path.join(root, "workspace.json")):
+        if os.path.isfile(os.path.join(root, _contract_text("workspace.json"))):
             try:
-                metadata = load_json(os.path.join(root, "workspace.json"))
+                metadata = load_json(os.path.join(root, _contract_text("workspace.json")))
                 if metadata.get("same_library_objects"):
                     from .same_library_views import cleanup_same_library_views
                     owned_cleanup = cleanup_same_library_views(metadata, process_cleanup_proven=True)
@@ -1662,7 +1666,7 @@ def compact_source_guard(proof):
     libraries = proof.get("libraries") or []
     changed = [row for row in libraries if row.get("unchanged") is False]
     rows = []
-    result = {"schema_version": "crescendo.source_guard_diagnostic.v1", "ok": proof.get("ok"),
+    result = {"schema_version": _contract_text("crescendo.source_guard_diagnostic.v1"), "ok": proof.get("ok"),
         "libraries": rows, "total_libraries": len(libraries), "changed_libraries": len(changed),
         "omitted_changed_libraries": 0,
         "scope": "bounded source content evidence; timestamps and diagnostics do not define source identity"}
@@ -1738,15 +1742,15 @@ def _skill_quote(value):
 def _workspace_startup_load_lines(workspace):
     init_path = os.path.join(os.path.abspath(workspace["root"]), ".cdsinit")
     return [
-        "unless(boundp('crescWorkspaceStartupLoaded)",
+        _contract_text("unless(boundp('crescWorkspaceStartupLoaded)"),
         '  load("%s")' % _skill_quote(init_path),
         ")",
-        "unless(boundp('crescWorkspaceStartupLoaded) && crescWorkspaceStartupLoaded "
-        'error("Crescendo private workspace startup did not complete\\n"))',
+        _contract_text("unless(boundp('crescWorkspaceStartupLoaded) && crescWorkspaceStartupLoaded "
+        'error("Crescendo private workspace startup did not complete\\n"))'),
     ]
 
 
-def bounded_skill_body_lines(lines, result_name="crescSkillBodyResult", max_forms=128,
+def bounded_skill_body_lines(lines, result_name=_contract_text("crescSkillBodyResult"), max_forms=128,
                              max_bytes=65536):
     """Render ordered complete expressions with a bounded, latched errset.
 
@@ -1821,7 +1825,7 @@ def bounded_skill_body_lines(lines, result_name="crescSkillBodyResult", max_form
             "  %sblock = %d" % (prefix, number),
             "  %sfirstLine = %d" % (prefix, rows[0][0]),
             "  %slastLine = %d" % (prefix, rows[-1][1]),
-            '  printf("CRESCENDO_SKILL_BLOCK %s %%L/%%L lines=%%L..%%L\\n" %sblock %d %sfirstLine %slastLine)' % (
+            _contract_text('  printf("CRESCENDO_SKILL_BLOCK %s %%L/%%L lines=%%L..%%L\\n" %sblock %d %sfirstLine %slastLine)') % (
                 result_name, prefix, len(chunks), prefix, prefix),
             ")",
             "%sallowed = %s" % (prefix, result_name),
@@ -1831,7 +1835,7 @@ def bounded_skill_body_lines(lines, result_name="crescSkillBodyResult", max_form
         ])
         rendered.extend(line for row in rows for line in row[2])
         rendered.extend(["    t", "  ) t)", ")"])
-    return rendered, {"schema_version": "crescendo.bounded_skill.v1",
+    return rendered, {"schema_version": _contract_text("crescendo.bounded_skill.v1"),
                       "block_count": len(chunks), "expression_count": len(forms),
                       "body_line_count": len(lines), "body_bytes": len(("\n".join(lines) + "\n").encode("utf-8")),
                       "max_forms_per_block": int(max_forms), "max_bytes_per_block": int(max_bytes)}
@@ -1852,7 +1856,7 @@ def _clone_cell_name(parameter, occurrence):
         occurrence_path, master.get("master_library"), master.get("master_cell"),
     )))
     digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
-    name = "cr_%s_%s" % (base, digest)
+    name = _contract_text("cr_%s_%s") % (base, digest)
     if len(name) > MAX_CLONE_CELL_NAME:
         raise ParameterApplicationFailure("generated clone cell name exceeds %d characters: %s" % (MAX_CLONE_CELL_NAME, name))
     return name
@@ -1967,15 +1971,15 @@ def _cdf_snapshot_skill(record_kind, parameter_id):
         'snapshotPairs = snapshotRawMappings',
         'when(snapshotPairs && car(snapshotPairs) == nil snapshotPairs = cdr(snapshotPairs))',
         'while(snapshotPairs',
-        '  unless(cdr(snapshotPairs) error("CRESCENDO_ADAPTER_ERROR:cdf_parameter_mapping_incompatible odd Spectre propMapping length\\n"))',
+        _contract_text('  unless(cdr(snapshotPairs) error("CRESCENDO_ADAPTER_ERROR:cdf_parameter_mapping_incompatible odd Spectre propMapping length\\n"))'),
         '  snapshotNetName = car(snapshotPairs)',
         '  snapshotCdfName = cadr(snapshotPairs)',
-        '  unless((symbolp(snapshotNetName) || stringp(snapshotNetName)) && (symbolp(snapshotCdfName) || stringp(snapshotCdfName)) error("CRESCENDO_ADAPTER_ERROR:cdf_parameter_mapping_incompatible non-name Spectre propMapping entry\\n"))',
+        _contract_text('  unless((symbolp(snapshotNetName) || stringp(snapshotNetName)) && (symbolp(snapshotCdfName) || stringp(snapshotCdfName)) error("CRESCENDO_ADAPTER_ERROR:cdf_parameter_mapping_incompatible non-name Spectre propMapping entry\\n"))'),
         '  snapshotNetSymbol = if(stringp(snapshotNetName) then stringToSymbol(snapshotNetName) else snapshotNetName)',
         '  snapshotCdfSymbol = if(stringp(snapshotCdfName) then stringToSymbol(snapshotCdfName) else snapshotCdfName)',
-        '  when(assoc(snapshotNetSymbol snapshotMappingRows) error("CRESCENDO_ADAPTER_ERROR:cdf_parameter_mapping_incompatible duplicate Spectre propMapping target %L\\n" snapshotNetSymbol))',
+        _contract_text('  when(assoc(snapshotNetSymbol snapshotMappingRows) error("CRESCENDO_ADAPTER_ERROR:cdf_parameter_mapping_incompatible duplicate Spectre propMapping target %L\\n" snapshotNetSymbol))'),
         '  snapshotMappingRows = cons(list(snapshotNetSymbol snapshotCdfSymbol) snapshotMappingRows)',
-        '  fprintf(crescVerify "%s_MAP\\t%%L\\t%%L\\t%%L\\n" "%s" snapshotCdfSymbol snapshotNetSymbol)' % (
+        _contract_text('  fprintf(crescVerify "%s_MAP\\t%%L\\t%%L\\t%%L\\n" "%s" snapshotCdfSymbol snapshotNetSymbol)') % (
             record_kind, _skill_quote(parameter_id),
         ),
         '  snapshotPairs = cddr(snapshotPairs)',
@@ -1988,7 +1992,7 @@ def _cdf_snapshot_skill(record_kind, parameter_id):
         '  effectiveFields = if(effectiveParam then errset(list(snapshotSymbol effectiveParam~>value)) else nil)',
         '  when(effectiveFields',
         '    effectiveFields = car(effectiveFields)',
-        '    fprintf(crescVerify "%s\\t%%L\\t%%L\\t%%L\\n" "%s" car(effectiveFields) cadr(effectiveFields))' % (
+        _contract_text('    fprintf(crescVerify "%s\\t%%L\\t%%L\\t%%L\\n" "%s" car(effectiveFields) cadr(effectiveFields))') % (
             record_kind, _skill_quote(parameter_id),
         ),
         '  )',
@@ -2068,8 +2072,8 @@ def write_parameter_snapshot(workspace, parameters, values, output_path, verific
         workspace, parameters, values, target_mode, clone_state=clone_state,
     )
     lines = [
-        'printf("CRESCENDO_SNAPSHOT_BEGIN\\n")',
-        'crescVerify = outfile("%s")' % _skill_quote(verification_path),
+        _contract_text('printf("CRESCENDO_SNAPSHOT_BEGIN\\n")'),
+        _contract_text('crescVerify = outfile("%s")') % _skill_quote(verification_path),
     ]
     grouped = {}
     for row in rows:
@@ -2078,11 +2082,11 @@ def write_parameter_snapshot(workspace, parameters, values, output_path, verific
         lines.append('cv = dbOpenCellViewByType("%s" "%s" "%s" "%s" "r")' % (
             _skill_quote(library), _skill_quote(cell), _skill_quote(view), _skill_quote(view_type),
         ))
-        lines.append('unless(cv error("Crescendo cannot open snapshot cell %s/%s/schematic\\n"))' % (
+        lines.append(_contract_text('unless(cv error("Crescendo cannot open snapshot cell %s/%s/schematic\\n"))') % (
             _skill_quote(library), _skill_quote(cell),
         ))
         lines.append('snapshotInstances = setof(item cv~>instances item~>name == "%s")' % _skill_quote(instance_name))
-        lines.append('unless(length(snapshotInstances) == 1 error("Crescendo snapshot instance is not unique: %s/%s/%s count=%%L\\n" length(snapshotInstances)))' % (
+        lines.append(_contract_text('unless(length(snapshotInstances) == 1 error("Crescendo snapshot instance is not unique: %s/%s/%s count=%%L\\n" length(snapshotInstances)))') % (
             _skill_quote(library), _skill_quote(cell), _skill_quote(instance_name),
         ))
         lines.extend([
@@ -2093,24 +2097,24 @@ def write_parameter_snapshot(workspace, parameters, values, output_path, verific
             lines.extend([
                 'snapshotProp = dbFindProp(inst "%s")' % _skill_quote(row["property"]),
                 'snapshotCdfParam = get(cdfgData stringToSymbol("%s"))' % _skill_quote(row["property"]),
-                'unless(snapshotCdfParam error("Crescendo snapshot CDF parameter is missing: %s\\n"))' % _skill_quote(row["property"]),
+                _contract_text('unless(snapshotCdfParam error("Crescendo snapshot CDF parameter is missing: %s\\n"))') % _skill_quote(row["property"]),
                 'snapshotValue = if(snapshotProp then snapshotProp~>value else snapshotCdfParam~>value)',
-                'fprintf(crescVerify "%s_DIRECT\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" "%s" "%s" snapshotValue snapshotCdfParam~>value)' % (
+                _contract_text('fprintf(crescVerify "%s_DIRECT\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" "%s" "%s" snapshotValue snapshotCdfParam~>value)') % (
                     record_kind, _skill_quote(row["parameter_id"]), _skill_quote(library),
                     _skill_quote(cell), _skill_quote(instance_name), _skill_quote(row["property"]),
                 ),
             ])
             lines.extend(_cdf_snapshot_skill(record_kind, row["parameter_id"]))
         lines.append('dbClose(cv)')
-    lines.append('close(crescVerify)')
-    lines, generation = bounded_skill_body_lines(lines, "crescParameterSnapshotResult")
-    lines.extend(['unless(crescParameterSnapshotResult crescGeneratedPhaseFailed = t)',
-                  'if(crescParameterSnapshotResult then',
-                  '  printf("CRESCENDO_SNAPSHOT_DONE\\n")',
+    lines.append(_contract_text('close(crescVerify)'))
+    lines, generation = bounded_skill_body_lines(lines, _contract_text("crescParameterSnapshotResult"))
+    lines.extend([_contract_text('unless(crescParameterSnapshotResult crescGeneratedPhaseFailed = t)'),
+                  _contract_text('if(crescParameterSnapshotResult then'),
+                  _contract_text('  printf("CRESCENDO_SNAPSHOT_DONE\\n")'),
                   'else',
-                  '  error("Crescendo parameter snapshot failed; see preceding native error\\n")', ')'])
+                  _contract_text('  error("Crescendo parameter snapshot failed; see preceding native error\\n")'), ')'])
     if exit_after:
-        lines.append('exit(if(crescParameterSnapshotResult then 0 else 1))')
+        lines.append(_contract_text('exit(if(crescParameterSnapshotResult then 0 else 1))'))
     atomic_write_text(output_path, "\n".join(lines) + "\n")
     return {
         "clones": clone_plan if target_mode == "patched" else [],
@@ -2145,17 +2149,17 @@ def write_schematic_patch(workspace, parameters, values, output_path, verificati
                 code="cdf_update_api_incompatible",
             )
     lines = [
-        'printf("CRESCENDO_PATCH_BEGIN\\n")',
-        'crescVerify = outfile("%s")' % _skill_quote(verification_path),
+        _contract_text('printf("CRESCENDO_PATCH_BEGIN\\n")'),
+        _contract_text('crescVerify = outfile("%s")') % _skill_quote(verification_path),
     ]
     if adapter_path:
         lines.extend([
             'load("%s")' % _skill_quote(adapter_path),
-            'unless(isCallable(\'crescPdkApplyParameter) error("CRESCENDO_ADAPTER_ERROR:cdf_update_api_incompatible PDK adapter must define crescPdkApplyParameter\\n"))',
+            (_contract_text('unless(isCallable(\'crescPdkApplyParameter) error("CRESCENDO_ADAPTER_ERROR:cdf_update_api_incompatible PDK adapter must define crescPdkApplyParameter\\n"))')).replace(_contract_text("crescPdkApplyParameter"), adapter_entry_symbol(adapter_path)),
         ])
     emitted_clones = [clone for clone in clone_plan if not clone["clone_preexisting"]]
     if workspace.get("copy_policy") == "same_library_views" and emit_clones:
-        lines.extend(same_library_copy_lines(emitted_clones, "crescVerify"))
+        lines.extend(same_library_copy_lines(emitted_clones, _contract_text("crescVerify")))
     for clone in emitted_clones if emit_clones else []:
         if clone.get("same_library_view"):
             continue
@@ -2169,13 +2173,13 @@ def write_schematic_patch(workspace, parameters, values, output_path, verificati
                 _skill_quote(source_library), _skill_quote(source_cell),
                 _skill_quote(view), _skill_quote(view_type),
             ))
-            lines.append('unless(srcCv error("Crescendo cannot open clone source %s/%s/%s\\n"))' % (
+            lines.append(_contract_text('unless(srcCv error("Crescendo cannot open clone source %s/%s/%s\\n"))') % (
                 _skill_quote(clone["source_library"]), _skill_quote(clone["source_cell"]), _skill_quote(view),
             ))
             lines.append('dstCv = dbCopyCellView(srcCv "%s" "%s" "%s")' % (
                 _skill_quote(clone["clone_library"]), _skill_quote(clone["clone_cell"]), _skill_quote(view),
             ))
-            lines.append('unless(dstCv error("Crescendo failed to clone %s/%s/%s\\n"))' % (
+            lines.append(_contract_text('unless(dstCv error("Crescendo failed to clone %s/%s/%s\\n"))') % (
                 _skill_quote(clone["source_library"]), _skill_quote(clone["source_cell"]), _skill_quote(view),
             ))
             lines.extend(['dbClose(srcCv)', 'dbClose(dstCv)'])
@@ -2184,15 +2188,15 @@ def write_schematic_patch(workspace, parameters, values, output_path, verificati
             _skill_quote(clone["parent_library"]), _skill_quote(clone["parent_cell"]),
             _skill_quote(clone.get("parent_view", "schematic")), _skill_quote(clone.get("parent_view_type", "schematic")),
         ))
-        lines.append('unless(parentCv error("Crescendo cannot open clone parent %s/%s/schematic\\n"))' % (
+        lines.append(_contract_text('unless(parentCv error("Crescendo cannot open clone parent %s/%s/schematic\\n"))') % (
             _skill_quote(clone["parent_library"]), _skill_quote(clone["parent_cell"]),
         ))
         lines.append('oldInst = car(setof(item parentCv~>instances item~>name == "%s"))' % _skill_quote(clone["instance"]))
-        lines.append('unless(oldInst error("Crescendo missing occurrence instance %s in %s/%s\\n"))' % (
+        lines.append(_contract_text('unless(oldInst error("Crescendo missing occurrence instance %s in %s/%s\\n"))') % (
             _skill_quote(clone["instance"]), _skill_quote(clone["parent_library"]), _skill_quote(clone["parent_cell"]),
         ))
-        lines.append('unless(oldInst~>objType == "inst" error("Crescendo does not support independent cloning of arrays/mosaics: %s\\n"))' % _skill_quote(clone["occurrence_path"]))
-        lines.append('when(oldInst~>magnification && oldInst~>magnification != 1.0 error("Crescendo does not support magnified hierarchical instances: %s\\n"))' % _skill_quote(clone["occurrence_path"]))
+        lines.append(_contract_text('unless(oldInst~>objType == "inst" error("Crescendo does not support independent cloning of arrays/mosaics: %s\\n"))') % _skill_quote(clone["occurrence_path"]))
+        lines.append(_contract_text('when(oldInst~>magnification && oldInst~>magnification != 1.0 error("Crescendo does not support magnified hierarchical instances: %s\\n"))') % _skill_quote(clone["occurrence_path"]))
         lines.extend([
             'oldName = oldInst~>name',
             'oldXY = oldInst~>xy',
@@ -2205,35 +2209,35 @@ def write_schematic_patch(workspace, parameters, values, output_path, verificati
             _skill_quote(clone["clone_library"]), _skill_quote(clone["clone_cell"]),
             _skill_quote(clone["master_view"]), _skill_quote(clone["master_view_type"]),
         ))
-        lines.append('unless(cloneMaster error("Crescendo cannot open cloned master %s/%s/%s\\n"))' % (
+        lines.append(_contract_text('unless(cloneMaster error("Crescendo cannot open cloned master %s/%s/%s\\n"))') % (
             _skill_quote(clone["clone_library"]), _skill_quote(clone["clone_cell"]), _skill_quote(clone["master_view"]),
         ))
         lines.extend([
             'newInst = dbCreateParamInst(parentCv cloneMaster oldName oldXY oldOrient 1 oldParams)',
-            'unless(newInst error("Crescendo failed to recreate independent occurrence\\n"))',
+            _contract_text('unless(newInst error("Crescendo failed to recreate independent occurrence\\n"))'),
             'schCheck(parentCv)',
-            'unless(newInst~>name == oldName && newInst~>xy == oldXY && newInst~>orient == oldOrient error("Crescendo recreated occurrence geometry mismatch\\n"))',
+            _contract_text('unless(newInst~>name == oldName && newInst~>xy == oldXY && newInst~>orient == oldOrient error("Crescendo recreated occurrence geometry mismatch\\n"))'),
         ])
-        lines.append('unless(newInst~>master~>libName == "%s" && newInst~>master~>cellName == "%s" && newInst~>master~>viewName == "%s" error("Crescendo recreated occurrence master mismatch\\n"))' % (
+        lines.append(_contract_text('unless(newInst~>master~>libName == "%s" && newInst~>master~>cellName == "%s" && newInst~>master~>viewName == "%s" error("Crescendo recreated occurrence master mismatch\\n"))') % (
             _skill_quote(clone["clone_library"]), _skill_quote(clone["clone_cell"]), _skill_quote(clone["master_view"]),
         ))
         lines.extend([
-            'unless(length(newInst~>instTerms) == length(oldConnections) error("Crescendo recreated occurrence terminal count mismatch\\n"))',
+            _contract_text('unless(length(newInst~>instTerms) == length(oldConnections) error("Crescendo recreated occurrence terminal count mismatch\\n"))'),
             'foreach(connection oldConnections',
             '  newTerm = car(setof(term newInst~>instTerms term~>term~>name == car(connection)))',
-            '  unless(newTerm error("Crescendo recreated occurrence missing terminal %L\\n" car(connection)))',
+            _contract_text('  unless(newTerm error("Crescendo recreated occurrence missing terminal %L\\n" car(connection)))'),
             '  newNetName = if(newTerm~>net then newTerm~>net~>name else nil)',
-            '  unless(equal(newNetName cadr(connection)) error("Crescendo recreated occurrence connectivity mismatch at %L\\n" car(connection)))',
+            _contract_text('  unless(equal(newNetName cadr(connection)) error("Crescendo recreated occurrence connectivity mismatch at %L\\n" car(connection)))'),
             ')',
             'foreach(paramRow oldParams',
             '  newProp = dbFindProp(newInst car(paramRow))',
-            '  unless(newProp && equal(newProp~>value caddr(paramRow)) error("Crescendo recreated occurrence property mismatch at %L\\n" car(paramRow)))',
+            _contract_text('  unless(newProp && equal(newProp~>value caddr(paramRow)) error("Crescendo recreated occurrence property mismatch at %L\\n" car(paramRow)))'),
             ')',
-            'unless(dbSave(parentCv) error("Crescendo failed to save clone parent\\n"))',
+            _contract_text('unless(dbSave(parentCv) error("Crescendo failed to save clone parent\\n"))'),
             'dbClose(parentCv)',
             'dbClose(cloneMaster)',
         ])
-        lines.append('fprintf(crescVerify "CLONE\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" "%s")' % (
+        lines.append(_contract_text('fprintf(crescVerify "CLONE\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" "%s")') % (
             _skill_quote(clone["occurrence_path"]), _skill_quote(clone["source_cell"]),
             _skill_quote(clone["clone_cell"]), _skill_quote(clone["parent_cell"]),
         ))
@@ -2242,7 +2246,7 @@ def write_schematic_patch(workspace, parameters, values, output_path, verificati
         grouped.setdefault((row["library"], row["cell"], row.get("view", "schematic"), row.get("view_type", "schematic")), []).append(row)
     for (library, cell, view, view_type), rows in sorted(grouped.items()) if emit_parameters else []:
         lines.append('cv = dbOpenCellViewByType("%s" "%s" "%s" "%s" "a")' % (_skill_quote(library), _skill_quote(cell), _skill_quote(view), _skill_quote(view_type)))
-        lines.append('unless(cv error("Crescendo cannot open copied cell %s/%s/schematic\\n"))' % (_skill_quote(library), _skill_quote(cell)))
+        lines.append(_contract_text('unless(cv error("Crescendo cannot open copied cell %s/%s/schematic\\n"))') % (_skill_quote(library), _skill_quote(cell)))
         instance_groups = {}
         for row in rows:
             instance_groups.setdefault(row["instance"], []).append(row)
@@ -2251,7 +2255,7 @@ def write_schematic_patch(workspace, parameters, values, output_path, verificati
             for row in instance_rows:
                 row["instance_selected_count"] = len(instance_rows)
             lines.append('inst = car(setof(item cv~>instances item~>name == "%s"))' % _skill_quote(instance_name))
-            lines.append('unless(inst error("Crescendo missing instance %s in %s/%s\\n"))' % (_skill_quote(instance_name), _skill_quote(library), _skill_quote(cell)))
+            lines.append(_contract_text('unless(inst error("Crescendo missing instance %s in %s/%s\\n"))') % (_skill_quote(instance_name), _skill_quote(library), _skill_quote(cell)))
             lines.extend([
                 'cdfgData = cdfGetInstCDF(inst)',
                 'baseCdf = cdfGetBaseCellCDF(ddGetObj(inst~>master~>libName inst~>master~>cellName))',
@@ -2264,33 +2268,33 @@ def write_schematic_patch(workspace, parameters, values, output_path, verificati
                 literal = _skill_literal(row["value"], row["prop_type"])
                 lines.extend([
                     'cdfResult = errset(cdfGetInstCDF(inst) t)',
-                    'unless(cdfResult && car(cdfResult) error("Crescendo cannot obtain instance CDF for parameter callback\\n"))',
+                    _contract_text('unless(cdfResult && car(cdfResult) error("Crescendo cannot obtain instance CDF for parameter callback\\n"))'),
                     'cdfgData = car(cdfResult)',
                     'cdfParam = get(cdfgData stringToSymbol("%s"))' % _skill_quote(row["property"]),
-                    'unless(cdfParam error("Crescendo CDF parameter disappeared after update: %s\\n"))' % _skill_quote(row["property"]),
+                    _contract_text('unless(cdfParam error("Crescendo CDF parameter disappeared after update: %s\\n"))') % _skill_quote(row["property"]),
                     'cdfParam~>value = %s' % literal,
                 ])
                 if adapter_path:
                     lines.extend([
-                        'callbackResult = errset(crescPdkApplyParameter(inst "%s" %s) t)' % (_skill_quote(row["property"]), literal),
-                        'unless(callbackResult && car(callbackResult) error("CRESCENDO_ADAPTER_ERROR:cdf_parameter_mapping_incompatible PDK adapter failed for %s\\n"))' % _skill_quote(row["property"]),
+                        (_contract_text('callbackResult = errset(crescPdkApplyParameter(inst "%s" %s) t)')).replace(_contract_text("crescPdkApplyParameter"), adapter_entry_symbol(adapter_path)) % (_skill_quote(row["property"]), literal),
+                        _contract_text('unless(callbackResult && car(callbackResult) error("CRESCENDO_ADAPTER_ERROR:cdf_parameter_mapping_incompatible PDK adapter failed for %s\\n"))') % _skill_quote(row["property"]),
                     ])
                 else:
                     lines.extend([
                         'callbackExpr = cdfParam~>callback',
                         'when(callbackExpr && callbackExpr != ""',
-                        "  crescCallbackDefaultValue = get(cdfParam 'defValue)",
-                        '  crescCallbackDefaultPresent = numberp(crescCallbackDefaultValue) || stringp(crescCallbackDefaultValue)',
+                        _contract_text("  crescCallbackDefaultValue = get(cdfParam 'defValue)"),
+                        _contract_text('  crescCallbackDefaultPresent = numberp(crescCallbackDefaultValue) || stringp(crescCallbackDefaultValue)'),
                     ])
                     lines.extend(callback_failure_lines(
                         row, literal, library, cell, view, instance_name,
                         [item["property"] for item in instance_rows], _skill_quote))
                     lines.extend([
-                        '  crescCallbackEffectiveValue = cdfParam~>value',
+                        _contract_text('  crescCallbackEffectiveValue = cdfParam~>value'),
                         ')',
                         'when(isCallable(\'cdfUpdateInstParam)',
                         '  updateResult = errset(cdfUpdateInstParam(inst) t)',
-                        '  unless(updateResult error("CRESCENDO_ADAPTER_ERROR:cdf_update_api_incompatible cdfUpdateInstParam failed for %s\\n"))' % _skill_quote(row["property"]),
+                        _contract_text('  unless(updateResult error("CRESCENDO_ADAPTER_ERROR:cdf_update_api_incompatible cdfUpdateInstParam failed for %s\\n"))') % _skill_quote(row["property"]),
                         ')',
                     ])
                     lines.extend(callback_value_proof_lines(row, _skill_quote))
@@ -2300,7 +2304,7 @@ def write_schematic_patch(workspace, parameters, values, output_path, verificati
                     'schematicProp = dbFindProp(inst "%s")' % _skill_quote(row["property"]),
                     'cdfgData = cdfGetInstCDF(inst)',
                     'cdfParam = get(cdfgData stringToSymbol("%s"))' % _skill_quote(row["property"]),
-                    'unless(cdfParam error("Crescendo updated CDF parameter is missing: %s\\n"))' % _skill_quote(row["property"]),
+                    _contract_text('unless(cdfParam error("Crescendo updated CDF parameter is missing: %s\\n"))') % _skill_quote(row["property"]),
                     'schematicValue = if(schematicProp then schematicProp~>value else cdfParam~>value)',
                 ])
                 if adapter_path:
@@ -2311,15 +2315,15 @@ def write_schematic_patch(workspace, parameters, values, output_path, verificati
                         'callbackStatus = if(callbackExpr && callbackExpr != "" then "executed" else "not_defined")',
                     ])
                 lines.extend([
-                    'fprintf(crescVerify "PARAM\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" %s schematicValue cdfParam~>value callbackStatus callbackExpr)' % (
+                    _contract_text('fprintf(crescVerify "PARAM\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" %s schematicValue cdfParam~>value callbackStatus callbackExpr)') % (
                         _skill_quote(row["parameter_id"]), literal,
                     ),
-                    'printf("CRESCENDO_PATCH %%s/%%s %%s=%%L id=%%s\\n" "%s" "%s" "%s" %s "%s")' % (
+                    _contract_text('printf("CRESCENDO_PATCH %%s/%%s %%s=%%L id=%%s\\n" "%s" "%s" "%s" %s "%s")') % (
                         _skill_quote(cell), _skill_quote(row["instance"]), _skill_quote(row["property"]), literal, _skill_quote(row["parameter_id"])
                     ),
                 ])
         lines.append('schCheck(cv)')
-        lines.append('unless(dbSave(cv) error("Crescendo failed to save copied cell %s/%s\\n"))' % (_skill_quote(library), _skill_quote(cell)))
+        lines.append(_contract_text('unless(dbSave(cv) error("Crescendo failed to save copied cell %s/%s\\n"))') % (_skill_quote(library), _skill_quote(cell)))
         lines.append('dbClose(cv)')
     native_config_plan = []
     config_records = verification_path + ".config"
@@ -2330,15 +2334,15 @@ def write_schematic_patch(workspace, parameters, values, output_path, verificati
     if emit_parameters and parameter_rows:
         from .optimized_schematic import export_snapshot_skill
         lines.extend(export_snapshot_skill(parameter_rows, export_snapshot_path))
-    lines.append('close(crescVerify)')
-    lines, generation = bounded_skill_body_lines(lines, "crescSchematicPatchResult")
-    lines.extend(['unless(crescSchematicPatchResult crescGeneratedPhaseFailed = t)',
-                  'if(crescSchematicPatchResult then',
-                  '  printf("CRESCENDO_PATCH_DONE\\n")',
+    lines.append(_contract_text('close(crescVerify)'))
+    lines, generation = bounded_skill_body_lines(lines, _contract_text("crescSchematicPatchResult"))
+    lines.extend([_contract_text('unless(crescSchematicPatchResult crescGeneratedPhaseFailed = t)'),
+                  _contract_text('if(crescSchematicPatchResult then'),
+                  _contract_text('  printf("CRESCENDO_PATCH_DONE\\n")'),
                   'else',
-                  '  error("Crescendo schematic patch failed; see preceding native error\\n")', ')'])
+                  _contract_text('  error("Crescendo schematic patch failed; see preceding native error\\n")'), ')'])
     if exit_after:
-        lines.append('exit(if(crescSchematicPatchResult then 0 else 1))')
+        lines.append(_contract_text('exit(if(crescSchematicPatchResult then 0 else 1))'))
     atomic_write_text(output_path, "\n".join(lines) + "\n")
     return {
         "clones": emitted_clones if emit_clones else [],
@@ -2353,22 +2357,22 @@ def write_schematic_patch(workspace, parameters, values, output_path, verificati
 
 
 def write_combined_cadence_script(output_path, phase_scripts, exit_after=True):
-    lines = ['printf("CRESCENDO_COMBINED_BEGIN\\n")']
+    lines = [_contract_text('printf("CRESCENDO_COMBINED_BEGIN\\n")')]
     for phase_name, script_path in phase_scripts:
-        lines.append('printf("CRESCENDO_PHASE_BEGIN %s\\n")' % _skill_quote(phase_name))
+        lines.append(_contract_text('printf("CRESCENDO_PHASE_BEGIN %s\\n")') % _skill_quote(phase_name))
         if exit_after:
             lines.extend([
-                'crescGeneratedPhaseFailed = nil',
-                'crescCombinedPhaseResult = errset(load("%s") t)' % _skill_quote(script_path),
-                'unless(crescCombinedPhaseResult && !crescGeneratedPhaseFailed',
-                '  printf("CRESCENDO_PHASE_FAILED %s\\n")' % _skill_quote(phase_name),
+                _contract_text('crescGeneratedPhaseFailed = nil'),
+                _contract_text('crescCombinedPhaseResult = errset(load("%s") t)') % _skill_quote(script_path),
+                _contract_text('unless(crescCombinedPhaseResult && !crescGeneratedPhaseFailed'),
+                _contract_text('  printf("CRESCENDO_PHASE_FAILED %s\\n")') % _skill_quote(phase_name),
                 '  exit(1)',
                 ')',
             ])
         else:
             lines.append('load("%s")' % _skill_quote(script_path))
-        lines.append('printf("CRESCENDO_PHASE_DONE %s\\n")' % _skill_quote(phase_name))
-    lines.append('printf("CRESCENDO_COMBINED_DONE\\n")')
+        lines.append(_contract_text('printf("CRESCENDO_PHASE_DONE %s\\n")') % _skill_quote(phase_name))
+    lines.append(_contract_text('printf("CRESCENDO_COMBINED_DONE\\n")'))
     if exit_after:
         lines.append('exit()')
     atomic_write_text(output_path, "\n".join(lines) + "\n")
@@ -2899,7 +2903,7 @@ def apply_candidate(workspace, config, parameters, values, candidate_root, timeo
             "active_seconds": max(0.0, elapsed_seconds - lock_wait_seconds),
         },
     }
-    atomic_write_json(os.path.join(candidate_root, "candidate_patch.json"), result)
+    atomic_write_json(os.path.join(candidate_root, _contract_text("candidate_patch.json")), result)
     if command and command.get("termination_failed"):
         error = ParameterApplicationInfrastructureFailure(
             "copied schematic patch/callback process cleanup could not be proven during %s"
@@ -2966,9 +2970,9 @@ def _history_identity(workspace, candidate_root):
     candidate_token = re.sub(r"[^A-Za-z0-9_]+", "_", candidate_name).strip("_") or "candidate"
     attempt_token = re.sub(r"[^A-Za-z0-9_]+", "_", attempt_name).strip("_") or "run"
     digest = hashlib.sha256((os.path.realpath(workspace["root"]) + "\0" + candidate_root).encode("utf-8")).hexdigest()[:10]
-    history_name = "CRESCENDO_%s_%s_%s" % (candidate_token[:20], attempt_token[:12], digest)
+    history_name = _contract_text("CRESCENDO_%s_%s_%s") % (candidate_token[:20], attempt_token[:12], digest)
     return {
-        "schema_version": "crescendo.history_identity.v1",
+        "schema_version": _contract_text("crescendo.history_identity.v1"),
         "history_name": history_name,
         "candidate_token": candidate_token,
         "attempt_token": attempt_token,
@@ -2990,7 +2994,7 @@ def write_batch_files(workspace, config, history_name=None):
     submit_script = config.get("runtime", {}).get(
         "spectre_submit_script"
     ) or submit_spectre_script_path()
-    wrapper = '''#!/bin/sh
+    wrapper = _contract_text('''#!/bin/sh
 real_spectre="${CRESCENDO_REAL_SIMULATOR_BIN:-${CRESCENDO_REAL_SPECTRE_BIN:-}}"
 submit_script="${CRESCENDO_SPECTRE_SUBMIT_SCRIPT:-}"
 if [ -z "$real_spectre" ]; then real_spectre=%s; fi
@@ -3007,14 +3011,14 @@ case "${CRESCENDO_SIMULATION_HOME_SET-unrecorded}" in
 esac
 unset CRESCENDO_SIMULATION_HOME_SET CRESCENDO_SIMULATION_HOME_VALUE
 exec "$submit_script" "$real_spectre" "$@"
-''' % (shlex.quote(str(real_spectre)), shlex.quote(str(submit_script)))
+''') % (shlex.quote(str(real_spectre)), shlex.quote(str(submit_script)))
     atomic_write_text(wrapper_path, wrapper)
     os.chmod(wrapper_path, os.stat(wrapper_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     setup_library = workspace["primary_library"]
     setup_cell = workspace["setup_cell"]
     ocn_path = os.path.join(root, "run_maestro.ocn")
-    history_name = history_name or "CRESCENDO_batch"
-    ocn_lines = [';; Crescendo isolated Maestro batch run.']
+    history_name = history_name or _contract_text("CRESCENDO_batch")
+    ocn_lines = [_contract_text(';; Crescendo isolated Maestro batch run.')]
     ocn_lines.extend(_workspace_startup_load_lines(workspace))
     ocn_lines.extend([
         'session = maeOpenSetup("%s" "%s" "%s" ?mode "a")' % (
@@ -3031,7 +3035,7 @@ exec "$submit_script" "$real_spectre" "$@"
         "maeWaitUntilDone('All ?session session)",
         'runData = axlGetRunData(session runId)',
         'axlSetHistoryName(runData "%s")' % _skill_quote(history_name),
-        'unless(equal(axlGetHistoryName(runData) "%s") error("Crescendo history rename failed"))'
+        _contract_text('unless(equal(axlGetHistoryName(runData) "%s") error("Crescendo history rename failed"))')
         % _skill_quote(history_name),
         'maeExportOutputView(?session session)',
         "maeWaitUntilDone('All ?session session)",
@@ -3097,20 +3101,20 @@ def run_maestro(workspace, config, candidate_root, timeout_seconds=None,
     candidate_root = ensure_dir(candidate_root)
     reset_results(workspace)
     identity = _history_identity(workspace, candidate_root)
-    atomic_write_json(os.path.join(candidate_root, "run_identity.json"), identity)
+    atomic_write_json(os.path.join(candidate_root, _contract_text("run_identity.json")), identity)
     batch = write_batch_files(workspace, config, history_name=identity["history_name"])
     env = child_environment(config, workspace["root"], include_runtime_ld=True, extra={
         "PATH": os.path.dirname(batch["spectre_wrapper"]) + ":" + child_environment(config, workspace["root"])["PATH"],
-        "CRESCENDO_SIMULATION_TIMEOUT_SECONDS": config["runtime"].get("simulation_timeout_seconds", 900),
-        "CRESCENDO_REAL_SIMULATOR_BIN": config["cadence"][batch["execution_simulator"] + "_bin"],
-        "CRESCENDO_REAL_SPECTRE_BIN": config["cadence"][batch["execution_simulator"] + "_bin"],
-        "CRESCENDO_EXECUTION_SIMULATOR": batch["execution_simulator"],
-        "CRESCENDO_CADENCE_ROOT": config["cadence"].get("cadence_root") or "",
-        "CRESCENDO_SPECTRE_TIMEOUT_LOG": os.path.join(candidate_root, "spectre_timeout.log"),
-        "CRESCENDO_SPECTRE_RETAIN_ROOT": os.path.abspath(
+        _contract_text("CRESCENDO_SIMULATION_TIMEOUT_SECONDS"): config["runtime"].get("simulation_timeout_seconds", 900),
+        _contract_text("CRESCENDO_REAL_SIMULATOR_BIN"): config["cadence"][batch["execution_simulator"] + "_bin"],
+        _contract_text("CRESCENDO_REAL_SPECTRE_BIN"): config["cadence"][batch["execution_simulator"] + "_bin"],
+        _contract_text("CRESCENDO_EXECUTION_SIMULATOR"): batch["execution_simulator"],
+        _contract_text("CRESCENDO_CADENCE_ROOT"): config["cadence"].get("cadence_root") or "",
+        _contract_text("CRESCENDO_SPECTRE_TIMEOUT_LOG"): os.path.join(candidate_root, _contract_text("spectre_timeout.log")),
+        _contract_text("CRESCENDO_SPECTRE_RETAIN_ROOT"): os.path.abspath(
             retained_log_root or candidate_root
         ),
-        "CRESCENDO_SPECTRE_SUBMIT_SCRIPT": config["runtime"].get(
+        _contract_text("CRESCENDO_SPECTRE_SUBMIT_SCRIPT"): config["runtime"].get(
             "spectre_submit_script"
         ) or submit_spectre_script_path(),
     })
@@ -3118,7 +3122,7 @@ def run_maestro(workspace, config, candidate_root, timeout_seconds=None,
     started_epoch = time.time()
     ocean_command = [config["cadence"]["ocean_bin"], "-nograph", "-restore", batch["ocean_script"]]
     guardian_script = guardian_script_path()
-    guardian_state_path = os.path.join(candidate_root, "guardian_state.json")
+    guardian_state_path = os.path.join(candidate_root, _contract_text("guardian_state.json"))
     guardian_token = "legacy-%s-%s" % (identity["history_name"], uuid.uuid4().hex)
     guardian_stdout_path = os.path.join(candidate_root, "ocean.stdout")
     guardian_stderr_path = os.path.join(candidate_root, "ocean.stderr")
@@ -3149,7 +3153,7 @@ def run_maestro(workspace, config, candidate_root, timeout_seconds=None,
             stdout_path=guardian_stdout_path,
             stderr_path=guardian_stderr_path,
             startup_lock=CADENCE_STARTUP_LOCK,
-            ready_path=os.path.join(candidate_root, "spectre_timeout.log"),
+            ready_path=os.path.join(candidate_root, _contract_text("spectre_timeout.log")),
             startup_timeout_seconds=min(candidate_timeout, int(config["runtime"].get("ocean_startup_timeout_seconds", 90))),
             lock_timeout_seconds=config["runtime"].get("command_timeout_seconds", 1800),
             guardian_state_path=guardian_state_path,
@@ -3163,11 +3167,11 @@ def run_maestro(workspace, config, candidate_root, timeout_seconds=None,
     command["finished_epoch"] = time.time()
     command["history_name"] = identity["history_name"]
     command["history_identity"] = identity
-    command["guardian_manifest_path"] = os.path.join(candidate_root, "legacy_guardian_launch.json")
+    command["guardian_manifest_path"] = os.path.join(candidate_root, _contract_text("legacy_guardian_launch.json"))
     command["guardian_protocol"] = guardian_manifest["protocol"]
-    command["spectre_submit_script"] = env["CRESCENDO_SPECTRE_SUBMIT_SCRIPT"]
+    command["spectre_submit_script"] = env[_contract_text("CRESCENDO_SPECTRE_SUBMIT_SCRIPT")]
     command["spectre_timing"] = summarize_spectre_timing(
-        os.path.join(candidate_root, "spectre_timeout.log"), workspace["root"],
+        os.path.join(candidate_root, _contract_text("spectre_timeout.log")), workspace["root"],
     )
     technology_manifest = workspace.get("technology") or {}
     if (
@@ -3181,9 +3185,9 @@ def run_maestro(workspace, config, candidate_root, timeout_seconds=None,
             command["technology_validation"] = {
                 "ok": False, "status": "failed", "error": str(error),
             }
-            atomic_write_json(os.path.join(candidate_root, "maestro_command.json"), command)
+            atomic_write_json(os.path.join(candidate_root, _contract_text("maestro_command.json")), command)
             raise ParameterApplicationInfrastructureFailure(str(error))
-    atomic_write_json(os.path.join(candidate_root, "maestro_command.json"), command)
+    atomic_write_json(os.path.join(candidate_root, _contract_text("maestro_command.json")), command)
     return command
 
 
@@ -3325,7 +3329,7 @@ def verify_parameter_application(workspace, patch_result, candidate_root, histor
     schematic_rows = schematic.get("parameters") or []
     if not schematic_rows:
         result = {"ok": True, "parameters": [], "netlists": []}
-        atomic_write_json(os.path.join(candidate_root, "parameter_application.json"), result)
+        atomic_write_json(os.path.join(candidate_root, _contract_text("parameter_application.json")), result)
         return result
     netlist_paths = _candidate_netlists(workspace, history_name=history_name)
     if not netlist_paths:
@@ -3429,5 +3433,5 @@ def verify_parameter_application(workspace, patch_result, candidate_root, histor
     if os.path.isfile(snapshot_path):
         from .optimized_schematic import parse_export_snapshot
         result["export_snapshot"] = parse_export_snapshot(snapshot_path)
-    atomic_write_json(os.path.join(candidate_root, "parameter_application.json"), result)
+    atomic_write_json(os.path.join(candidate_root, _contract_text("parameter_application.json")), result)
     return result

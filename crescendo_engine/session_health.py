@@ -1,4 +1,7 @@
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 
 import math
 import os
@@ -269,7 +272,7 @@ def sample_owned_process_tree(root_identities, storage_paths=None, log_paths=Non
             "role": str(identity.get("role") or "root"),
         })
     result = {
-        "schema_version": "crescendo.owned_process_tree_health.v1",
+        "schema_version": _contract_text("crescendo.owned_process_tree_health.v1"),
         "alive": False, "tree_complete": False,
         "pid": roots[0]["pid"] if roots else None,
         "pid_start_ticks": roots[0]["start_ticks"] if roots else None,
@@ -486,7 +489,7 @@ class PersistentSessionHealthGuard(object):
     def _result(self, sample, state, violations):
         rss_limit, fd_limit, max_fd_limit, log_limit = self._limits()
         return {
-            "schema_version": "crescendo.persistent_session_health.v1",
+            "schema_version": _contract_text("crescendo.persistent_session_health.v1"),
             "state": state,
             "triggered": state == "limit_exceeded",
             "sample_count": self.total_samples,

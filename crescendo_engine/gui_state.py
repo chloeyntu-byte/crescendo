@@ -1,4 +1,7 @@
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 
 import math
 import os
@@ -629,30 +632,30 @@ class BackgroundTaskQueue(object):
         self.exit_worker = None
         self.state_lock = threading.Lock()
         self.worker = threading.Thread(
-            target=self._work, args=(self.tasks,), name="crescendo-gui-worker",
+            target=self._work, args=(self.tasks,), name=_contract_text("crescendo-gui-worker"),
         )
         self.worker.daemon = True
         self.worker.start()
         self.control_worker = threading.Thread(
-            target=self._work, args=(self.control_tasks,), name="crescendo-gui-control",
+            target=self._work, args=(self.control_tasks,), name=_contract_text("crescendo-gui-control"),
         )
         self.control_worker.daemon = True
         self.control_worker.start()
-        self.history_worker = threading.Thread(target=self._work, args=(self.history_tasks,), name="crescendo-gui-history")
+        self.history_worker = threading.Thread(target=self._work, args=(self.history_tasks,), name=_contract_text("crescendo-gui-history"))
         self.history_worker.daemon = True
         self.history_worker.start()
         self.optional_worker = threading.Thread(
-            target=self._work, args=(self.optional_tasks,), name="crescendo-gui-optional",
+            target=self._work, args=(self.optional_tasks,), name=_contract_text("crescendo-gui-optional"),
         )
         self.optional_worker.daemon = True
         self.optional_worker.start()
         self.export_worker = threading.Thread(
-            target=self._work, args=(self.export_tasks,), name="crescendo-gui-schematic-export",
+            target=self._work, args=(self.export_tasks,), name=_contract_text("crescendo-gui-schematic-export"),
         )
         self.export_worker.daemon = True
         self.export_worker.start()
         self.monitor_worker = threading.Thread(
-            target=self._work, args=(self.monitor_tasks,), name="crescendo-gui-live-monitor",
+            target=self._work, args=(self.monitor_tasks,), name=_contract_text("crescendo-gui-live-monitor"),
         )
         self.monitor_worker.daemon = True
         self.monitor_worker.start()
@@ -740,7 +743,7 @@ class BackgroundTaskQueue(object):
                     self.exit_results.put((False, error, on_error))
                 else:
                     self.exit_results.put((True, value, on_success))
-            self.exit_worker = threading.Thread(target=exit_work, name="crescendo-gui-exit")
+            self.exit_worker = threading.Thread(target=exit_work, name=_contract_text("crescendo-gui-exit"))
             self.exit_worker.daemon = True
             self.exit_worker.start()
 
@@ -788,7 +791,7 @@ class BackgroundTaskQueue(object):
                                 self.optional_tasks, self.export_tasks, self.monitor_tasks):
                     self._discard_pending(pending)
                     pending.put(None)
-        threading.Thread(target=retire_workers, name="crescendo-gui-queue-close", daemon=True).start()
+        threading.Thread(target=retire_workers, name=_contract_text("crescendo-gui-queue-close"), daemon=True).start()
 
     def _work(self, task_queue):
         while True:

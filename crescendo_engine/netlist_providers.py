@@ -15,6 +15,10 @@ import re
 import shutil
 import time
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
+from .candidate_timing import measure
 from .execution_commands import (build_solver_command_plan, normalize_execution_commands,
                                  submission_cpu_hint)
 from .private_netlist import (SCHEMA, PrivateNetlistError, PrivateNetlistUnsupported,
@@ -105,10 +109,10 @@ def _freeze_generated_dependencies(text, task, config, mutable_roots, cancel_che
     environ = native_include_environment(config)
     directories = (task.get("include_resolution") or {}).get("include_dirs") or []
     native_cwd = task.get("native_cwd") or task["cwd"]
-    target_root = os.path.join(task["cwd"], "cr_generated_inputs")
+    target_root = os.path.join(task["cwd"], _contract_text("cr_generated_inputs"))
     copied, files, total = {}, [], [0]
     static_inputs = task.setdefault("static_file_inputs",[])
-    evidence = {"schema_version": "crescendo.native_file_inputs.v1", "deferred": [],
+    evidence = {"schema_version": _contract_text("crescendo.native_file_inputs.v1"), "deferred": [],
                 "deferred_count": 0, "deferred_omitted": 0,
                 "resolved_parameters": [], "resolved_parameter_count": 0,
                 "resolved_inputs": [], "resolved_input_count": 0, "resolved_inputs_omitted": 0,
@@ -119,7 +123,7 @@ def _freeze_generated_dependencies(text, task, config, mutable_roots, cancel_che
                 "snapshot_cwd": task["cwd"], "include_dirs": list(directories),
                 "path_policy": "literal_inputs_use_captured_search_order; expressions_preserved"}
     task["native_file_inputs"] = evidence
-    main_source = task.get("netlist_path") or os.path.join(task["cwd"], "input.scs")
+    main_source = task.get("netlist_path") or os.path.join(task["cwd"], _contract_text("input.scs"))
     parameter_literals = [None]
     parameter_bindings = {}
     subckt_names = set()
@@ -278,7 +282,7 @@ def _freeze_generated_dependencies(text, task, config, mutable_roots, cancel_che
                     if not match.group("include_literal"):
                         raise NativeIncludeError("Nonliteral native include needs explicit generated-input qualification")
                     reference = unquote(match.group("include_literal"))
-                    if allow_candidate_parameters and reference == "cr_candidate_parameters.scs":
+                    if allow_candidate_parameters and reference == _contract_text("cr_candidate_parameters.scs"):
                         return match.group(0)
                     path = resolve_include_file(reference, include_cwd, [native_cwd]+directories, environ)
                     target = freeze_file(path, True) if mutable(path) else path
@@ -344,7 +348,7 @@ def _freeze_generated_dependencies(text, task, config, mutable_roots, cancel_che
         return _INPUT_TOKENS.sub(replace, value)
     result = rewrite(text, native_cwd, main_source)
     evidence.update(snapshot_count=len(files), static_identity_count=len(static_inputs))
-    atomic_write_json(os.path.join(task["cwd"], "native_file_inputs.json"), evidence)
+    atomic_write_json(os.path.join(task["cwd"], _contract_text("native_file_inputs.json")), evidence)
     return result, files
 
 
@@ -367,7 +371,7 @@ def _freeze_task(task, config, capture, commands, resource_cpu, spec, candidate_
         shutil.copyfile(row["path"], path)
         files.append(dict(row, path=path))
     task["capture_snapshot_root"] = task["cwd"]
-    task.update(cwd=cwd, netlist_path=os.path.join(cwd, "input.scs"),
+    task.update(cwd=cwd, netlist_path=os.path.join(cwd, _contract_text("input.scs")),
                 psf_dir=os.path.join(task_root, "psf"), template_files=files)
     text = _text(task["netlist_path"])
     try:
@@ -420,19 +424,29 @@ def _freeze_task(task, config, capture, commands, resource_cpu, spec, candidate_
 
 def prepare_maestro_netlists(prepared, parameters, values, config, root, candidate_id,
                              spec=None, cancel_check=None, progress_callback=None, shared_state=None,
-                             generation_only=False, allow_effective_adjustment=False):
+                             generation_only=False, allow_effective_adjustment=False, phase_timings=None):
     from .setup_private_session import borrow_setup_private_session
-    with borrow_setup_private_session(prepared, config, root, cancel_check) as session_workspace:
-        return _prepare_maestro_netlists(prepared, parameters, values, config, root, candidate_id,
-            spec=spec, cancel_check=cancel_check, progress_callback=progress_callback,
-            shared_state=shared_state, generation_only=generation_only,
-            allow_effective_adjustment=allow_effective_adjustment, session_workspace=session_workspace)
+    session_timings = {} if phase_timings is not None else None
+    try:
+        with borrow_setup_private_session(prepared, config, root, cancel_check,
+                                          phase_timings=session_timings) as session_workspace:
+            return _prepare_maestro_netlists(prepared, parameters, values, config, root, candidate_id,
+                spec=spec, cancel_check=cancel_check, progress_callback=progress_callback,
+                shared_state=shared_state, generation_only=generation_only, phase_timings=phase_timings,
+                allow_effective_adjustment=allow_effective_adjustment, session_workspace=session_workspace)
+    finally:
+        if session_timings:
+            for source, target in (("shared_setup_wait", "session_lock_wait"), ("shared_setup", "session_setup")):
+                if source in session_timings:
+                    phase_timings[target] = session_timings[source]
 
 
 def _prepare_maestro_netlists(prepared, parameters, values, config, root, candidate_id,
                              spec=None, cancel_check=None, progress_callback=None, shared_state=None,
-                             generation_only=False, allow_effective_adjustment=False, session_workspace=None):
+                             generation_only=False, allow_effective_adjustment=False, session_workspace=None,
+                             phase_timings=None):
     """Return a candidate manifest accepted by NetlistExecutionContext."""
+    phases = phase_timings if phase_timings is not None else {}
     from .private_netlist import _capture_request_config
     config = _capture_request_config(prepared, config, spec)
     request = validate_provider_request(prepared, parameters, config, spec,
@@ -454,14 +468,16 @@ def _prepare_maestro_netlists(prepared, parameters, values, config, root, candid
         workspace = session_workspace
         write_session_reference(root, prepared["setup_private_session"])
     elif shared_state is None:
-        workspace = build_workspace(prepared["setup"], prepared["hierarchy"], config,
-            os.path.join(root, "workspace"), expected_source_identity=prepared.get("source_identity"), parameters=parameters)
+        with measure(phases, "workspace_build"):
+            workspace = build_workspace(prepared["setup"], prepared["hierarchy"], config,
+                os.path.join(root, "workspace"), expected_source_identity=prepared.get("source_identity"), parameters=parameters)
     else:
         from .shared_maestro import write_reference
         workspace = shared_state.get("workspace")
         if workspace is None:
-            workspace = build_workspace(prepared["setup"], prepared["hierarchy"], config,
-                shared_state["owner"]["workspace_root"], expected_source_identity=prepared.get("source_identity"), parameters=parameters)
+            with measure(phases, "workspace_build", scope="shared_run"):
+                workspace = build_workspace(prepared["setup"], prepared["hierarchy"], config,
+                    shared_state["owner"]["workspace_root"], expected_source_identity=prepared.get("source_identity"), parameters=parameters)
             shared_state["workspace"] = workspace
         write_reference(root,candidate_id,shared_state["owner"])
     if progress_callback:
@@ -472,9 +488,10 @@ def _prepare_maestro_netlists(prepared, parameters, values, config, root, candid
     capture_options = {"private_config_initialized":True} if initialized and session_workspace is None else {}
     if allow_effective_adjustment:
         capture_options["allow_effective_adjustment"] = True
-    phase = _capture_phase(workspace, parameters, values, {}, {}, config, os.path.join(root, "numeric"),
-                           emit_clones=not initialized, symbolic=False, cancel_check=cancel_check,
-                           progress_callback=progress_callback, verify_numeric_application=True, **capture_options)
+    with measure(phases, "native_capture"):
+        phase = _capture_phase(workspace, parameters, values, {}, {}, config, os.path.join(root, "numeric"),
+                               emit_clones=not initialized, symbolic=False, cancel_check=cancel_check,
+                               progress_callback=progress_callback, verify_numeric_application=True, **capture_options)
     mutable_roots = None
     if shared_state is not None or session_workspace is not None:
         from .private_netlist import reconcile_preparation
@@ -496,7 +513,7 @@ def _prepare_maestro_netlists(prepared, parameters, values, config, root, candid
         guard = verify_sources_unchanged(workspace)
         if not guard.get("ok"):
             raise PrivateNetlistError("source design changed during native parameter generation")
-        result = {"schema_version": "crescendo.native_parameter_capture.v1", "root": root,
+        result = {"schema_version": _contract_text("crescendo.native_parameter_capture.v1"), "root": root,
                   "candidate_id": str(candidate_id), "workspace": workspace,
                   "execution_selection": copy.deepcopy(config.get("_capture_execution_selection")),
                   "tasks": phase["tasks"], "requested_values": dict(values),
@@ -514,8 +531,15 @@ def _prepare_maestro_netlists(prepared, parameters, values, config, root, candid
                     "qualification_revision": NATIVE_QUALIFICATION_REVISION,
                     "parameter_application": phase["parameter_application"], "point_count": len(phase["tasks"]),
                     "solver_invocations": 0, "remote_submissions": 0}}
-        atomic_write_json(os.path.join(root, "native_parameter_capture.json"), result)
+        atomic_write_json(os.path.join(root, _contract_text("native_parameter_capture.json")), result)
         return result
+    return _finalize_maestro_phase(prepared, values, config, root, candidate_id, spec,
+        cancel_check, progress_callback, request, workspace, phase, mutable_roots, started)
+
+
+def _finalize_maestro_phase(prepared, values, config, root, candidate_id, spec,
+                           cancel_check, progress_callback, request, workspace, phase,
+                           mutable_roots, started):
     tasks = []
     for task in phase["tasks"]:
         task_policy = request["execution_policy"]["tests"].get(task["test"], request["execution_policy"]["global"])
@@ -563,10 +587,81 @@ def _prepare_maestro_netlists(prepared, parameters, values, config, root, candid
                                 "solver_invocations": 0, "spectre_simulations": 0, "remote_submissions": 0}}
     manifest["manifest_sha256"] = _manifest_digest(manifest)
     validate_manifest(manifest)
-    atomic_write_json(os.path.join(root, "private_netlist.json"), manifest)
-    atomic_write_json(os.path.join(root, "private_netlist_candidate.json"), manifest)
+    atomic_write_json(os.path.join(root, _contract_text("private_netlist.json")), manifest)
+    atomic_write_json(os.path.join(root, _contract_text("private_netlist_candidate.json")), manifest)
     if progress_callback:
         progress_callback({"stage": "netlist_ready", "candidate_id": str(candidate_id),
                            "netlist_generation": generation, "task_count": len(tasks),
                            "manifest_sha256": manifest["manifest_sha256"]})
     return manifest
+
+
+def prepare_maestro_netlists_batch(prepared, parameters, config, root, plan, spec=None,
+                                   cancel_check=None, progress_callback=None):
+    """Capture and freeze a whole generation before returning any CLI manifest."""
+    from .generation_batch import (BatchUnsupported, qualify_deterministic,
+                                   qualify_shared_inputs)
+    from .setup_private_session import borrow_setup_private_session, write_session_reference
+    from .private_netlist import _capture_request_config, reconcile_preparation
+    qualify_deterministic(prepared['setup'])
+    qualify_shared_inputs(plan, prepared)
+    if not prepared.get('setup_private_session'):
+        raise BatchUnsupported('Generation capture requires an applied private suite')
+    config = _capture_request_config(prepared, config, spec)
+    request = validate_provider_request(prepared, parameters, config, spec)
+    config = copy.deepcopy(config)
+    config['_capture_source_simulator'] = request['capture_source_simulator']
+    started = time.monotonic()
+    plan.update(capture_schema_version=_contract_text('crescendo.generation_capture.v1'),
+                capture_only=True, execution_backend=(spec or {}).get('execution_backend'))
+    ensure_dir(root)
+    write_session_reference(root, prepared['setup_private_session'])
+    atomic_write_json(os.path.join(root, _contract_text('batch_manifest.json')), plan)
+    with borrow_setup_private_session(prepared, config, root, cancel_check) as workspace:
+        phase = _capture_phase(workspace, parameters, plan['rows'][0]['values'], {}, {}, config,
+            os.path.join(root, 'numeric'), emit_clones=False, symbolic=False,
+            private_config_initialized=False, verify_numeric_application=True,
+            cancel_check=cancel_check, progress_callback=progress_callback, batch_plan=plan)
+        proof = reconcile_preparation(root, request_cancel=False)
+        if not proof.get('cleanup_proven'):
+            raise PrivateNetlistError('Batch capture termination is unproven')
+        plan['native_termination'] = proof
+        mutable = [workspace['root']]
+        manifests = {}
+        for row in plan['rows']:
+            part = phase['partitions'][row['row_id']]
+            row_root = ensure_dir(os.path.join(root, row['row_id']))
+            row_phase = dict(phase, **part)
+            row_phase.pop('partitions', None)
+            row_phase['tasks'] = copy.deepcopy(part['tasks'])
+            for task in row_phase['tasks']:
+                snapshot = ensure_dir(os.path.join(row_root, 'captured', task['task_id']))
+                for item in task['template_files']:
+                    target = os.path.join(snapshot, item['relative_path'])
+                    ensure_dir(os.path.dirname(target))
+                    shutil.copyfile(item['path'], target)
+                    item['path'] = target
+                task['cwd'] = snapshot
+                task['netlist_path'] = os.path.join(snapshot, _contract_text('input.scs'))
+            manifest = _finalize_maestro_phase(prepared, row['values'], config, row_root,
+                row['candidate_ids'][0], spec, cancel_check, progress_callback,
+                request, workspace, row_phase, mutable, started)
+            manifest['netlist_generation'].update(batch_epoch=plan['batch_epoch'],
+                generation_batch=True, physical_row_id=row['row_id'])
+            manifest['manifest_sha256'] = _manifest_digest(manifest)
+            manifests[row['row_id']] = manifest
+        # No next reset or solver is allowed before every dependency closure
+        # passes the same gate used by the scalar producer.
+        for manifest in manifests.values():
+            validate_manifest(manifest)
+            for name in (_contract_text('private_netlist.json'), _contract_text('private_netlist_candidate.json')):
+                atomic_write_json(os.path.join(manifest['root'], name), manifest)
+        guard = verify_sources_unchanged(workspace)
+        if not guard.get('ok'):
+            raise PrivateNetlistError('Source changed during generation capture')
+        plan.update(inputs_qualified=True, source_guard=guard,
+                    capture_elapsed_seconds=time.monotonic() - started)
+        atomic_write_json(os.path.join(root, _contract_text('batch_manifest.json')), plan)
+        atomic_write_json(os.path.join(root, _contract_text('batch_timing.json')),
+            {'phases': {'native_capture_and_freeze': {'elapsed_seconds': plan['capture_elapsed_seconds']}}})
+        return manifests

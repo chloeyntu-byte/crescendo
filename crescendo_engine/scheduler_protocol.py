@@ -5,6 +5,9 @@ In particular a missing job, a cancellation acknowledgement or an unrelated
 integer cannot prove remote termination or simulator completion.
 """
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 
 import json
 import re
@@ -42,7 +45,7 @@ def _document(text):
 
 
 def parse_submit_observation(text):
-    result = {"schema_version": "crescendo.scheduler_submission_observation.v1",
+    result = {"schema_version": _contract_text("crescendo.scheduler_submission_observation.v1"),
         "job_id": None, "observed_job_ids": [], "accepted": False,
         "rejected": False, "ambiguous": False, "invalid": False,
         "format": "unknown", "message": None}
@@ -131,7 +134,7 @@ def parse_submit_job_id(text):
 def parse_submit_streams(stdout, stderr):
     """Join completed streams without corrupting JSON or completing partial IDs."""
     streams = [parse_submit_observation(value or '') for value in (stdout, stderr)]
-    result = {"schema_version": "crescendo.scheduler_submission_observation.v1", "format": "streams",
+    result = {"schema_version": _contract_text("crescendo.scheduler_submission_observation.v1"), "format": "streams",
         "job_id": None, "observed_job_ids": sorted(set(identifier for stream in streams
             for identifier in stream["observed_job_ids"])), "accepted": False,
         "invalid": any(stream["invalid"] for stream in streams),
@@ -145,7 +148,7 @@ def parse_submit_streams(stdout, stderr):
 
 def parse_scheduler_observation(text, expected_id):
     expected = str(expected_id)
-    result = {"schema_version": "crescendo.scheduler_observation.v1", "expected_job_id": expected,
+    result = {"schema_version": _contract_text("crescendo.scheduler_observation.v1"), "expected_job_id": expected,
         "job_id": None, "observed_job_ids": [], "state": None, "terminal": False,
         "not_found": False, "invalid": False, "format": "unknown", "reason": None,
         "task_states": {}, "job_exit_code": None, "metadata": {}}

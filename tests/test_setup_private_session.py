@@ -374,9 +374,13 @@ class SetupPrivateSessionTests(unittest.TestCase):
 
     def test_native_baseline_reconciler_proven_stop_restores_idle_permissions(self):
         reconciler = mock.Mock(return_value={'cleanup_proven': True})
+        phases = {}
         with session.borrow_setup_private_session(self.prepared, self.config, 'baseline-candidate',
-                                                  completion_reconciler=reconciler):
+                                                  completion_reconciler=reconciler, phase_timings=phases):
             self.assert_private_access(True)
+            for name in ('shared_setup_wait', 'shared_setup'):
+                self.assertTrue(phases[name]['completed'])
+                self.assertGreaterEqual(phases[name]['elapsed_seconds'], 0)
         self.assert_private_access(False)
         self.assertFalse(session._controller(self.reference).unsafe)
 

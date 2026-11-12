@@ -1,4 +1,7 @@
 """Explain local write failures without changing storage or exception identity."""
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 
 import errno
 import os
@@ -13,10 +16,10 @@ def is_storage_full_error(error):
 def annotate_storage_error(error, path, operation):
     """Retain a destination for flush/fsync errors that have no filename."""
     if is_storage_full_error(error):
-        if not getattr(error, "cr_storage_path", None):
-            error.cr_storage_path = os.path.abspath(os.path.expanduser(path))
-        if not getattr(error, "cr_storage_operation", None):
-            error.cr_storage_operation = operation
+        if not getattr(error, _contract_text("cr_storage_path"), None):
+            setattr(error, _contract_text("cr_storage_path"), os.path.abspath(os.path.expanduser(path)))
+        if not getattr(error, _contract_text("cr_storage_operation"), None):
+            setattr(error, _contract_text("cr_storage_operation"), operation)
     return error
 
 
@@ -36,10 +39,10 @@ def format_task_error(error, phase, config=None):
             "for this write."
         )
     details = [message, explanation]
-    operation = getattr(error, "cr_storage_operation", None)
+    operation = getattr(error, _contract_text("cr_storage_operation"), None)
     if operation:
         details.append("Write operation: {}.".format(operation))
-    path = getattr(error, "filename", None) or getattr(error, "cr_storage_path", None)
+    path = getattr(error, "filename", None) or getattr(error, _contract_text("cr_storage_path"), None)
     if path:
         details.append("Write path: {}".format(os.fsdecode(path)))
     else:

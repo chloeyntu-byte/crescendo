@@ -15,10 +15,13 @@ import re
 import stat
 import time
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .utils import atomic_write_json, utc_timestamp
 from .native_log_io import native_log_read_scope
 
-SCHEMA = 'crescendo.maestro_live_progress.v1'
+SCHEMA = _contract_text('crescendo.maestro_live_progress.v1')
 MAX_SNAPSHOT = 32 * 1024 * 1024
 SNAPSHOT_WARNING_BYTES = 4 * 1024 * 1024
 SUBMISSION_OUTPUT_BYTES = 2048
@@ -145,7 +148,7 @@ def _publish_progress(path, snapshot):
     if size > MAX_SNAPSHOT:
         # This file is display evidence, not completion/stop authority. Keep a
         # complete catalogue rather than silently discard valid native points.
-        catalog_path = os.path.join(os.path.dirname(path), 'execution_progress_full.json')
+        catalog_path = os.path.join(os.path.dirname(path), _contract_text('execution_progress_full.json'))
         atomic_write_json(catalog_path, snapshot)
         compact = copy.deepcopy(snapshot)
         compact['shared_submissions'] = []
@@ -172,7 +175,7 @@ class MaestroProgressObserver(object):
         self.workspace = workspace
         self.manifest = manifest
         self.control_root = control_root
-        self.path = os.path.join(manifest['batch_root'], 'execution_progress.json')
+        self.path = os.path.join(manifest['batch_root'], _contract_text('execution_progress.json'))
         self.aliases = {}
         for candidate in manifest['candidates']:
             for alias, source in (candidate.get('source_test_map') or {}).items():
@@ -197,7 +200,7 @@ class MaestroProgressObserver(object):
         self.scan_queue = collections.deque()
         self.submission_offset = 0
         self.submissions = {}
-        self.identity_path = os.path.join(manifest['batch_root'], 'live_identity.json')
+        self.identity_path = os.path.join(manifest['batch_root'], _contract_text('live_identity.json'))
         atomic_write_json(self.identity_path, {'schema_version': SCHEMA,
             'protocol_identity': manifest['protocol_identity'], 'batch_id': manifest['batch_id']})
 
@@ -411,7 +414,7 @@ def read_batch_progress(path, run_root, candidate_ids):
         identity = value.get('protocol_identity') or {}
         if identity.get('candidate_id') != value.get('batch_id'):
             return None
-        identity_path = os.path.join(os.path.dirname(path), 'live_identity.json')
+        identity_path = os.path.join(os.path.dirname(path), _contract_text('live_identity.json'))
         if os.path.lexists(identity_path):
             identity_raw = _read_small_owned(identity_path, run_root, 16384)
             if identity_raw is None:
@@ -421,7 +424,7 @@ def read_batch_progress(path, run_root, candidate_ids):
                 return None
         # Legacy/small manifests can also be checked cheaply; never repeatedly
         # parse a large shared design catalogue for display-only telemetry.
-        manifest_path = os.path.join(os.path.dirname(path), 'persistent_worker_batch.json')
+        manifest_path = os.path.join(os.path.dirname(path), _contract_text('persistent_worker_batch.json'))
         manifest_raw = _read_small_owned(manifest_path, run_root, 65536)
         if manifest_raw is not None:
             manifest = json.loads(manifest_raw.decode('utf-8'))
@@ -511,9 +514,9 @@ def preserve_live_logs(run_root, rows):
                     os.fsync(target.fileno())
             os.rename(partial, destination)
             meta = os.path.join(root, 'retained_spectre_' + token + '.meta')
-            text = ('schema_version=crescendo.retained_spectre_log.v1\nsource_path=%s\n'
+            text = (_contract_text('schema_version=crescendo.retained_spectre_log.v1\nsource_path=%s\n'
                     'candidate_id=%s\nartifact_test=%s\npoint_id=%s\n'
-                    'snapshot_only=true\ntruncated=%s\nfinished_epoch=%s\n' %
+                    'snapshot_only=true\ntruncated=%s\nfinished_epoch=%s\n') %
                     (source, cid, task.get('artifact_test') or '', '' if task.get('point_id') is None else task.get('point_id'),
                      str(size > copied).lower(), time.time()))
             from .utils import atomic_write_text

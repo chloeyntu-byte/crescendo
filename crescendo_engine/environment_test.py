@@ -22,15 +22,18 @@ import threading
 import time
 import uuid
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .diagnostic_plan import freeze_plan, digest as plan_digest
-from .diagnostic_timing import DiagnosticTiming
+from .diagnostic_timing import DiagnosticTiming, generation_report_timing
 from .environment_probes import run_environment_probes, query_scheduler_jobs, _redact
 from .diagnosis_catalog import SCHEMA as DIAGNOSIS_SCHEMA, describe_check, format_section, format_evidence_section, observation_section, brief_success, format_ladder_summary
 from .environment_diagnostics import collect_run_diagnostics, failure_summary, _windows, package_identity, pipeline_qualification, pipeline_summary, failure_layer
 
 ENGINES = ('maestro_baseline', 'private_netlist', 'maestro_netlist')
 LEGACY_ENGINES = {'persistent_maestro': 'maestro_netlist'}
-EXECUTION_PROTOCOL = 'crescendo.execution_pipeline.v1'
+EXECUTION_PROTOCOL = _contract_text('crescendo.execution_pipeline.v1')
 LABELS = {'maestro_netlist': 'Maestro', 'private_netlist': 'PrivateNetlist', 'maestro_baseline': 'MaestroBaseline'}
 SIMULATORS = ('spectre', 'alps')
 SIMULATOR_LABELS = {'spectre': 'Spectre', 'alps': 'ALPS'}
@@ -207,17 +210,61 @@ def _native_failure_observations(primary):
         identifier = None
         if isinstance(boundary, dict) and boundary.get('stage') in ('Run', 'Wait'):
             identifier = 'native.run_window'
-        if 'Crescendo native Run returned invalid runId' in message:
+        if _contract_text('Crescendo native Run returned invalid runId') in message:
             identifier = 'native.run_id'
-        elif 'Crescendo native capture history unavailable' in message or 'Crescendo native history handle invalid' in message:
+        elif _contract_text('Crescendo native capture history unavailable') in message or _contract_text('Crescendo native history handle invalid') in message:
             identifier = 'native.history_lookup'
-        elif 'Crescendo native history name lookup failed' in message or 'Crescendo native history name unavailable' in message:
+        elif _contract_text('Crescendo native history name lookup failed') in message or _contract_text('Crescendo native history name unavailable') in message:
             identifier = 'native.history_name'
         if identifier and identifier not in seen:
             seen.add(identifier)
             rows.append((identifier, {'error': item, 'native_run_evidence': markers,
                 'scope': 'observed native error; cross-stream chronology and upstream cause are not inferred'}))
     return rows
+
+
+def _execution_parallelism(status, candidates, spec):
+    """Expose configured limits and verified points without inferring peak concurrency."""
+    engine = spec["execution_backend"]
+    completions = [item.get("completion_evidence") or {} for item in candidates
+                   if item.get("status") == "completed"]
+    result = {
+        "candidate_limit": status.get("effective_parallel_jobs"),
+        "generation_size": spec["population"],
+        "completed_candidate_count": len(completions),
+        "verified_point_count": sum(len(proof.get("points") or []) for proof in completions
+                                    if proof.get("ok") is True),
+        "policy": status.get("parallel_execution_policy"),
+    }
+    if engine == "maestro_baseline":
+        readbacks = ((proof.get("execution_pipeline") or {}).get("native_parallelism")
+                     for proof in completions)
+        result["native_point_policy"] = next((readback for readback in readbacks if readback), None)
+        return result
+
+    policy = status.get("simulator_task_policy") or {}
+    tests = policy.get("tests") or {}
+    def point_limit(row):
+        return {key: row.get(key) for key in ("distribution", "configured_max_jobs",
+                                             "effective_solver_max_jobs")}
+    result["cli_point_policy"] = {
+        "source": policy.get("source"),
+        "capacity_source": policy.get("capacity_source"),
+        "inherited_global_max_jobs": policy.get("inherited_max_jobs"),
+        "max_jobs_input": (policy.get("overrides") or {}).get("max_jobs"),
+        "command_input_supplied": "command" in (policy.get("overrides") or {}),
+        "point_pool_limit": policy.get("max_jobs"),
+        "local_solver_limit": policy.get("local_solver_max_jobs"),
+        "measurement_limit": policy.get("measurement_jobs"),
+        "global": point_limit(policy.get("global") or {}),
+        "test_count": len(tests),
+        "tests": [dict(point_limit(test_policy), test=name) for name, test_policy in list(tests.items())[:16]],
+    }
+    native = engine == "maestro_netlist" or any(
+        (item.get("netlist_generation") or {}).get("native_generation_required") is True
+        for item in candidates)
+    result["netlist_build"] = "serialized_native_generation" if native else "shared_template_then_candidate_materialization"
+    return result
 
 
 def _successful_execution(status, candidates):
@@ -592,7 +639,7 @@ class EnvironmentTestManager(object):
                 frozen = config
                 from .runtime_layout import project_directory
                 base = os.path.join(project_directory(config, (prepared.get('setup') or {}).get('source')),
-                                    '.crescendo', 'environment_tests')
+                                    _contract_text('.crescendo'), 'environment_tests')
             root = os.path.join(base, '_environment_tests', identifier)
             from .simulators import selected_simulator
             selected = selected_simulator(frozen, spec)
@@ -620,7 +667,7 @@ class EnvironmentTestManager(object):
                 frozen_plan, shape = freeze_plan(spec, candidate)
             except Exception as error:
                 candidate_error = _error(error)
-            main_log = os.path.join(root, 'environment_test.log')
+            main_log = os.path.join(root, _contract_text('environment_test.log'))
             logs = {simulator: main_log for simulator in SIMULATORS}
             legacy_logs = {engine: logs[selected] for engine in ENGINES}
             legacy_logs.update({old: logs[selected] for old in LEGACY_ENGINES})
@@ -637,7 +684,7 @@ class EnvironmentTestManager(object):
                    'main_log': logs['spectre'], 'engine_logs': legacy_logs, 'simulator_logs': logs,
                    'selected_simulator': selected, 'selected_engine': selected_engine,
                    'case_results': collections.OrderedDict(
-                       (simulator + '.' + engine, {'case_id': simulator + '.' + engine, 'simulator': simulator, 'simulator_identity_known': engine != 'maestro_baseline' or source_simulator is not None, 'engine': engine, 'state': 'queued'})
+                       (simulator + '.' + engine, {'case_id': simulator + '.' + engine, 'simulator': simulator, 'simulator_identity_known': engine != 'maestro_baseline' or source_simulator is not None, 'engine': engine, 'state': 'queued', 'generation_timings': []})
                        for simulator, engine in [(source_simulator or selected, 'maestro_baseline'), (selected, 'private_netlist'), (selected, 'maestro_netlist')]),
                    'physical_log_tails': {main_log: ''},
                    'checks': collections.OrderedDict(), 'run_ids': {}, 'active_runs': [],
@@ -665,7 +712,7 @@ class EnvironmentTestManager(object):
 
     def run_root(self, marker, engine):
         """Only a manager-owned active marker may redirect diagnostic run storage."""
-        if not isinstance(marker, dict) or marker.get('schema_version') != 'crescendo.environment_test.run.v1':
+        if not isinstance(marker, dict) or marker.get('schema_version') != _contract_text('crescendo.environment_test.run.v1'):
             raise ValueError('invalid environment-test marker')
         with self.lock:
             row = self.tests.get(marker.get('test_id'))
@@ -975,7 +1022,7 @@ class EnvironmentTestManager(object):
         self._check(row, 'test.scope', 'PASS' if row.get('frozen_candidate') is not None else 'WARN',
                     'Three ordered stages share a frozen multi-generation candidate plan and selected tests/analyses/corners',
                     {'test_id': row['test_id'], 'selected_simulator': row['selected_simulator'],
-                     'selected_engine': row['selected_engine'], 'execution_protocol': ('crescendo.maestro_baseline.v1' if row['selected_engine'] == 'maestro_baseline' else EXECUTION_PROTOCOL),
+                     'selected_engine': row['selected_engine'], 'execution_protocol': (_contract_text('crescendo.maestro_baseline.v1') if row['selected_engine'] == 'maestro_baseline' else EXECUTION_PROTOCOL),
                      'gui_runtime': row['spec'].get('gui_runtime'),
                      'ui_input_warnings': row['spec'].get('ui_input_warnings'),
                      'source_simulator': row.get('source_simulator'), 'cli_simulator': row['selected_simulator'],
@@ -1177,6 +1224,13 @@ class EnvironmentTestManager(object):
                     overview['execution_selection'] = selection
                     overview['path_roots'] = roots
                     overview['detail_mode'] = 'concise; original artifacts unchanged; diagnostic_log_detail=full expands report'
+                generation_timings = {
+                    case_id: [generation_report_timing(item) for item in case.get('generation_timings') or []]
+                    for case_id, case in row['case_results'].items() if case.get('generation_timings')
+                }
+                if generation_timings:
+                    overview['generation_timings'] = generation_timings
+                    overview['phase_sum_fields'] = ['seconds', 'measured', 'total']
                 self._append_report(row, 'diagnostic_overview ' + _json(overview) + '\n', wait=True)
                 sections = collections.OrderedDict()
                 successes = collections.OrderedDict()
@@ -1296,9 +1350,9 @@ class EnvironmentTestManager(object):
         shape = row.get('diagnostic_shape') or {'generations': 1, 'samples_per_generation': 1}
         spec.update(algorithm='random', generations=shape['generations'], population=shape['samples_per_generation'], seed=1, evaluator='real',
                     algorithm_parameters={'population': shape['samples_per_generation'], 'seed': 1}, execution_backend=engine, simulator=row.get('simulator', row['selected_simulator']),
-                    maestro_job_overrides=overrides, parallel_jobs=1, maestro_candidate_mode='batch',
+                    maestro_job_overrides=overrides, maestro_candidate_mode='batch',
                     display_name='ET_' + row['test_id'].split('_')[-1] + '_' + row.get('simulator', row['selected_simulator']) + ({'maestro_netlist': '_M', 'private_netlist': '_S', 'maestro_baseline': '_B'}[engine]),
-                    environment_test={'schema_version': 'crescendo.environment_test.run.v1', 'test_id': row['test_id'],
+                    environment_test={'schema_version': _contract_text('crescendo.environment_test.run.v1'), 'test_id': row['test_id'],
                                       'simulator': row.get('simulator', row['selected_simulator']),
                                       'frozen_candidate': copy.deepcopy(row.get('frozen_candidate'))})
         if row.get('frozen_plan') is not None:
@@ -1360,6 +1414,7 @@ class EnvironmentTestManager(object):
                      'job_setup_timeout_scope': 'native job policy; independent of candidate and diagnostic engine deadlines',
                      'stop_proof_wait_seconds': grace}, engine)
         stopping, timed_out, last, snapshot = False, False, None, {}
+        observed_generation_timings = []
         observed_logs, log_offsets, owned_ids, queried_ids = set(), {}, {}, set()
         with self.service.lock:
             thread = self.service.threads.get(name)
@@ -1370,6 +1425,12 @@ class EnvironmentTestManager(object):
             try:
                 snapshot = self.service.progress(name)
                 status = snapshot.get('status') or {}
+                timings = status.get('generation_timings') or []
+                if timings and timings != observed_generation_timings:
+                    observed_generation_timings = timings
+                    case_result = (row.get('case_results') or {}).get(row.get('case_id'))
+                    if case_result is not None:
+                        case_result['generation_timings'] = timings
                 candidates = snapshot.get('candidates') or []
                 execution = snapshot.get('execution') or {}
                 candidate_states = []
@@ -1500,7 +1561,8 @@ class EnvironmentTestManager(object):
                 row['case_contexts'].setdefault(row.get('case_id') or engine, {}).update(
                     case_id=row.get('case_id'), run_root=launch['run_root'],
                     log_path=row['simulator_logs'][row['simulator']],
-                    first_cause=row['engine_outcomes'][engine].get('first_cause'))
+                    first_cause=row['engine_outcomes'][engine].get('first_cause'),
+                    execution_parallelism=_execution_parallelism(status, candidates, spec))
         self._log(row, {'observation': 'diagnostic.first_cause', 'payload': row['engine_outcomes'][engine]}, engine)
         self._check(row, 'execution', 'PASS' if ok else ('CANCELLED' if row['cancel'].is_set() else 'FAIL'),
                     ('All planned candidates completed through native Maestro Run and exact history results' if engine == 'maestro_baseline' else 'All planned candidates completed with common CLI pipeline, private netlist and result proof') if ok else ((row['engine_outcomes'][engine].get('first_cause') or {}).get('message') or
@@ -1538,9 +1600,9 @@ class EnvironmentTestManager(object):
         if ok and row['spec'].get('advanced_diagnostics') is True:
             try:
                 from .run_data_store import load_dataset
-                path = self.service.run_path(name, 'optimization.crescendo')
+                path = self.service.run_path(name, _contract_text('optimization.crescendo'))
                 dataset = load_dataset(path)
-                exported = self.service.run_path(name, 'environment_export_probe.crescendo')
+                exported = self.service.run_path(name, _contract_text('environment_export_probe.crescendo'))
                 if os.path.lexists(exported):
                     raise RuntimeError('export probe unexpectedly already exists')
                 try:
@@ -1562,7 +1624,7 @@ class EnvironmentTestManager(object):
                 self._check(row, 'statistics_and_dataset', 'FAIL', _error(error), engine=engine)
         self._timing(row.get('case_timing_observer'), 'transition', 'cleanup')
         try:
-            shutdown = self.service.read(name, 'worker_shutdown.json') or {}
+            shutdown = self.service.read(name, _contract_text('worker_shutdown.json')) or {}
             workers = shutdown.get('workers')
             final = status.get('final_cleanup') if 'final_cleanup' in status else shutdown.get('final_cleanup')
             from .shutdown_evidence import shutdown_proven
@@ -1584,7 +1646,7 @@ class EnvironmentTestManager(object):
             clean = False
             self._check(row, 'termination_and_cleanup', 'FAIL',
                         '无法读取收尾证明；停止与清理尚未证实。旧记录可能超出读取上限或无效；保留原文件。 ' + _error(error),
-                        {'artifact': 'worker_shutdown.json', 'stop_proven': False}, engine)
+                        {'artifact': _contract_text('worker_shutdown.json'), 'stop_proven': False}, engine)
         self._collect_inline(row, engine, launch['run_root'], spec, clean)
         if clean:
             try:
@@ -1609,8 +1671,9 @@ class EnvironmentTestManager(object):
             with self.lock:
                 contexts = row.setdefault('case_contexts', {})
                 previous = contexts.get(row.get('case_id') or engine) or {}
-                if previous.get('report_omissions'):
-                    context['report_omissions'] = previous['report_omissions']
+                for field in ('report_omissions', 'execution_parallelism'):
+                    if field in previous:
+                        context[field] = previous[field]
                 contexts[row.get('case_id') or engine] = context
             for record in collect_run_diagnostics(root, engine, row['config'], row['prepared'], spec,
                     stop_proven=clean, error_text=_json(row['engine_outcomes'].get(engine) or {}), cancel=row['cancel']):
@@ -1640,7 +1703,7 @@ class EnvironmentTestManager(object):
                             current = context.setdefault('cdf_callback_failures', [])
                             for failure in failures[:8]:
                                 if (not isinstance(failure, dict)
-                                        or failure.get('schema_version') != 'crescendo.cdf_callback_failure.v1'
+                                        or failure.get('schema_version') != _contract_text('crescendo.cdf_callback_failure.v1')
                                         or failure.get('console_source') != path):
                                     continue
                                 item = dict(failure, path=path)
@@ -1854,7 +1917,7 @@ def compact_diagnostic_run(root, run_id, cancel=None, timeout=30):
             raise RuntimeError('diagnostic archive deadline/cancellation; evidence retained')
     if os.path.basename(root) != run_id or os.path.islink(root):
         raise RuntimeError('diagnostic run root identity differs')
-    keep = {'status.json', 'worker_shutdown.json', 'optimization.crescendo', 'evidence.tar.gz'}
+    keep = {_contract_text('status.json'), _contract_text('worker_shutdown.json'), _contract_text('optimization.crescendo'), 'evidence.tar.gz'}
     files, dirs, total = [], [], 0
     for directory, children, names in os.walk(root, followlinks=False):
         budget()
@@ -1890,9 +1953,9 @@ def compact_diagnostic_run(root, run_id, cancel=None, timeout=30):
             if not re.match(r'^[0-9a-f]{64}$', digest) or os.path.islink(directory):
                 raise RuntimeError('unexpected diagnostic continuation checkpoint retained')
             names = os.listdir(directory)
-            if names != ['checkpoint.json']:
+            if names != [_contract_text('checkpoint.json')]:
                 raise RuntimeError('unexpected diagnostic checkpoint files retained')
-            path = os.path.join(directory, 'checkpoint.json')
+            path = os.path.join(directory, _contract_text('checkpoint.json'))
             info = os.lstat(path)
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                 raise RuntimeError('linked diagnostic checkpoint retained')
@@ -1980,7 +2043,7 @@ def cleanup_test_runtime_lease(directory):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             document = json.loads(os.read(fd, 16384).decode('utf-8'))
             root = document.get('run_root')
-            if (document.get('schema_version') != 'crescendo.continuation_lease.v1' or
+            if (document.get('schema_version') != _contract_text('crescendo.continuation_lease.v1') or
                     document.get('lease_kind') not in ('runtime_real_eda_optimization', 'continuation') or
                     document.get('state') != 'released' or document.get('pid') != os.getpid() or
                     root and os.path.dirname(os.path.abspath(root)) != os.path.abspath(directory) or

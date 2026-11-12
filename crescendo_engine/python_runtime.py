@@ -18,15 +18,18 @@ import time
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from crescendo_engine.native_environment import (
     GUI_ENV_NAMES, NATIVE_ENV_SNAPSHOT_VAR, parse_native_environment_snapshot,
 )
 from crescendo_engine import gui_runtime_dependencies as dependencies
 
 
-PROBE_SCHEMA = "crescendo.python_runtime_probe.v1"
+PROBE_SCHEMA = _contract_text("crescendo.python_runtime_probe.v1")
 _PYTHON_NAME = re.compile(r"^python(?:3(?:\.\d+)?|)$")
-_PROBE = r'''
+_PROBE = _contract_text(r'''
 import importlib.util, json, os, sys, sysconfig
 r = {"schema": "crescendo.python_runtime_probe.v1", "version": list(sys.version_info[:3]),
      "prefix": sys.prefix, "executable": sys.executable, "state": "rejected",
@@ -89,7 +92,7 @@ except Exception as e:
     r["error_type"] = type(e).__name__
     r["error"] = str(e)[:8192]
 print(json.dumps(r, sort_keys=True))
-'''
+''')
 
 
 def _invocation_path(value, caller_dir):
@@ -267,8 +270,8 @@ def probe_candidate(path, environ=None, timeout=3):
     if NATIVE_ENV_SNAPSHOT_VAR in baseline:
         hint = parse_native_environment_snapshot(baseline[NATIVE_ENV_SNAPSHOT_VAR]).get("LD_LIBRARY_PATH")
     else:
-        hint = baseline.get("CRESCENDO_LAUNCH_VALUE_LD_LIBRARY_PATH", baseline.get("LD_LIBRARY_PATH"))
-    clues = {"CRESCENDO_DEPENDENCY_LOADER_HINT": hint or ""}
+        hint = baseline.get(_contract_text("CRESCENDO_LAUNCH_VALUE_LD_LIBRARY_PATH"), baseline.get("LD_LIBRARY_PATH"))
+    clues = {_contract_text("CRESCENDO_DEPENDENCY_LOADER_HINT"): hint or ""}
     diagnostics, metadata, added, extra = [], {}, [], []
     tried_data = {"tcl": set(), "tk": set()}
     deadline = time.monotonic() + timeout
@@ -328,7 +331,7 @@ def write_runtime_result(path, interpreter, overlays):
     parent = os.stat(os.path.dirname(os.path.abspath(path)))
     if parent.st_uid != os.getuid() or parent.st_mode & 0o077:
         raise ValueError("Runtime result directory must be owned and private")
-    records = [("CRESCENDO_RUNTIME_SCHEMA", "crescendo.gui_dependencies.v1"), ("CRESCENDO_RUNTIME_INTERPRETER", interpreter)]
+    records = [(_contract_text("CRESCENDO_RUNTIME_SCHEMA"), _contract_text("crescendo.gui_dependencies.v1")), (_contract_text("CRESCENDO_RUNTIME_INTERPRETER"), interpreter)]
     records.extend((key, overlays[key]) for key in dependencies.OVERLAY_KEYS if key in overlays)
     if any(not isinstance(value, str) or "\0" in value for key, value in records):
         raise ValueError("Invalid GUI runtime result")
@@ -352,9 +355,9 @@ def read_runtime_overlays(path):
         if key in records:
             raise ValueError("Duplicate GUI runtime result key")
         records[key] = value
-    if records.pop("CRESCENDO_RUNTIME_SCHEMA", None) != "crescendo.gui_dependencies.v1":
+    if records.pop(_contract_text("CRESCENDO_RUNTIME_SCHEMA"), None) != _contract_text("crescendo.gui_dependencies.v1"):
         raise ValueError("Invalid GUI runtime schema")
-    interpreter = records.pop("CRESCENDO_RUNTIME_INTERPRETER", None)
+    interpreter = records.pop(_contract_text("CRESCENDO_RUNTIME_INTERPRETER"), None)
     if not interpreter or os.path.abspath(interpreter) != os.path.abspath(sys.executable):
         raise ValueError("GUI runtime result belongs to a different interpreter")
     if set(records) - set(dependencies.OVERLAY_KEYS):
@@ -369,7 +372,7 @@ def read_runtime_overlays(path):
 def select_runtime(preferred=None, caller_dir=None, module_root=None, environ=None,
                    max_candidates=64, total_timeout=20, probe_timeout=3):
     discovery = discover_candidates(preferred, caller_dir, module_root, environ, max_candidates)
-    report = {"schema": "crescendo.python_runtime_selection.v1", "selected": None,
+    report = {"schema": _contract_text("crescendo.python_runtime_selection.v1"), "selected": None,
               "probes": [], "discovery": discovery, "deadline_reached": False,
               "display_unavailable": False}
     deadline = time.monotonic() + total_timeout
@@ -399,19 +402,19 @@ def main(arguments=None):
     try:
         bootstrap_environment()
     except ValueError as error:
-        _write_log("Crescendo launch failed at environment: " + str(error))
-        print("Crescendo launch failed at environment: " + str(error), file=sys.stderr)
+        _write_log(_contract_text("Crescendo launch failed at environment: ") + str(error))
+        print(_contract_text("Crescendo launch failed at environment: ") + str(error), file=sys.stderr)
         return 2
     if args.explicit:
         probe = probe_candidate(args.explicit, timeout=8)
         report = {"selected": args.explicit if probe["state"] == "eligible" else None, "probes": [probe]}
     else:
-        report = select_runtime(os.environ.get("CRESCENDO_PREFERRED_PYTHON"), args.caller_dir, args.module_root)
-    _write_log("Crescendo automatic Python selection: " + json.dumps(report, sort_keys=True))
+        report = select_runtime(os.environ.get(_contract_text("CRESCENDO_PREFERRED_PYTHON")), args.caller_dir, args.module_root)
+    _write_log(_contract_text("Crescendo automatic Python selection: ") + json.dumps(report, sort_keys=True))
     if not report["selected"]:
-        print("Crescendo could not find an existing Python 3.6+ with working Tk/Tcl; see the private launch log.", file=sys.stderr)
+        print(_contract_text("Crescendo could not find an existing Python 3.6+ with working Tk/Tcl; see the private launch log."), file=sys.stderr)
         return 2
-    print("Crescendo automatically selected Python: " + report["selected"], file=sys.stderr)
+    print(_contract_text("Crescendo automatically selected Python: ") + report["selected"], file=sys.stderr)
     if args.result_file:
         write_runtime_result(args.result_file, report["probes"][-1].get("executable", report["selected"]),
                              report["probes"][-1].get("gui_overlays", {}))

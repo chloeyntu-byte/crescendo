@@ -105,6 +105,23 @@ class TranslatedButton(ttk.Button):
     config = configure
 
 
+def _translate_label_updates(widget):
+    """Keep asynchronous label text in English after its window has mapped."""
+    if getattr(widget, "_crescendo_text_updates", False):
+        return
+    original = widget.configure
+
+    def configure(cnf=None, **kw):
+        if isinstance(cnf, dict) and "text" in cnf:
+            cnf = dict(cnf, text=tr(cnf["text"]))
+        if "text" in kw:
+            kw["text"] = tr(kw["text"])
+        return original(cnf, **kw)
+
+    widget.configure = widget.config = configure
+    widget._crescendo_text_updates = True
+
+
 class DisplayVar(tk.StringVar):
     """Label-only StringVar shown in English under the Crescendo name."""
 
@@ -289,7 +306,7 @@ _Base = core.OptimizerGui
 
 class CrescendoGui(_Base):
     # ------------------------------------------------------------------ setup
-    def __init__(self, root, service, launch_context=None):
+    def __init__(self, root, service, launch_context=None, diagnostic_actions=()):
         self._crescendo_prefs = _read_prefs()
         forced = os.environ.get("CRESCENDO_MODE", "").strip().lower()
         if forced in ("pro", "simple"):
@@ -300,7 +317,7 @@ class CrescendoGui(_Base):
         self._dynamic_hidden = set()
         self._translatable_widgets = []
         self.nav_items = {}
-        _Base.__init__(self, root, service, launch_context=launch_context)
+        _Base.__init__(self, root, service, launch_context=launch_context, diagnostic_actions=diagnostic_actions)
         self._wrap_display_vars()
         self._wrap_label_vars()
         self._install_display_hooks()
@@ -588,6 +605,12 @@ class CrescendoGui(_Base):
                     if str(widget) in self._dynamic_hidden:
                         continue
                     widget.pack(**info)
+        resources = getattr(self, "execution_resources_card", None)
+        if resources is not None:
+            if pro:
+                resources.pack(before=self.cli_commands_card, **self.execution_resources_pack)
+            else:
+                resources.pack_forget()
         settings_nav = self.nav_items.get("EDA Settings")
         if settings_nav is not None:
             if pro:
@@ -683,6 +706,8 @@ class CrescendoGui(_Base):
             except tk.TclError:
                 continue
             if cls in ("TLabel", "TButton", "TCheckbutton", "TRadiobutton", "Label", "Button"):
+                if cls in ("TLabel", "Label") and i18n.ENABLED:
+                    _translate_label_updates(current)
                 try:
                     if str(current.cget("textvariable")):
                         continue
@@ -1223,6 +1248,13 @@ class CrescendoGui(_Base):
         ttk.Label(parent, textvariable=self.results_failure_var, foreground=T.DANGER, background=T.BACKGROUND,
                   wraplength=980, justify="left").pack(fill="x", padx=30, pady=(0, 4))
 
+        timing_row = self._card(parent, padding=(14, 10))
+        self.timing_details_button = ttk.Button(timing_row, text="Timing details...",
+                                                style="Ghost.TButton", command=self.show_timing_details)
+        self.timing_details_button.pack(side="left")
+        ttk.Label(timing_row, text="Generation and candidate timings · solver, queue and setup are separate",
+                  style="CardMuted.TLabel", wraplength=700).pack(side="left", padx=10)
+
         trend_card = self._card(parent, padding=(16, 12))
         ttk.Label(trend_card, text="Convergence per objective · dots are samples, the line is best so far", style="CardTitle.TLabel").pack(anchor="w")
         self.result_trend_frame = ttk.Frame(trend_card, style="Card.TFrame")
@@ -1274,6 +1306,13 @@ class CrescendoGui(_Base):
                                         highlightthickness=0, borderwidth=0)
         self.candidate_detail.pack(fill="x", pady=(8, 0))
         ttk.Frame(parent, style="Page.TFrame", height=18).pack(fill="x")
+
+    def show_timing_details(self):
+        _Base.show_timing_details(self)
+        self.timing_details_window.configure(background=T.BACKGROUND)
+        self.timing_details_text.configure(background=T.PANEL_ALT, foreground=T.TEXT,
+                                          font=T.FONTS["mono"], relief="flat",
+                                          highlightthickness=0, borderwidth=0, padx=12, pady=10)
 
     def _render_result_trend(self):
         frame = getattr(self, "result_trend_frame", None)
@@ -1417,3 +1456,9 @@ def launch_gui(config, service=None, launch_context=None, force_exit_process=Fal
     install()
     return core.launch_gui(config, service=service, launch_context=launch_context,
                            force_exit_process=force_exit_process)
+
+
+def gui_factory(root, service, **kwargs):
+    """Explicit public presentation; importing this module does not install it."""
+    install()
+    return CrescendoGui(root, service, **kwargs)

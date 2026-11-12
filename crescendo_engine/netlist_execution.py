@@ -21,12 +21,18 @@ import threading
 import time
 import uuid
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .cadence import child_environment, run_command
+from .candidate_timing import ConcurrencyObserver, PendingSamples, elapsed, measure, summarize_tasks, timestamp
 from .native_environment import scheduler_environment
 from .native_log_io import OwnedLogReadersBusy, native_log_cleanup_scope
 from .scheduler_cli import (scheduler_capability, scheduler_command_argv,
                             resolve_scheduler_binary)
-from .scheduler_protocol import (parse_scheduler_observation, parse_submit_job_id, parse_submit_streams,
+from .scheduler_providers import (observation as parse_scheduler_observation,
+                                  submission as parse_submit_streams)
+from .scheduler_protocol import (parse_submit_job_id,
                                  valid_job_id, TERMINAL_STATES)
 from .simulators import selected_simulator, submission_cpu, validate_execution_contract, build_simulator_argv
 from .execution_commands import (ExecutionCommandError, normalize_execution_commands,
@@ -36,16 +42,16 @@ from .execution_commands import (ExecutionCommandError, normalize_execution_comm
 from .completion import CompletionEvidenceError, UnsupportedCompletionEvidence, _SPECTRE_COMPLETION, _spectre_log_evidence, _alps_log_evidence, _tail_text
 from .job_policy import normalize_job_overrides, job_timeout_policy
 from .legacy_guardian import inspect_legacy_guardian_attempt, _validated_manifest as _validated_guardian_manifest
-from .netlist_measurement import NetlistMeasurementError, evaluate_task_outputs, parsed_results, qualify_expressions, run_owned_command
+from .netlist_measurement import NetlistMeasurementError, evaluate_task_outputs, evaluate_task_outputs_batch, parsed_results, qualify_expressions, run_owned_command
 from .utils import atomic_write_json, atomic_write_text, ensure_dir, is_under, sha256_file, utc_timestamp
 from .solver_artifacts import collect_solver_artifacts
 from .shared_cli_logs import retain_shared_cli_task_logs
 from .owned_solver_logs import owned_solver_log_reader, OwnedSolverLogError
 
 
-SCHEMA = "crescendo.private_netlist_execution.v1"
-COMPLETION_SCHEMA = "crescendo.private_netlist_completion.v1"
-RECEIPT = "CRESCENDO_NETLIST_TASK_1"
+SCHEMA = _contract_text("crescendo.private_netlist_execution.v1")
+COMPLETION_SCHEMA = _contract_text("crescendo.private_netlist_completion.v1")
+RECEIPT = _contract_text("CRESCENDO_NETLIST_TASK_1")
 SAFE_ID = re.compile(r"^[A-Za-z0-9_.-]+$")
 _COMPANION_IDENTITY_FIELDS = ("source_path", "resolved_source_path", "leaf_link", "bytes", "mtime",
                               "source_device", "source_inode", "target_device", "target_inode")
@@ -153,9 +159,13 @@ def execution_policy(prepared, spec, config):
     commands = normalize_execution_commands(config, spec)
     runtime = config.get("runtime") or {}
     scheduler = spec.get("command_scheduler", runtime.get("command_scheduler", "auto"))
-    if scheduler not in ("auto", "batch", "receipt"):
-        raise NetlistExecutionError("Command scheduler must be auto, batch or receipt", {"failure_stage": "job_policy"})
+    from .runtime import scheduler_mode
+    try:
+        scheduler_mode(scheduler)
+    except ValueError as error:
+        raise NetlistExecutionError(str(error), {"failure_stage": "job_policy"})
     cluster_default = _positive_int(runtime.get("max_parallel_jobs"), 5)
+    local_requested = _positive_int(spec.get("local_solver_max_jobs", runtime.get("local_solver_max_jobs")), 1)
     inherited_max = _positive_int(properties.get("maxjobs"), 1)
     configured_max = _positive_int(overrides.get("max_jobs"), inherited_max)
 
@@ -173,13 +183,21 @@ def execution_policy(prepared, spec, config):
     effective_sources = ([dict(properties, **by_test.get(name, {})) for name in active_tests]
                          if "tests" in setup else [properties] + [dict(properties, **row) for row in by_test.values()])
     if any(distribution_for(row) == "command" for row in effective_sources):
-        capability = scheduler_capability(commands)
-        if not capability["available"]:
+        from .scheduler_providers import get_provider
+        from .native_environment import scheduler_environment
+        context = None
+        if callable(getattr(get_provider(), 'probe_context', None)):
+            probe_config = dict(config)
+            probe_config.setdefault('cadence', {})
+            context = {'config': config, 'spec': spec, 'prepared': prepared,
+                       'environment': scheduler_environment(child_environment(probe_config, home=os.environ.get("HOME") or os.getcwd()))}
+        capability = scheduler_capability(commands, context)
+        if not capability["available"] and not capability.get("receipt_only"):
             raise NetlistExecutionError(capability["reason"], {"failure_stage": "job_policy"})
     global_max = configured_max
     capacity_source = "manual_override" if "max_jobs" in overrides else "maestro_job_setup"
     if any_remote and "max_jobs" not in overrides and inherited_max <= 1:
-        global_max, capacity_source = cluster_default, "cr_cluster_parallel_default"
+        global_max, capacity_source = cluster_default, _contract_text("cr_cluster_parallel_default")
 
     def effective(original, scope):
         row = copy.deepcopy(original)
@@ -236,16 +254,24 @@ def execution_policy(prepared, spec, config):
                 "command": command, "submit_argv": argv,
                 "submission_template": commands["submission_template"],
                 "max_jobs": min(limit, global_max), "configured_max_jobs": _positive_int(original.get("maxjobs"), inherited_max),
-                "effective_solver_max_jobs": min(limit, global_max) if distribution == "command" else 1,
+                "effective_solver_max_jobs": min(limit, global_max) if distribution == "command" else min(local_requested, limit, global_max),
+                "solver_capacity": {"requested": global_max if distribution == "command" else local_requested,
+                    "effective": min(limit, global_max) if distribution == "command" else min(local_requested, limit, global_max),
+                    "reason": "global_and_test_caps" if distribution == "command" else
+                              "local_default_serial" if local_requested == 1 else "explicit_local_global_and_test_caps"},
                 "timeouts": timeouts}
 
     policy = {"global": effective(properties, "global"), "tests": {}, "max_jobs": global_max,
               "source": inherited.get("source"), "overrides": overrides,
               "capacity_policy": "shared_private_netlist_task_semaphore",
-              "local_solver_max_jobs": 1, "configured_max_jobs": configured_max,
+              "local_solver_max_jobs": local_requested, "configured_max_jobs": configured_max,
               "inherited_max_jobs": inherited_max, "capacity_source": capacity_source,
               "command_scheduler": scheduler,
               "cluster_parallel_default": cluster_default,
+              "measurement_jobs": min(global_max, _positive_int(
+                  spec.get("measurement_jobs", runtime.get("measurement_jobs")), min(2, global_max))),
+              "measurement_requested": spec.get("measurement_jobs", runtime.get("measurement_jobs")),
+              "measurement_capacity_policy": "bounded_local_ocean_pool",
               "measurement_timeout_seconds": spec.get("candidate_timeout_seconds", runtime.get("candidate_timeout_seconds", 600))}
     for test in test_policies:
         policy["tests"][test["name"]] = effective(dict(properties, **(test.get("properties") or {})), "test:" + test["name"])
@@ -315,7 +341,7 @@ class TaskTimeoutClock(object):
             pending = self.run_since is None and self.finished is None
             phase = "pending" if pending else "run"
             limit = self.policy["fields"]["run_seconds"]
-            return {"schema_version": "crescendo.task_timeouts.v1", "phase": phase,
+            return {"schema_version": _contract_text("crescendo.task_timeouts.v1"), "phase": phase,
                 "phase_elapsed_seconds": max(0, now - self.state_since) if pending else run_elapsed,
                 "running_elapsed_seconds": run_elapsed, "running_source": self.running_source,
                 "solver_finished": self.finished is not None,
@@ -487,47 +513,47 @@ def render_task_wrapper(task, root, token, environment, timeout_seconds):
             lines.append("export %s=%s" % (key, q(environment[key])))
     lines.extend([
         "mkdir %s 2>/dev/null || exit 73" % q(os.path.join(control, "once_" + token)),
-        "cr_token=%s" % q(token), "cr_child=", "cr_monitor=", "cr_finished=0",
-        'cr_compute_hostname=$(uname -n 2>/dev/null || :)',
-        'cr_compute_uid=$(id -u 2>/dev/null || :)',
-        "cr_cancel=%s" % q(files["cancel"]), "cr_timeout=%s" % q(files["timed_out"]),
-        "cr_started=%s" % q(files["started.receipt"]), "cr_terminal=%s" % q(files["terminal.receipt"]),
-        "cr_heartbeat=%s" % q(files["owner_heartbeat"]),
-        "cr_finish() {", "  cr_rc=$1", '  [ "$cr_finished" -eq 0 ] || return', "  cr_finished=1",
-        '  if [ -n "$cr_monitor" ]; then kill "$cr_monitor" 2>/dev/null || :; wait "$cr_monitor" 2>/dev/null || :; fi',
-        "  cr_clean=1",
+        _contract_text("cr_token=%s") % q(token), _contract_text("cr_child="), _contract_text("cr_monitor="), _contract_text("cr_finished=0"),
+        _contract_text('cr_compute_hostname=$(uname -n 2>/dev/null || :)'),
+        _contract_text('cr_compute_uid=$(id -u 2>/dev/null || :)'),
+        _contract_text("cr_cancel=%s") % q(files["cancel"]), _contract_text("cr_timeout=%s") % q(files["timed_out"]),
+        _contract_text("cr_started=%s") % q(files["started.receipt"]), _contract_text("cr_terminal=%s") % q(files["terminal.receipt"]),
+        _contract_text("cr_heartbeat=%s") % q(files["owner_heartbeat"]),
+        _contract_text("cr_finish() {"), _contract_text("  cr_rc=$1"), _contract_text('  [ "$cr_finished" -eq 0 ] || return'), _contract_text("  cr_finished=1"),
+        _contract_text('  if [ -n "$cr_monitor" ]; then kill "$cr_monitor" 2>/dev/null || :; wait "$cr_monitor" 2>/dev/null || :; fi'),
+        _contract_text("  cr_clean=1"),
         # Native Spectre launchers can exit just before an adopted child is
         # reaped. Give the owned process group a bounded grace period; a group
         # still present afterwards remains unproven, including remote jobs.
-        "  cr_reap_wait=0",
-        '  while [ -n "$cr_child" ] && /bin/kill -0 -- "-$cr_child" 2>/dev/null && [ "$cr_reap_wait" -lt 10 ]; do',
-        '    sleep 0.1; cr_reap_wait=$((cr_reap_wait+1))', "  done",
-        '  if [ -n "$cr_child" ] && /bin/kill -0 -- "-$cr_child" 2>/dev/null; then cr_clean=0; fi',
-        '  printf "%s\\t%s\\texited\\t%s\\t%s\\t%s\\t%s\\n" %s "$cr_token" "$cr_rc" "$cr_clean" "$cr_compute_hostname" "$cr_compute_uid" > "$cr_terminal.tmp"' % ("%s", "%s", "%s", "%s", "%s", "%s", q(RECEIPT)),
-        '  mv "$cr_terminal.tmp" "$cr_terminal"', "}",
-        "cr_interrupt() {", "  trap - HUP INT TERM",
-        '  if [ -n "$cr_child" ]; then',
-        '    /bin/kill -TERM -- "-$cr_child" 2>/dev/null || :',
-        '    sleep 1', '    /bin/kill -KILL -- "-$cr_child" 2>/dev/null || :',
-        '    wait "$cr_child" 2>/dev/null || :', "  fi",
-        "  cr_finish 143", "  exit 143", "}", "trap 'cr_interrupt' HUP INT TERM",
-        'if [ -f "$cr_cancel" ]; then cr_finish 125; exit 125; fi',
-        'cr_stamp=$(stat -c %Y "$cr_heartbeat" 2>/dev/null) || { cr_finish 125; exit 125; }',
-        'cr_now=$(date +%s)',
-        'if [ "$((cr_now-cr_stamp))" -gt 300 ]; then cr_finish 125; exit 125; fi',
-        'command -v setsid >/dev/null 2>&1 || { cr_finish 127; exit 127; }',
-        'printf "%s\\t%s\\tstarted\\t%s\\t%s\\t%s\\n" %s "$cr_token" "$$" "$cr_compute_hostname" "$cr_compute_uid" > "$cr_started.tmp"' % ("%s", "%s", "%s", "%s", "%s", q(RECEIPT)),
-        'mv "$cr_started.tmp" "$cr_started"',
+        _contract_text("  cr_reap_wait=0"),
+        _contract_text('  while [ -n "$cr_child" ] && /bin/kill -0 -- "-$cr_child" 2>/dev/null && [ "$cr_reap_wait" -lt 10 ]; do'),
+        _contract_text('    sleep 0.1; cr_reap_wait=$((cr_reap_wait+1))'), "  done",
+        _contract_text('  if [ -n "$cr_child" ] && /bin/kill -0 -- "-$cr_child" 2>/dev/null; then cr_clean=0; fi'),
+        _contract_text('  printf "%s\\t%s\\texited\\t%s\\t%s\\t%s\\t%s\\n" %s "$cr_token" "$cr_rc" "$cr_clean" "$cr_compute_hostname" "$cr_compute_uid" > "$cr_terminal.tmp"') % ("%s", "%s", "%s", "%s", "%s", "%s", q(RECEIPT)),
+        _contract_text('  mv "$cr_terminal.tmp" "$cr_terminal"'), "}",
+        _contract_text("cr_interrupt() {"), "  trap - HUP INT TERM",
+        _contract_text('  if [ -n "$cr_child" ]; then'),
+        _contract_text('    /bin/kill -TERM -- "-$cr_child" 2>/dev/null || :'),
+        '    sleep 1', _contract_text('    /bin/kill -KILL -- "-$cr_child" 2>/dev/null || :'),
+        _contract_text('    wait "$cr_child" 2>/dev/null || :'), "  fi",
+        _contract_text("  cr_finish 143"), "  exit 143", "}", _contract_text("trap 'cr_interrupt' HUP INT TERM"),
+        _contract_text('if [ -f "$cr_cancel" ]; then cr_finish 125; exit 125; fi'),
+        _contract_text('cr_stamp=$(stat -c %Y "$cr_heartbeat" 2>/dev/null) || { cr_finish 125; exit 125; }'),
+        _contract_text('cr_now=$(date +%s)'),
+        _contract_text('if [ "$((cr_now-cr_stamp))" -gt 300 ]; then cr_finish 125; exit 125; fi'),
+        _contract_text('command -v setsid >/dev/null 2>&1 || { cr_finish 127; exit 127; }'),
+        _contract_text('printf "%s\\t%s\\tstarted\\t%s\\t%s\\t%s\\n" %s "$cr_token" "$$" "$cr_compute_hostname" "$cr_compute_uid" > "$cr_started.tmp"') % ("%s", "%s", "%s", "%s", "%s", q(RECEIPT)),
+        _contract_text('mv "$cr_started.tmp" "$cr_started"'),
         "setsid %s > %s 2> %s &" % (" ".join(q(arg) for arg in task["argv"]),
                                    q(files["simulator.stdout"]), q(files["simulator.stderr"])),
-        "cr_child=$!", "cr_parent=$$", "cr_start=$(date +%s)", "(", "  while :; do",
-        '    if [ -f "$cr_cancel" ]; then kill -TERM "$cr_parent"; exit; fi',
-        '    cr_now=$(date +%s)',
-        '    cr_stamp=$(stat -c %Y "$cr_heartbeat" 2>/dev/null) || { kill -TERM "$cr_parent"; exit; }',
-        '    if [ "$((cr_now-cr_stamp))" -gt 300 ]; then kill -TERM "$cr_parent"; exit; fi',
-        ('    if [ "$((cr_now-cr_start))" -ge %d ]; then : > "$cr_timeout"; kill -TERM "$cr_parent"; exit; fi' % max(1, int(math.ceil(timeout_seconds)))) if timeout_seconds is not None else '    : # solver run timeout disabled; owned heartbeat and cancellation remain active',
-        "    sleep 0.2", "  done", ") &", "cr_monitor=$!",
-        'wait "$cr_child"', "cr_rc=$?", "cr_finish $cr_rc", "trap - HUP INT TERM", "exit $cr_rc", "",
+        _contract_text("cr_child=$!"), _contract_text("cr_parent=$$"), _contract_text("cr_start=$(date +%s)"), "(", "  while :; do",
+        _contract_text('    if [ -f "$cr_cancel" ]; then kill -TERM "$cr_parent"; exit; fi'),
+        _contract_text('    cr_now=$(date +%s)'),
+        _contract_text('    cr_stamp=$(stat -c %Y "$cr_heartbeat" 2>/dev/null) || { kill -TERM "$cr_parent"; exit; }'),
+        _contract_text('    if [ "$((cr_now-cr_stamp))" -gt 300 ]; then kill -TERM "$cr_parent"; exit; fi'),
+        (_contract_text('    if [ "$((cr_now-cr_start))" -ge %d ]; then : > "$cr_timeout"; kill -TERM "$cr_parent"; exit; fi') % max(1, int(math.ceil(timeout_seconds)))) if timeout_seconds is not None else '    : # solver run timeout disabled; owned heartbeat and cancellation remain active',
+        "    sleep 0.2", "  done", ") &", _contract_text("cr_monitor=$!"),
+        _contract_text('wait "$cr_child"'), _contract_text("cr_rc=$?"), _contract_text("cr_finish $cr_rc"), "trap - HUP INT TERM", _contract_text("exit $cr_rc"), "",
     ])
     atomic_write_text(wrapper, "\n".join(lines))
     atomic_write_text(files["owner_heartbeat"], token + "\n")
@@ -627,7 +653,7 @@ def task_termination_evidence(row, terminal):
         stop = row.get("scheduler_stop") or {}
         expected_task = (row.get("task") or {}).get("task_id")
         observation, query = None, None
-        if (record.get("schema_version") == "crescendo.scheduler_task_tracking.v1"
+        if (record.get("schema_version") == _contract_text("crescendo.scheduler_task_tracking.v1")
                 and record.get("job_id") == identifier and record.get("receipt_token") == token
                 and isinstance(expected_task, str) and expected_task and record.get("task_id") == expected_task):
             observation, query = record.get("terminal_observation"), record.get("terminal_query")
@@ -637,7 +663,7 @@ def task_termination_evidence(row, terminal):
                 and submission.get("accepted") is True
                 and submission.get("job_id") == identifier and isinstance(observation, dict)
                 and isinstance(query, dict) and _scheduler_command_ok(query)
-                and observation.get("schema_version") == "crescendo.scheduler_observation.v1"
+                and observation.get("schema_version") == _contract_text("crescendo.scheduler_observation.v1")
                 and observation.get("observed_job_ids") == [identifier]
                 and observation.get("expected_job_id") == identifier and observation.get("job_id") == identifier
                 and observation.get("terminal") is True and not observation.get("invalid")
@@ -664,7 +690,7 @@ def task_termination_evidence(row, terminal):
     if plan and (plan.get("remote") is not False or plan.get("argv") != expected_argv):
         evidence["reason"] = "local_job_script_command_identity_differs"
         return evidence
-    expected_token = "cr_netlist_task_%s" % token
+    expected_token = _contract_text("cr_netlist_task_%s") % token
     expected_identity = {"legacy": True, "token": expected_token}
     inspection = inspect_legacy_guardian_attempt(attempt, expected_workspace_root=cwd,
                                                expected_token_identity=expected_identity)
@@ -734,7 +760,7 @@ def reconcile_previous_ownership(ownership_root, owned_run_root, request_cancel=
     boundary = os.path.realpath(os.path.abspath(owned_run_root))
     if not is_under(ownership_root, boundary):
         raise NetlistExecutionError("Ownership records are outside the verified run boundary")
-    path = os.path.join(ownership_root, "ownership.json")
+    path = os.path.join(ownership_root, _contract_text("ownership.json"))
     if not os.path.lexists(path):
         return {"cleanup_proven": True, "active_task_count": 0, "retained": [], "path": path,
                 "reason": "no_previous_private_netlist_ownership"}
@@ -742,7 +768,7 @@ def reconcile_previous_ownership(ownership_root, owned_run_root, request_cancel=
         raise NetlistExecutionError("Previous private netlist ownership record is unsafe")
     with open(path, "r", encoding="utf-8") as stream:
         previous = json.load(stream)
-    if not isinstance(previous, dict) or previous.get("schema_version") != "crescendo.private_netlist_ownership.v1":
+    if not isinstance(previous, dict) or previous.get("schema_version") != _contract_text("crescendo.private_netlist_ownership.v1"):
         raise NetlistExecutionError("Previous private netlist ownership schema is invalid")
     if os.path.realpath(previous.get("owned_run_root") or "") != boundary:
         raise NetlistExecutionError("Previous ownership record identifies another run boundary")
@@ -769,7 +795,7 @@ def reconcile_previous_ownership(ownership_root, owned_run_root, request_cancel=
         if not row.get("remote") and not clean:
             inspection = inspect_legacy_guardian_attempt(
                 os.path.dirname(files["terminal.receipt"]), expected_workspace_root=cwd,
-                expected_token_identity={"legacy": True, "token": "cr_netlist_task_%s" % token})
+                expected_token_identity={"legacy": True, "token": _contract_text("cr_netlist_task_%s") % token})
             clean = inspection.get("state") == "dead"
             proof["guardian"] = inspection
         dependencies_clean, dependencies = _cleanup_dependencies(row, boundary)
@@ -830,14 +856,17 @@ class NetlistExecutionContext(object):
         self.point_commit_callback = point_commit_callback
         self.command_runner = command_runner or run_command
         self.measurement_evaluator = measurement_evaluator or evaluate_task_outputs
+        self.batch_reader = measurement_evaluator is None and spec.get("reader_protocol") == _contract_text("crescendo.batch_reader.v2")
         self.capacity = threading.BoundedSemaphore(self.policy["max_jobs"])
-        self.local_capacity = threading.BoundedSemaphore(1)
+        self.local_capacity = threading.BoundedSemaphore(self.policy["local_solver_max_jobs"])
         self.test_capacity = dict((name, threading.BoundedSemaphore(policy["max_jobs"]))
                                   for name, policy in self.policy["tests"].items())
         self.unsafe = threading.Event()
         self.cancelled = threading.Event()
         self.lock = threading.Lock()
         self.active = {}
+        self.observation_lock = threading.Lock()
+        self.concurrency = ConcurrencyObserver()
         self.unresolved = {}
         self.command_scheduler = self.policy["command_scheduler"]
         interval = float((config.get("runtime") or {}).get("scheduler_poll_interval_seconds", 2.0))
@@ -856,7 +885,7 @@ class NetlistExecutionContext(object):
         self.owned_run_root = os.path.realpath(os.path.abspath(owned_run_root)) if owned_run_root else None
         if self.ownership_root and not self.owned_run_root:
             raise NetlistExecutionError("Private netlist ownership requires an explicit run boundary")
-        self.ownership_path = os.path.join(self.ownership_root, "ownership.json") if self.ownership_root else None
+        self.ownership_path = os.path.join(self.ownership_root, _contract_text("ownership.json")) if self.ownership_root else None
         self.owner_token = uuid.uuid4().hex
         self.heartbeat_stop = threading.Event()
         self.required_outputs = sorted(set(row["output_key"] for row in
@@ -870,18 +899,16 @@ class NetlistExecutionContext(object):
                                             dict(proof, termination_failed=True))
         self._recover_previous_ownership()
         self.task_pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.policy["max_jobs"])
-        self.measurement_jobs = min(2, self.policy["max_jobs"])
+        self.measurement_jobs = self.policy["measurement_jobs"]
         self.measurement_pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.measurement_jobs)
-        self.policy["measurement_jobs"] = self.measurement_jobs
-        self.policy["measurement_capacity_policy"] = "bounded_local_ocean_pool"
-        self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, name="crescendo-netlist-owner", daemon=True)
+        self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, name=_contract_text("crescendo-netlist-owner"), daemon=True)
         self.heartbeat_thread.start()
 
     def _persist_ownership_locked(self):
         if not self.ownership_path:
             return
         atomic_write_json(self.ownership_path, {
-            "schema_version": "crescendo.private_netlist_ownership.v1", "owner_token": self.owner_token,
+            "schema_version": _contract_text("crescendo.private_netlist_ownership.v1"), "owner_token": self.owner_token,
             "owned_run_root": self.owned_run_root,
             "updated_at": utc_timestamp(), "active": _ownership_projection(self.active),
             "unresolved": _ownership_projection(self.unresolved)})
@@ -923,8 +950,14 @@ class NetlistExecutionContext(object):
         return self.unsafe.is_set() or self.cancelled.is_set() or bool(self.cancel_check and self.cancel_check()) or bool(additional and additional())
 
     def _emit(self, value):
+        with self.observation_lock:
+            self.concurrency.observe(value)
         if self.progress_callback:
             self.progress_callback(value)
+
+    def generation_capacity(self, generation):
+        with self.observation_lock:
+            return self.concurrency.snapshot(generation, self.policy)
 
     def _acquire(self, semaphore, cancel_check):
         while not semaphore.acquire(timeout=0.1):
@@ -970,15 +1003,29 @@ class NetlistExecutionContext(object):
         return {"cleanup_proven": not retained and active_count == 0,
                 "retained": retained, "active_task_count": active_count, "unsafe": self.unsafe.is_set()}
 
-    def _scheduler_submission(self, argv):
-        """Select key-value tracking from explicit templates, never a CLI name."""
-        return bool(argv and self.command_scheduler != "receipt"
-                    and scheduler_capability(self.commands)["available"])
+    def _provider_context(self, argv=None, task_root=None, env=None, deadline=None):
+        from .scheduler_providers import get_provider
+        if not callable(getattr(get_provider(), 'probe_context', None)):
+            return None
+        return {'config': self.config, 'spec': self.spec,
+                'submit_argv': list(argv or []), 'root': task_root,
+                'environment': scheduler_environment(env if env is not None else child_environment(self.config, home=os.environ.get("HOME") or os.getcwd())),
+                'deadline': deadline, 'cancel': self.cancel_check,
+                '_help_runner': self.command_runner}
 
-    def _scheduler_argv(self, kind, job_id, policy, task_root):
+    def _scheduler_submission(self, argv, task_root=None, env=None, deadline=None):
+        """Select key-value tracking from explicit templates, never a CLI name."""
+        from .runtime import scheduler_mode
+        if not argv or scheduler_mode(self.command_scheduler) == "receipt":
+            return False
+        capability = scheduler_capability(self.commands, self._provider_context(argv, task_root, env, deadline))
+        return capability['available'] or capability.get('submit_identity_required') is True
+
+    def _scheduler_argv(self, kind, job_id, policy, task_root, env=None, deadline=None):
         values = dict(policy.get("scheduler_bindings") or {})
         values.setdefault("cwd", task_root)
-        return scheduler_command_argv(self.commands["scheduler_" + kind + "_template"], job_id, values)
+        from .scheduler_providers import command
+        return command(kind, self.commands, job_id, values, self._provider_context(policy.get("submit_argv"), task_root, env, deadline))
 
     def _scheduler_observe(self, policy, job_id, task_root, env, record, identity, final=False):
         """Observe one owned ID; scheduler state never authorizes solver success."""
@@ -988,14 +1035,14 @@ class NetlistExecutionContext(object):
         if not self._scheduler_submission(argv):
             return record
         if record is None:
-            record = dict(identity, schema_version="crescendo.scheduler_task_tracking.v1", job_id=job_id,
+            record = dict(identity, schema_version=_contract_text("crescendo.scheduler_task_tracking.v1"), job_id=job_id,
                 samples=[], query_count=0, latest=None, native_completion_authority=False)
         else:
             record = copy.deepcopy(record)
         scheduler_env = scheduler_environment(env)
-        capability = scheduler_capability(self.commands)
+        capability = scheduler_capability(self.commands, self._provider_context(argv, task_root, env))
         record["capability"] = capability
-        if not capability["available"]:
+        if not capability.get("query_available", capability["available"]):
             record["reason"] = capability["reason"]
         else:
             try:
@@ -1031,7 +1078,7 @@ class NetlistExecutionContext(object):
                     message="Scheduler %s; simulator completion requires the owned receipt and result evidence" % (
                         observation.get("state") or ("NOT_FOUND" if observation.get("not_found") else "UNKNOWN"))))
             record["final"] = bool(final)
-        atomic_write_json(os.path.join(task_root, "scheduler_observation.json"), record)
+        atomic_write_json(os.path.join(task_root, _contract_text("scheduler_observation.json")), record)
         return record
 
     def _scheduler_cancel(self, policy, submit_result, task_root, env):
@@ -1039,12 +1086,13 @@ class NetlistExecutionContext(object):
         stop_deadline = stop_started + self.scheduler_stop_timeout
         env = scheduler_environment(env)
         argv = policy.get("submit_argv") or []
-        if not self._scheduler_submission(argv):
+        from .runtime import scheduler_mode
+        if not argv or scheduler_mode(self.command_scheduler) == "receipt":
             return {"attempted": False, "remote_stop_proven": False, "reason": "scheduler_cancel_adapter_unavailable"}
         job_id = parse_submit_streams(submit_result.get("stdout_tail"), submit_result.get("stderr_tail"))["job_id"]
         if not job_id:
             return {"attempted": False, "remote_stop_proven": False, "reason": "scheduler_submission_id_unavailable"}
-        capability = scheduler_capability(self.commands)
+        capability = scheduler_capability(self.commands, self._provider_context(argv, task_root, env, stop_deadline))
         if not capability["available"]:
             return {"attempted": False, "remote_stop_proven": False, "job_id": job_id,
                     "reason": capability["reason"], "capability": capability}
@@ -1053,7 +1101,7 @@ class NetlistExecutionContext(object):
             return {"attempted": False, "remote_stop_proven": False, "job_id": job_id,
                     "reason": "scheduler_stop_budget_expired", "timeout_seconds": self.scheduler_stop_timeout}
         try:
-            cancel = self.command_runner(self._scheduler_argv("cancel", job_id, policy, task_root),
+            cancel = self.command_runner(self._scheduler_argv("cancel", job_id, policy, task_root, env, stop_deadline),
                 cwd=task_root, env=env, timeout_seconds=min(10, remaining),
                 stdout_path=os.path.join(task_root, "scheduler_cancel.stdout"),
                 stderr_path=os.path.join(task_root, "scheduler_cancel.stderr"),
@@ -1069,7 +1117,7 @@ class NetlistExecutionContext(object):
             if remaining <= 0:
                 break
             try:
-                query = self.command_runner(self._scheduler_argv("query", job_id, policy, task_root),
+                query = self.command_runner(self._scheduler_argv("query", job_id, policy, task_root, env, stop_deadline),
                     cwd=task_root, env=env, timeout_seconds=min(5, remaining),
                     stdout_path=os.path.join(task_root, "scheduler_query%s.stdout" % suffix),
                     stderr_path=os.path.join(task_root, "scheduler_query%s.stderr" % suffix),
@@ -1097,7 +1145,11 @@ class NetlistExecutionContext(object):
                 "deadline_expired": state is None and time.monotonic() >= stop_deadline,
                 "query_observation": observation, "capability": capability}
 
-    def _execute_task(self, manifest, task, timeout_seconds, cancel_check):
+    def _execute_task(self, manifest, task, timeout_seconds, cancel_check, phases=None, enqueued=None):
+        collect_timing = phases is not None
+        if phases is None:
+            phases = {}
+        phases["worker_queue"] = {"elapsed_seconds": elapsed(enqueued, timestamp())}
         acquired = []
         test_semaphore = self.test_capacity.get(task["test"])
         # Acquire per-test before global capacity so a crowded test cannot hold
@@ -1105,16 +1157,23 @@ class NetlistExecutionContext(object):
         try:
             policy = self.policy["tests"].get(task["test"], self.policy["global"])
             local = policy["distribution"] == "local"
-            for semaphore in (([self.local_capacity] if local else []) +
-                              ([test_semaphore] if test_semaphore else []) + [self.capacity]):
-                self._acquire(semaphore, cancel_check)
-                acquired.append(semaphore)
-            return self._execute_task_owned(manifest, task, timeout_seconds, cancel_check)
+            with measure(phases, "capacity_wait"):
+                for semaphore in (([self.local_capacity] if local else []) +
+                                  ([test_semaphore] if test_semaphore else []) + [self.capacity]):
+                    self._acquire(semaphore, cancel_check)
+                    acquired.append(semaphore)
+            with measure(phases, "execution"):
+                if not collect_timing:
+                    return self._execute_task_owned(manifest, task, timeout_seconds, cancel_check)
+                return self._execute_task_owned(manifest, task, timeout_seconds, cancel_check, phases)
         finally:
             for semaphore in reversed(acquired):
                 semaphore.release()
 
-    def _execute_task_owned(self, manifest, task, timeout_seconds, cancel_check):
+    def _execute_task_owned(self, manifest, task, timeout_seconds, cancel_check, phases=None):
+        if phases is None:
+            phases = {}
+        task_preparation_started = timestamp()
         root = manifest["root"]
         policy = self.policy["tests"].get(task["test"], self.policy["global"])
         simulator = task.get("execution_simulator", "spectre")
@@ -1127,7 +1186,7 @@ class NetlistExecutionContext(object):
         launch_epoch = time.time()
         env = child_environment(self.config, home=ensure_dir(os.path.join(os.path.dirname(task["psf_dir"]), "home")))
         timeout_policy = copy.deepcopy(policy["timeouts"])
-        if timeout_policy["fields"]["run_seconds"]["source"] == "cr_runtime_fallback":
+        if timeout_policy["fields"]["run_seconds"]["source"] == _contract_text("cr_runtime_fallback"):
             timeout_policy["fields"]["run_seconds"].update(seconds=timeout_seconds,
                 raw_value=-1 if timeout_seconds is None else timeout_seconds,
                 enabled=timeout_seconds is not None, status="disabled" if timeout_seconds is None else "enabled")
@@ -1136,7 +1195,7 @@ class NetlistExecutionContext(object):
             run_timeout if policy["distribution"] == "local" else None)
         task_root = os.path.dirname(wrapper)
         values = solver_bindings(contract, task["netlist_path"], task["psf_dir"], task["spectre_log"], task.get("ahdl_dir")) if contract else {}
-        values.update(cwd=task["cwd"], test=task["test"], corner=task["corner"], point_id=str(task["point_id"]))
+        values.update(cwd=task["cwd"], owned_task_root=os.path.dirname(task["psf_dir"]), test=task["test"], corner=task["corner"], point_id=str(task["point_id"]))
         try:
             submission_plan = build_submission_command(policy, wrapper, self.commands, values)
         except ExecutionCommandError as error:
@@ -1145,6 +1204,8 @@ class NetlistExecutionContext(object):
             raise NetlistExecutionError(str(error), detail)
         argv = submission_plan["argv"]
         remote = submission_plan["remote"]
+        phases["scheduler_queue"] = {"elapsed_seconds": None,
+            "source": "scheduler_timestamps_unavailable" if remote else "not_applicable"}
         submit_env = scheduler_environment(env) if remote else env
         if remote:
             binary = resolve_scheduler_binary(argv[0], environment=submit_env)
@@ -1161,7 +1222,7 @@ class NetlistExecutionContext(object):
         cancel_policy = dict(policy, submit_argv=argv, scheduler_bindings=submission_plan["bindings"])
         submitted = time.monotonic()
         timeout_clock = TaskTimeoutClock(timeout_policy, submitted, remote=remote)
-        timeout_path = os.path.join(task_root, "task_timeouts.json")
+        timeout_path = os.path.join(task_root, _contract_text("task_timeouts.json"))
         timeout_expired = [None]
         active_key = manifest["candidate_id"] + ":" + task["task_id"]
         active = {"files": files, "task": task, "token": token, "remote": remote, "stage": "submit",
@@ -1197,7 +1258,7 @@ class NetlistExecutionContext(object):
                 active["stage"] = "solve"
                 emit_task({"stage": "solve", "token": token, "started_receipt": started,
                            "timeout_state": record_timeout_state()})
-            if read_task_receipt(files["terminal.receipt"], token, terminal=True):
+            if read_task_receipt(files["terminal.receipt"], token, terminal=True) and timeout_clock.finished is None:
                 if os.path.exists(files["timed_out"]) and timeout_clock.expiration is None:
                     state = timeout_clock.snapshot(time.monotonic())
                     timeout_clock.expiration = {"phase": "run", "trigger": "owned_compute_watchdog",
@@ -1205,6 +1266,7 @@ class NetlistExecutionContext(object):
                         "job_id": timeout_clock.job_id, "phase_elapsed_seconds": state["phase_elapsed_seconds"]}
                     timeout_expired[0] = timeout_clock.expiration
                 timeout_clock.terminal_receipt(time.monotonic())
+                emit_task({"stage": "solver_terminal"})
             return started
         try:
             with self.lock:
@@ -1221,7 +1283,7 @@ class NetlistExecutionContext(object):
                         "test": task["test"], "corner": task["corner"], "argv": argv, "cwd": task["cwd"],
                         "remote": remote, "submission_command_plan": submission_plan,
                         "command": command_display(argv)})
-            atomic_write_json(os.path.join(task_root, "submission.json"), {
+            atomic_write_json(os.path.join(task_root, _contract_text("submission.json")), {
                 "schema_version": SCHEMA, "candidate_id": manifest["candidate_id"], "task_id": task["task_id"],
                 "token": token, "argv": argv, "cwd": task["cwd"], "remote": remote,
                 "solver_command_plan": task.get("solver_command_plan"), "submission_command_plan": submission_plan,
@@ -1261,12 +1323,17 @@ class NetlistExecutionContext(object):
         scheduler_identity = dict(task_identity, receipt_token=token)
         awaiting_measurement = False
         failure_stage = "submit"
+        phases["execution_preparation"] = {"elapsed_seconds": elapsed(task_preparation_started, timestamp())}
+        pending = PendingSamples() if remote else None
+        submit_finished = None
         try:
-            submit_result = run_owned_command(
-                argv, cwd=task["cwd"], env=submit_env,
-                timeout_seconds=(self.config.get("runtime") or {}).get("command_timeout_seconds", 1800) if remote else None,
-                control_root=task_root, token="cr_netlist_task_%s" % token,
-                cancel_check=interrupted, command_runner=self.command_runner)
+            with measure(phases, "submission" if remote else "local_command"):
+                submit_result = run_owned_command(
+                    argv, cwd=task["cwd"], env=submit_env,
+                    timeout_seconds=(self.config.get("runtime") or {}).get("command_timeout_seconds", 1800) if remote else None,
+                    control_root=task_root, token=_contract_text("cr_netlist_task_%s") % token,
+                    cancel_check=interrupted, command_runner=self.command_runner)
+            submit_finished = timestamp()
             if remote:
                 submission_observation = parse_submit_streams(submit_result.get("stdout_tail"), submit_result.get("stderr_tail"))
                 scheduler_job_id = submission_observation["job_id"]
@@ -1285,6 +1352,7 @@ class NetlistExecutionContext(object):
                     scheduler_record = self._scheduler_observe(cancel_policy, scheduler_job_id, task_root, env,
                                                                scheduler_record, scheduler_identity, final=bool(terminal))
                     active["scheduler_observation"] = scheduler_record
+                    pending.observe(scheduler_record, scheduler_job_id)
                     timeout_clock.observe((scheduler_record or {}).get("latest"), time.monotonic())
                     if timeout_clock.running is not None:
                         failure_stage = "solve"
@@ -1327,10 +1395,12 @@ class NetlistExecutionContext(object):
                 scheduler_record = self._scheduler_observe(cancel_policy, scheduler_job_id, task_root, env,
                                                            scheduler_record, scheduler_identity, final=True)
                 active["scheduler_observation"] = scheduler_record
+                pending.observe(scheduler_record, scheduler_job_id)
                 timeout_clock.observe((scheduler_record or {}).get("latest"), time.monotonic())
                 record_timeout_state()
-            solver_artifacts = collect_solver_artifacts(task, root, launch_epoch, job_id=scheduler_job_id,
-                scheduler_stdout=scheduler_paths.get("stdout"), scheduler_stderr=scheduler_paths.get("stderr"))
+            with measure(phases, "solver_artifact_collection"):
+                solver_artifacts = collect_solver_artifacts(task, root, launch_epoch, job_id=scheduler_job_id,
+                    scheduler_stdout=scheduler_paths.get("stdout"), scheduler_stderr=scheduler_paths.get("stderr"))
             active["scheduler_stop"] = scheduler_stop
             termination_evidence = task_termination_evidence(active, terminal)
             cleaned = termination_evidence["cleanup_proven"]
@@ -1392,7 +1462,9 @@ class NetlistExecutionContext(object):
                             "completion": "owned_zero_exit_pending_native_result_qualification",
                             "size_bytes": os.path.getsize(task["spectre_log"])}
             else:
-                evidence = _spectre_log_evidence(task["spectre_log"], root)
+                evidence = _spectre_log_evidence(task["spectre_log"], root, include_timing=True)
+                phases["solver"] = {"elapsed_seconds": evidence.pop("solver_wall_seconds", None),
+                                    "source": "spectre_native_wall_clock"}
             if simulator == "alps":
                 try:
                     evidence["solver_log"] = _alps_log_evidence(task, root, launch_epoch)
@@ -1456,7 +1528,7 @@ class NetlistExecutionContext(object):
                 with self.lock:
                     self.unresolved[active_key] = active
                     self._persist_ownership_locked()
-            atomic_write_json(os.path.join(task_root, "error.json"), {
+            atomic_write_json(os.path.join(task_root, _contract_text("error.json")), {
                 "error": "%s: %s" % (error.__class__.__name__, error), "candidate_id": manifest["candidate_id"],
                 "task_id": task["task_id"], "token": token, "detail": getattr(error, "detail", {}),
                 "submission": submit_result, "receipt": terminal, "scheduler_stop": scheduler_stop,
@@ -1473,13 +1545,21 @@ class NetlistExecutionContext(object):
                                             infrastructure=isinstance(error, UnsupportedCompletionEvidence))
             raise
         finally:
+            if pending is not None:
+                phases["scheduler_observed_pending"] = pending.phase()
+                phases["remote_start_observation"] = {
+                    "elapsed_seconds": elapsed(submit_finished, seen_start[0]),
+                    "source": "submit_return_to_first_owned_start_receipt_observation"}
             if not awaiting_measurement:
                 with self.lock:
                     self.active.pop(active_key, None)
                     self._persist_ownership_locked()
 
-    def _measure_task(self, manifest, result, timeout_seconds, cancel_check):
+    def _measure_task(self, manifest, result, timeout_seconds, cancel_check, phases=None, enqueued=None, precomputed=None):
         """Measure in a small local pool without occupying a Spectre job slot."""
+        if phases is None:
+            phases = {}
+        phases["measurement_queue"] = {"elapsed_seconds": elapsed(enqueued, timestamp())}
         task, token, root = result["task"], result["token"], manifest["root"]
         key = manifest["candidate_id"] + ":" + task["task_id"]
         control = os.path.dirname(os.path.join(os.path.dirname(task["psf_dir"]), "execution", "terminal.receipt"))
@@ -1503,16 +1583,24 @@ class NetlistExecutionContext(object):
         try:
             if cancelled():
                 raise NetlistExecutionError("Candidate cancelled before output evaluation", {"cancelled": True})
-            measurement = self.measurement_evaluator(
-                task, self.config, root, timeout_seconds=timeout_seconds,
-                required_output_keys=self.required_outputs, cancel_check=cancelled,
-                progress_callback=measurement_progress, ownership_callback=before_measurement_launch)
+            with measure(phases, "result_collection"):
+                if isinstance(precomputed, Exception):
+                    raise precomputed
+                measurement = precomputed
+                if measurement is None:
+                    try:
+                        measurement = self.measurement_evaluator(
+                            task, self.config, root, timeout_seconds=timeout_seconds,
+                            required_output_keys=self.required_outputs, cancel_check=cancelled,
+                            progress_callback=measurement_progress, ownership_callback=before_measurement_launch)
+                    finally:
+                        measurement_progress({"stage": "measurement_terminal"})
             if task.get("execution_simulator", "spectre") == "alps":
                 proof = measurement.get("native_parameter_readback_verified") or {}
                 if measurement.get("execution_simulator") != "alps" or not isinstance(proof, dict) or proof.get("ok") is not True or proof.get("source") != "current_psf_designParamVals":
                     raise NetlistExecutionError("ALPS actual native result/parameter qualification is unproven", {"measurement": measurement})
             result["measurement"] = measurement
-            atomic_write_json(os.path.join(control, "result.json"), result)
+            atomic_write_json(os.path.join(control, _contract_text("result.json")), result)
             if self.point_commit_callback is not None:
                 # A point is measured, not a completed candidate. Freeze all
                 # native evidence before deleting any PSF/AHDL. The optimizer
@@ -1586,7 +1674,7 @@ class NetlistExecutionContext(object):
                 with self.lock:
                     self.unresolved[key] = active
                     self._persist_ownership_locked()
-            atomic_write_json(os.path.join(control, "measurement_error.json"), {
+            atomic_write_json(os.path.join(control, _contract_text("measurement_error.json")), {
                 "error": "%s: %s" % (error.__class__.__name__, error), "detail": getattr(error, "detail", {}),
                 "candidate_id": manifest["candidate_id"], "task_id": task["task_id"],
                 "dependencies": dependencies, "cleanup_proven": dependencies_clean})
@@ -1600,6 +1688,87 @@ class NetlistExecutionContext(object):
             with self.lock:
                 self.active.pop(key, None)
                 self._persist_ownership_locked()
+
+    def _measure_batch(self, manifest, ready, timeout_seconds, cancel_check):
+        tasks = [result["task"] for result, timing in ready]
+        dependencies = []
+        def ownership(dependency):
+            dependencies.append(copy.deepcopy(dependency))
+            with self.lock:
+                for task in tasks:
+                    active = self.active[manifest["candidate_id"] + ":" + task["task_id"]]
+                    active["stage"] = "measurement"
+                    active.setdefault("cleanup_dependencies", []).append(copy.deepcopy(dependency))
+                self._persist_ownership_locked()
+        reader_started = timestamp()
+        try:
+            if self._cancelled(cancel_check):
+                raise NetlistExecutionError("Candidate cancelled before output evaluation", {"cancelled": True})
+            measured = evaluate_task_outputs_batch(tasks, self.config, manifest["root"], timeout_seconds,
+                required_output_keys=self.required_outputs, cancel_check=lambda: self._cancelled(cancel_check),
+                ownership_callback=ownership, progress_callback=lambda event: self._emit(dict(event,
+                    candidate_id=manifest["candidate_id"], task_id=tasks[0]["task_id"])))
+        except Exception as error:
+            pending = getattr(error, "detail", {}).get("reader_control_cleanup_pending")
+            if pending:
+                # No process was launched, but failed control-file cleanup is
+                # still an owned unresolved artifact, never a completed cleanup.
+                ownership({"attempt_root": pending, "cwd": pending, "token": _contract_text("cr_prelaunch_cleanup")})
+            measured = {task["task_id"]: error for task in tasks}
+        finally:
+            self._emit({"stage": "measurement_terminal", "candidate_id": manifest["candidate_id"],
+                        "task_id": tasks[0]["task_id"]})
+        batch_timing = {"elapsed_seconds": elapsed(reader_started, timestamp()), "scope": "batch",
+                        "batch_id": manifest["candidate_id"] + ":" + tasks[0]["task_id"]}
+        results, first_error = [], None
+        for result, timing in ready:
+            timing["phases"]["reader_batch"] = dict(batch_timing)
+            try:
+                results.append(self._measure_task(manifest, result, timeout_seconds, cancel_check,
+                    timing["phases"], timestamp(), precomputed=measured[result["task"]["task_id"]]))
+                timing["status"] = "completed"
+            except Exception as error:
+                timing["status"] = "failed"
+                if first_error is None:
+                    first_error = error
+        # Every point has now persisted its retirement or unresolved owner.
+        # Shared guardian evidence must outlive all of those point consumers.
+        cleanup = self._cleanup_reader_batches(manifest["root"], dependencies)
+        for result, timing in ready:
+            timing["reader_batch_cleanup"] = cleanup
+        if first_error is not None:
+            raise first_error
+        return results
+
+    def _cleanup_reader_batches(self, root, dependencies):
+        from .retention import _reject_mounts_or_cross_device_tree, _reject_unsafe_regular_tree
+        result = {"artifact_cleanup_complete": True, "removed": [], "retained": []}
+        parent = os.path.join(os.path.realpath(root), "reader_batches")
+        for dependency in dependencies:
+            attempt = dependency["attempt_root"]
+            try:
+                if os.path.dirname(attempt) != parent or os.path.realpath(attempt) != attempt:
+                    raise NetlistExecutionError("Reader cleanup boundary is unsafe")
+                with self.lock:
+                    owners = list(self.active.values()) + list(self.unresolved.values())
+                    if any(dependency in row.get("cleanup_dependencies", []) for row in owners):
+                        raise NetlistExecutionError("Reader cleanup still has point owners")
+                    # Recovery must observe the retired owners before their
+                    # shared guardian files disappear, even after a write retry.
+                    self._persist_ownership_locked()
+                    clean, unused = _cleanup_dependencies(
+                        {"cleanup_dependencies": [dependency]}, self.owned_run_root or root)
+                    if not clean:
+                        raise NetlistExecutionError("Reader termination remains unproven")
+                    device = os.stat(root).st_dev
+                    _reject_mounts_or_cross_device_tree(attempt, device, "retired batch reader")
+                    _reject_unsafe_regular_tree(attempt, device, "retired batch reader")
+                    shutil.rmtree(attempt)
+                result["removed"].append(attempt)
+            except Exception as error:
+                result["artifact_cleanup_complete"] = False
+                result["retained"].append({"path": attempt, "error": str(error)})
+        return result
 
     def _cleanup_measured_point(self, manifest, task, committed, progress_identity=None, companion_evidence=None):
         try:
@@ -1702,9 +1871,13 @@ class NetlistExecutionContext(object):
             value["progress_error"] = str(error)
         return value
 
-    def evaluate(self, candidate_manifest, timeout_seconds=None, cancel_check=None):
+    def evaluate(self, candidate_manifest, timeout_seconds=None, cancel_check=None, timing=None):
+        timing = timing if isinstance(timing, dict) else {}
+        if not isinstance(timing.get("phases"), dict):
+            timing["phases"] = {}
+        started = timestamp()
         try:
-            return self._evaluate(candidate_manifest, timeout_seconds, cancel_check)
+            return self._evaluate(candidate_manifest, timeout_seconds, cancel_check, timing, started)
         except ExecutionCommandError as error:
             detail = dict(error.detail)
             detail.setdefault("failure_stage", "command_render")
@@ -1712,8 +1885,20 @@ class NetlistExecutionContext(object):
         except NetlistExecutionError as error:
             error.detail.setdefault("failure_stage", "solver_command")
             raise
+        finally:
+            phases = timing["phases"]
+            if "execution_preparation" not in phases:
+                phases["execution_preparation"] = {"elapsed_seconds": elapsed(started, timestamp())}
+            tasks = timing.get("tasks") or []
+            for name in ("scheduler_queue", "scheduler_observed_pending", "solver", "result_collection"):
+                phases[name] = summarize_tasks(tasks, name)
+            batches = {task["phases"]["reader_batch"]["batch_id"]: task["phases"]["reader_batch"]
+                       for task in tasks if "reader_batch" in task.get("phases", {})}
+            if batches:
+                phases["reader_batches"] = {"elapsed_seconds": sum(row["elapsed_seconds"] or 0 for row in batches.values()),
+                    "count": len(batches), "total_count": len(batches), "scope": "task_sum"}
 
-    def _evaluate(self, candidate_manifest, timeout_seconds=None, cancel_check=None):
+    def prepare_candidate(self, candidate_manifest):
         manifest = copy.deepcopy(candidate_manifest)
         validate_execution_selection(manifest, self.execution_selection, self.inherited_execution_selection)
         default_generation = compact_netlist_generation(manifest.get("netlist_generation") or {}, manifest)
@@ -1768,7 +1953,7 @@ class NetlistExecutionContext(object):
             if contract:
                 policy = self.policy["tests"].get(task["test"], self.policy["global"])
                 values = solver_bindings(contract, task["netlist_path"], task["psf_dir"], task["spectre_log"], task.get("ahdl_dir"))
-                values.update(cwd=task["cwd"], test=task["test"], corner=task["corner"], point_id=str(task["point_id"]))
+                values.update(cwd=task["cwd"], owned_task_root=os.path.dirname(task["psf_dir"]), test=task["test"], corner=task["corner"], point_id=str(task["point_id"]))
                 wrapper = os.path.join(os.path.dirname(task["psf_dir"]), "execution", "execute.sh")
                 submission_plan = build_submission_command(policy, wrapper, self.commands, values)
                 try:
@@ -1779,6 +1964,14 @@ class NetlistExecutionContext(object):
                     raise
         if self.owned_run_root and not is_under(manifest["root"], self.owned_run_root):
             raise NetlistExecutionError("Candidate does not belong to this execution context's run")
+        qualification = qualify_expressions(manifest["tasks"], self.required_outputs)
+        if not qualification["supported"]:
+            raise NetlistExecutionError("Required outputs cannot be qualified by the shared result reader",
+                                        dict(qualification, failure_stage="measurement"))
+        return manifest
+
+    def _evaluate(self, candidate_manifest, timeout_seconds, cancel_check, timing, preparation_started):
+        manifest = self.prepare_candidate(candidate_manifest)
         timeout_value = timeout_seconds if timeout_seconds is not None else self.spec.get("candidate_timeout_seconds", 600)
         if timeout_value is None or (isinstance(timeout_value, str) and not timeout_value.strip()):
             timeout_seconds = None
@@ -1789,41 +1982,69 @@ class NetlistExecutionContext(object):
             elif not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
                 raise NetlistExecutionError("Candidate timeout must be positive finite seconds or blank for no limit; 0 is invalid")
         required = self.required_outputs or []
-        qualification = qualify_expressions(manifest["tasks"], self.required_outputs)
-        if not qualification["supported"]:
-            raise NetlistExecutionError("Required outputs cannot be qualified by the shared result reader",
-                                        dict(qualification, failure_stage="measurement"))
         started = time.monotonic()
         failed = threading.Event()
 
         def candidate_cancelled():
             return failed.is_set() or bool(cancel_check and cancel_check())
 
-        results, first_error = [], None
-        futures = dict((self.task_pool.submit(self._execute_task, manifest, task, timeout_seconds, candidate_cancelled), "spectre")
-                       for task in manifest["tasks"])
+        results, first_error, futures = [], None, {}
+        reader_ready = []
+        phases = timing["phases"]
+        phases["execution_preparation"] = {"elapsed_seconds": elapsed(preparation_started, timestamp())}
+        timing["tasks"] = []
+        for task in manifest["tasks"]:
+            task_timing = {key: task[key] for key in ("task_id", "test", "corner", "point_id")}
+            task_timing.update(status="pending", phases={"solver": {"elapsed_seconds": None},
+                                                        "scheduler_queue": {"elapsed_seconds": None}})
+            timing["tasks"].append(task_timing)
+            future = self.task_pool.submit(self._execute_task, manifest, task, timeout_seconds,
+                                           candidate_cancelled, task_timing["phases"], timestamp())
+            futures[future] = ("spectre", task_timing)
         while futures:
             finished, unused = concurrent.futures.wait(list(futures), return_when=concurrent.futures.FIRST_COMPLETED)
             for future in finished:
-                stage = futures.pop(future)
+                stage, task_timing = futures.pop(future)
                 try:
                     task_result = future.result()
-                    if stage == "spectre":
+                    if stage == "spectre" and self.batch_reader:
+                        reader_ready.append((task_result, task_timing))
+                    elif stage == "spectre":
                         measured = self.measurement_pool.submit(self._measure_task, manifest, task_result,
-                                                                timeout_seconds, candidate_cancelled)
-                        futures[measured] = "measurement"
+                                                                timeout_seconds, candidate_cancelled,
+                                                                task_timing["phases"], timestamp())
+                        futures[measured] = ("measurement", task_timing)
+                    elif stage == "reader_batch":
+                        results.extend(task_result)
                     else:
+                        task_timing["status"] = "completed"
                         results.append(task_result)
                 except Exception as error:
+                    task_timing["status"] = "failed"
                     if first_error is None:
                         first_error = error
                     failed.set()
+            if reader_ready and not any(stage == "spectre" for stage, unused in futures.values()):
+                for offset in range(0, len(reader_ready), 4):
+                    batch = reader_ready[offset:offset + 4]
+                    measured = self.measurement_pool.submit(self._measure_batch, manifest, batch,
+                                                            timeout_seconds, candidate_cancelled)
+                    futures[measured] = ("reader_batch", batch[0][1])
+                reader_ready = []
+        # All reader futures have retired. Until now a sibling batch could
+        # still be between creating the shared parent and its control child.
+        if self.batch_reader:
+            try:
+                os.rmdir(os.path.join(manifest["root"], "reader_batches"))
+            except OSError:
+                pass
         if first_error is not None:
             raise first_error
         result_by_id = dict((row["task"]["task_id"], row) for row in results)
         results = [result_by_id[task["task_id"]] for task in manifest["tasks"]]
-        path = os.path.join(manifest["root"], "cli_results.json")
-        parsed = parsed_results(results, path)
+        path = os.path.join(manifest["root"], _contract_text("cli_results.json"))
+        with measure(phases, "result_aggregation"):
+            parsed = parsed_results(results, path)
         completion = {"schema_version": COMPLETION_SCHEMA, "adapter": "private_netlist",
                       "candidate_id": manifest["candidate_id"], "template_sha256": manifest.get("template_sha256"),
                       "task_count": len(results), "native_rdb": False,
@@ -1840,7 +2061,7 @@ class NetlistExecutionContext(object):
         completion.update(execution_simulator=simulator, simulator=simulator,
                           native_parameter_readback_verified=simulator == "alps" and all((row["measurement"].get("native_parameter_readback_verified") or {}).get("ok") is True for row in results))
         source_modes = set((row["task"].get("netlist_generation") or {}).get("mode", "template") for row in results)
-        pipeline = {"schema_version": "crescendo.execution_pipeline.v1", "solver": "shared_cli",
+        pipeline = {"schema_version": _contract_text("crescendo.execution_pipeline.v1"), "solver": "shared_cli",
                     "submission": "shared_local_or_command",
                     "netlist_source": next(iter(source_modes)) if len(source_modes) == 1 else "mixed",
                     "commands_fingerprint": self.commands["fingerprint"],

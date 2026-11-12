@@ -1,11 +1,14 @@
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 
 import ast
 import json
 import os
 
 
-TECHNOLOGY_SCHEMA_VERSION = "crescendo.workspace_technology.v1"
+TECHNOLOGY_SCHEMA_VERSION = _contract_text("crescendo.workspace_technology.v1")
 
 
 class TechnologyBindingError(RuntimeError):
@@ -75,45 +78,45 @@ def technology_probe_skill(manifest):
     if not output_path:
         raise TechnologyBindingError("workspace technology probe path is missing")
     lines = [
-        'crescTechOut = outfile("%s")' % _skill_quote(output_path),
-        "crescTechFailed = nil",
+        _contract_text('crescTechOut = outfile("%s")') % _skill_quote(output_path),
+        _contract_text("crescTechFailed = nil"),
         "if(isCallable('techGetTechFile) then",
     ]
     for row in manifest.get("bindings") or []:
         library = str(row.get("library") or "")
         expected = row.get("technology_library")
         lines.extend([
-            '  crescTechLib = ddGetObj("%s")' % _skill_quote(library),
-            "  crescTechFile = nil",
-            "  crescActualTechLib = nil",
-            "  crescActualTechPath = nil",
-            "  if(ddIsId(crescTechLib) then",
-            "    crescTechResult = errset(techGetTechFile(crescTechLib) t)",
-            "    when(crescTechResult crescTechFile = car(crescTechResult))",
-            "    when(crescTechFile",
-            "      crescActualTechLib = crescTechFile~>libName",
-            "      crescActualTechPath = crescTechFile~>path",
+            _contract_text('  crescTechLib = ddGetObj("%s")') % _skill_quote(library),
+            _contract_text("  crescTechFile = nil"),
+            _contract_text("  crescActualTechLib = nil"),
+            _contract_text("  crescActualTechPath = nil"),
+            _contract_text("  if(ddIsId(crescTechLib) then"),
+            _contract_text("    crescTechResult = errset(techGetTechFile(crescTechLib) t)"),
+            _contract_text("    when(crescTechResult crescTechFile = car(crescTechResult))"),
+            _contract_text("    when(crescTechFile"),
+            _contract_text("      crescActualTechLib = crescTechFile~>libName"),
+            _contract_text("      crescActualTechPath = crescTechFile~>path"),
             "    )",
             "  else",
-            "    crescTechFailed = t",
+            _contract_text("    crescTechFailed = t"),
             "  )",
-            '  fprintf(crescTechOut "TECH\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" %s crescActualTechLib crescActualTechPath)'
+            _contract_text('  fprintf(crescTechOut "TECH\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" %s crescActualTechLib crescActualTechPath)')
             % (_skill_quote(library), _skill_value(expected)),
         ])
         if expected:
             lines.extend([
-                "  unless(crescActualTechLib && equal(crescActualTechLib %s)"
+                _contract_text("  unless(crescActualTechLib && equal(crescActualTechLib %s)")
                 % _skill_value(expected),
-                "    crescTechFailed = t",
+                _contract_text("    crescTechFailed = t"),
                 "  )",
             ])
     lines.extend([
         "else",
-        '  fprintf(crescTechOut "ERROR\\t%L\\t%L\\n" "technology_api_unavailable" "techGetTechFile")',
-        "  crescTechFailed = t",
+        _contract_text('  fprintf(crescTechOut "ERROR\\t%L\\t%L\\n" "technology_api_unavailable" "techGetTechFile")'),
+        _contract_text("  crescTechFailed = t"),
         ")",
-        "close(crescTechOut)",
-        'when(crescTechFailed error("Crescendo private workspace technology binding validation failed; inspect %s\\n"))'
+        _contract_text("close(crescTechOut)"),
+        _contract_text('when(crescTechFailed error("Crescendo private workspace technology binding validation failed; inspect %s\\n"))')
         % _skill_quote(output_path),
     ])
     return lines

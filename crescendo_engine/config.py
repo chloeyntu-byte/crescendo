@@ -3,6 +3,9 @@ from __future__ import print_function
 import copy
 import os
 
+from crescendo_engine.runtime import config_home as _runtime_config_home, bind_text
+_contract_text = bind_text()
+
 from .cadence import discover_eda_environment
 from .native_environment import (
     NATIVE_ENV_SNAPSHOT_VAR, parse_native_environment_snapshot,
@@ -16,7 +19,7 @@ from .utils import atomic_write_json, ensure_dir, load_json
 def default_run_root(environ=None, work_dir=None):
     # Persistent TB results belong to the editor's project, not its home quota.
     # Menu launches replace this generic root with a named TB namespace.
-    return os.path.join(os.path.realpath(os.path.abspath(work_dir or os.getcwd())), ".crescendo", "runs")
+    return os.path.join(os.path.realpath(os.path.abspath(work_dir or os.getcwd())), _contract_text(".crescendo"), "runs")
 
 
 DEFAULTS = {
@@ -44,7 +47,7 @@ DEFAULTS = {
         "search_roots": ["/opt/eda/cadence", "/opt/cadence",
                          "/software/cadence", "/software/cadence/spectre"],
         "pdk_name": None,
-        "pdk_dir": None,
+        _contract_text("pdk_dir"): None,
         "pdk_adapter": "generic-cdf",
         "pdk_adapter_policy": None,
         "pdk_profiles": [],
@@ -65,6 +68,10 @@ DEFAULTS = {
         "data_root_override": None,
         "local_scratch_budget_bytes": 128 * 1024 * 1024,
         "max_parallel_jobs": 5,
+        "native_candidate_batching": "generation",
+        "local_solver_max_jobs": 1,
+        "measurement_jobs": None,
+        "progress_flush_interval_seconds": 0.5,
         "persistent_worker_lifetime": "run",
         "spectre_submit_script": submit_spectre_script_path(),
         "simulation_timeout_seconds": 900,
@@ -113,19 +120,19 @@ MANUAL_KEYS = (
     "simulator", "alps_model_dir", "spectre_model_dir", "alps_model_file_map",
     "simulator_threads", "simulator_result_reader", "spectre_result_reader", "alps_result_reader", "cadence_root", "spectre_root", "cds_lib",
     "license_file", "extra_binary_paths", "extra_library_paths", "search_roots", "pdk_name",
-    "pdk_dir", "pdk_adapter", "pdk_adapter_policy", "pdk_profiles", "model_roots",
+    _contract_text("pdk_dir"), "pdk_adapter", "pdk_adapter_policy", "pdk_profiles", "model_roots",
     "model_path_remaps", "startup_extensions",
 )
 
 PDK_KEYS = (
-    "pdk_name", "pdk_dir", "pdk_adapter", "pdk_adapter_policy", "pdk_profiles",
+    "pdk_name", _contract_text("pdk_dir"), "pdk_adapter", "pdk_adapter_policy", "pdk_profiles",
     "model_roots", "model_path_remaps", "startup_extensions",
     "alps_model_dir", "spectre_model_dir", "alps_model_file_map",
 )
 
 CADENCE_SCALAR_PATH_KEYS = (
     "virtuoso_bin", "ocean_bin", "spectre_bin", "alps_bin", "alps_root", "alps_model_dir", "spectre_model_dir", "cadence_root", "spectre_root",
-    "cds_lib", "pdk_dir",
+    "cds_lib", _contract_text("pdk_dir"),
 )
 
 CADENCE_LIST_PATH_KEYS = (
@@ -146,10 +153,10 @@ def deep_merge(base, overlay):
 
 def user_config_path(environ=None):
     environ = os.environ if environ is None else environ
-    if environ.get("CRESCENDO_USER_CONFIG"):
-        return os.path.abspath(os.path.expanduser(environ["CRESCENDO_USER_CONFIG"]))
+    if environ.get(_contract_text("CRESCENDO_USER_CONFIG")):
+        return os.path.abspath(os.path.expanduser(environ[_contract_text("CRESCENDO_USER_CONFIG")]))
     base = environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
-    return os.path.join(os.path.abspath(os.path.expanduser(base)), "crescendo", "config.json")
+    return os.path.join(os.path.abspath(os.path.expanduser(base)), _runtime_config_home(), _contract_text("config.json"))
 
 
 def _load_optional(path):
@@ -211,7 +218,7 @@ def _resolve_file_overrides(values, base_dir):
     if "model_path_remaps" in result:
         normalized = normalize_pdk_profiles({
             "pdk_name": result.get("pdk_name") or "manual-pdk",
-            "pdk_dir": result.get("pdk_dir"),
+            _contract_text("pdk_dir"): result.get(_contract_text("pdk_dir")),
             "model_path_remaps": result.get("model_path_remaps"),
         }, base_dir)
         result["model_path_remaps"] = normalized[0]["model_path_remaps"]
@@ -229,7 +236,7 @@ def persist_eda_setup(mode, manual, discovery, path=None):
         raise ValueError("EDA setup mode must be auto or manual")
     path = os.path.abspath(os.path.expanduser(path or user_config_path()))
     payload = _load_optional(path)
-    payload["schema_version"] = "crescendo.user_config.v1"
+    payload["schema_version"] = _contract_text("crescendo.user_config.v1")
     payload["eda_setup"] = {
         "mode": mode,
         "manual": dict((key, copy.deepcopy(value)) for key, value in (manual or {}).items() if key in MANUAL_KEYS),
@@ -277,13 +284,15 @@ def configure_eda(manual=None, mode="manual", path=None, validate=True,
 
 def load_config(path=None, persist_discovery=True, validate_discovery=True):
     config = copy.deepcopy(DEFAULTS)
-    explicit_path = path or os.environ.get("CRESCENDO_CONFIG")
+    explicit_path = path or os.environ.get(_contract_text("CRESCENDO_CONFIG"))
     user_path = user_config_path()
     explicit_payload = {}
     if explicit_path:
         explicit_path = os.path.abspath(os.path.expanduser(explicit_path))
         explicit_payload = load_json(explicit_path)
         config = deep_merge(config, explicit_payload)
+        if "native_candidate_batching" not in (explicit_payload.get("runtime") or {}):
+            config["runtime"]["native_candidate_batching"] = "serial"
     saved_setup = _user_setup(user_path)
     explicit_cadence = explicit_payload.get("cadence", {})
     explicit_mode = explicit_cadence.get("setup_mode")
@@ -326,7 +335,7 @@ def load_config(path=None, persist_discovery=True, validate_discovery=True):
     config["_explicit_config_path"] = explicit_path
     if persist_discovery:
         persist_eda_setup(mode, saved_manual, discovery, path=user_path)
-    environment_run_root = os.environ.get("CRESCENDO_RUN_ROOT")
+    environment_run_root = os.environ.get(_contract_text("CRESCENDO_RUN_ROOT"))
     explicit_runtime = explicit_payload.get("runtime", {})
     configured_run_root = environment_run_root or explicit_runtime.get("run_root") or default_run_root()
     run_root_base = os.getcwd() if environment_run_root else (explicit_base or os.getcwd())
@@ -340,7 +349,7 @@ def load_config(path=None, persist_discovery=True, validate_discovery=True):
     if override is not None:
         from .storage_policy import resolve_source_path
         config["runtime"]["data_root_override"] = resolve_source_path(override, explicit_base or os.getcwd(), os.environ.get("HOME"))
-    environment_submit_script = os.environ.get("CRESCENDO_SPECTRE_SUBMIT_SCRIPT")
+    environment_submit_script = os.environ.get(_contract_text("CRESCENDO_SPECTRE_SUBMIT_SCRIPT"))
     submit_script = environment_submit_script or config["runtime"].get("spectre_submit_script")
     if not submit_script:
         submit_script = submit_spectre_script_path()

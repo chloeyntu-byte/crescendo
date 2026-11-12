@@ -1,4 +1,7 @@
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 
 import math
 import copy
@@ -93,7 +96,7 @@ def parse_rdb_summary(path, cancel_event=None):
                              if _table_exists(connection, table) else 0)
         check_cancelled()
         return {
-            "schema_version": "crescendo.rdb.summary.v1",
+            "schema_version": _contract_text("crescendo.rdb.summary.v1"),
             "path": path,
             "point_count": counts["point"],
             "output_count": len(output_keys),
@@ -210,7 +213,7 @@ def parse_rdb(path):
                 value["corner_name"] = normalize_corner_name(value.get("corner_name"))
                 points.append(value)
         return {
-            "schema_version": "crescendo.rdb.v1",
+            "schema_version": _contract_text("crescendo.rdb.v1"),
             "path": path,
             "outputs": [outputs[key] for key in sorted(outputs)],
             "output_map": outputs,

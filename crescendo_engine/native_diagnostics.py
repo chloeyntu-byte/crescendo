@@ -7,6 +7,9 @@ import stat
 import json
 import collections
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .maestro_progress import _owned_binary_stream
 
 MAX_SCAN_BYTES = 64 * 1024 * 1024
@@ -42,73 +45,73 @@ def native_run_trace_lines(run_lines, enabled=False):
                                   '\r' in line for line in original):
         raise ValueError("native Run trace requires the original Run and Wait forms")
     checked_run = [original[0],
-        'printf("CRESCENDO_NATIVE_RUN_VALUE runId %L\\n" runId)',
-        'printf("CRESCENDO_NATIVE_RUN_STAGE RunIdCheck BEGIN\\n")',
-        'unless(runId error("Crescendo native Run returned invalid runId\\n"))',
-        'printf("CRESCENDO_NATIVE_RUN_STAGE RunIdCheck RETURN\\n")']
+        _contract_text('printf("CRESCENDO_NATIVE_RUN_VALUE runId %L\\n" runId)'),
+        _contract_text('printf("CRESCENDO_NATIVE_RUN_STAGE RunIdCheck BEGIN\\n")'),
+        _contract_text('unless(runId error("Crescendo native Run returned invalid runId\\n"))'),
+        _contract_text('printf("CRESCENDO_NATIVE_RUN_STAGE RunIdCheck RETURN\\n")')]
     if not enabled:
         return _native_run_error_boundary_lines(
-            ['printf("CRESCENDO_NATIVE_RUN_STAGE Run BEGIN\\n")', original[0],
-             'printf("CRESCENDO_NATIVE_RUN_STAGE Run RETURN\\n")'] + checked_run[1:] +
+            [_contract_text('printf("CRESCENDO_NATIVE_RUN_STAGE Run BEGIN\\n")'), original[0],
+             _contract_text('printf("CRESCENDO_NATIVE_RUN_STAGE Run RETURN\\n")')] + checked_run[1:] +
             [
-             'printf("CRESCENDO_NATIVE_RUN_STAGE Wait BEGIN\\n")', original[1],
-             'printf("CRESCENDO_NATIVE_RUN_STAGE Wait RETURN\\n")'])
+             _contract_text('printf("CRESCENDO_NATIVE_RUN_STAGE Wait BEGIN\\n")'), original[1],
+             _contract_text('printf("CRESCENDO_NATIVE_RUN_STAGE Wait RETURN\\n")')])
     stack_lines = [
-        'let((crescNativeTraceBase crescNativeTraceOptions crescNativeTraceSetup crescNativeTraceRestore crescNativeTraceReturn)',
-        'crescNativeTraceBase=list(status(errsetTrace) status(stacktrace))',
+        _contract_text('let((crescNativeTraceBase crescNativeTraceOptions crescNativeTraceSetup crescNativeTraceRestore crescNativeTraceReturn)'),
+        _contract_text('crescNativeTraceBase=list(status(errsetTrace) status(stacktrace))'),
         'unwindProtect(',
         'progn(',
         'sstatus(errsetTrace nil)',
         'sstatus(stacktrace 0)',
-        'crescNativeTraceSetup=errset(progn(',
-        'crescNativeTraceOptions=list(status(debugMode) status(traceArgs) status(stacktraceDump) status(stackTraceFormat))',
+        _contract_text('crescNativeTraceSetup=errset(progn('),
+        _contract_text('crescNativeTraceOptions=list(status(debugMode) status(traceArgs) status(stacktraceDump) status(stackTraceFormat))'),
         'sstatus(debugMode t)',
         'sstatus(traceArgs t)',
         'sstatus(stacktraceDump nil)',
         "sstatus(stackTraceFormat 'onlyCalls)",
         'unless(status(debugMode) && status(traceArgs) && !status(stacktraceDump) error("native diagnostic status switches unavailable"))',
         't) nil)',
-        'if(crescNativeTraceSetup then',
+        _contract_text('if(crescNativeTraceSetup then'),
         'sstatus(stacktrace 32)',
         'sstatus(errsetTrace nil)',
-        'printf("CRESCENDO_NATIVE_RUN_TRACE ENABLED frames=32 locals=off arguments=evaluated best_effort=t\\n")',
-        'printf("CRESCENDO_NATIVE_RUN_TRACE STATUS debugMode=%L traceArgs=%L stacktrace=%L stacktraceDump=%L stackTraceFormat=%L\\n" status(debugMode) status(traceArgs) status(stacktrace) status(stacktraceDump) status(stackTraceFormat))',
+        _contract_text('printf("CRESCENDO_NATIVE_RUN_TRACE ENABLED frames=32 locals=off arguments=evaluated best_effort=t\\n")'),
+        _contract_text('printf("CRESCENDO_NATIVE_RUN_TRACE STATUS debugMode=%L traceArgs=%L stacktrace=%L stacktraceDump=%L stackTraceFormat=%L\\n" status(debugMode) status(traceArgs) status(stacktrace) status(stacktraceDump) status(stackTraceFormat))'),
         'else',
         # Even partially applied optional switches must be restored before Run.
-        'when(crescNativeTraceOptions',
+        _contract_text('when(crescNativeTraceOptions'),
         'errset(progn(',
-        'sstatus(debugMode car(crescNativeTraceOptions))',
-        'sstatus(traceArgs cadr(crescNativeTraceOptions))',
-        'sstatus(stacktraceDump caddr(crescNativeTraceOptions))',
-        'sstatus(stackTraceFormat cadddr(crescNativeTraceOptions))) nil))',
-        'sstatus(stacktrace cadr(crescNativeTraceBase))',
-        'sstatus(errsetTrace car(crescNativeTraceBase))',
-        'printf("CRESCENDO_NATIVE_RUN_TRACE UNAVAILABLE original_Run_will_execute_once\\n")',
+        _contract_text('sstatus(debugMode car(crescNativeTraceOptions))'),
+        _contract_text('sstatus(traceArgs cadr(crescNativeTraceOptions))'),
+        _contract_text('sstatus(stacktraceDump caddr(crescNativeTraceOptions))'),
+        _contract_text('sstatus(stackTraceFormat cadddr(crescNativeTraceOptions))) nil))'),
+        _contract_text('sstatus(stacktrace cadr(crescNativeTraceBase))'),
+        _contract_text('sstatus(errsetTrace car(crescNativeTraceBase))'),
+        _contract_text('printf("CRESCENDO_NATIVE_RUN_TRACE UNAVAILABLE original_Run_will_execute_once\\n")'),
         ')',
         *_native_setup_observation_lines('before_run'),
-        'printf("CRESCENDO_NATIVE_RUN_STAGE Run BEGIN\\n")',
+        _contract_text('printf("CRESCENDO_NATIVE_RUN_STAGE Run BEGIN\\n")'),
         original[0],
-        'printf("CRESCENDO_NATIVE_RUN_STAGE Run RETURN\\n")',
+        _contract_text('printf("CRESCENDO_NATIVE_RUN_STAGE Run RETURN\\n")'),
         *_native_setup_observation_lines('after_run'),
     ] + checked_run[1:] + [
-        'printf("CRESCENDO_NATIVE_RUN_STAGE Wait BEGIN\\n")',
-        'crescNativeTraceReturn=progn(' + original[1] + ')',
-        'printf("CRESCENDO_NATIVE_RUN_STAGE Wait RETURN\\n")',
-        'crescNativeTraceReturn',
+        _contract_text('printf("CRESCENDO_NATIVE_RUN_STAGE Wait BEGIN\\n")'),
+        _contract_text('crescNativeTraceReturn=progn(') + original[1] + ')',
+        _contract_text('printf("CRESCENDO_NATIVE_RUN_STAGE Wait RETURN\\n")'),
+        _contract_text('crescNativeTraceReturn'),
         ')',
         'progn(',
         'sstatus(errsetTrace nil)',
         'sstatus(stacktrace 0)',
-        'crescNativeTraceRestore=errset(progn(',
-        'when(crescNativeTraceOptions',
-        'sstatus(debugMode car(crescNativeTraceOptions))',
-        'sstatus(traceArgs cadr(crescNativeTraceOptions))',
-        'sstatus(stacktraceDump caddr(crescNativeTraceOptions))',
-        'sstatus(stackTraceFormat cadddr(crescNativeTraceOptions)))',
+        _contract_text('crescNativeTraceRestore=errset(progn('),
+        _contract_text('when(crescNativeTraceOptions'),
+        _contract_text('sstatus(debugMode car(crescNativeTraceOptions))'),
+        _contract_text('sstatus(traceArgs cadr(crescNativeTraceOptions))'),
+        _contract_text('sstatus(stacktraceDump caddr(crescNativeTraceOptions))'),
+        _contract_text('sstatus(stackTraceFormat cadddr(crescNativeTraceOptions)))'),
         't) nil)',
-        'sstatus(stacktrace cadr(crescNativeTraceBase))',
-        'sstatus(errsetTrace car(crescNativeTraceBase))',
-        'printf("CRESCENDO_NATIVE_RUN_TRACE RESTORE %s\\n" if(crescNativeTraceRestore then "DONE" else "UNAVAILABLE"))',
+        _contract_text('sstatus(stacktrace cadr(crescNativeTraceBase))'),
+        _contract_text('sstatus(errsetTrace car(crescNativeTraceBase))'),
+        _contract_text('printf("CRESCENDO_NATIVE_RUN_TRACE RESTORE %s\\n" if(crescNativeTraceRestore then "DONE" else "UNAVAILABLE"))'),
         ')',
         ')',
         ')',
@@ -119,10 +122,10 @@ def native_run_trace_lines(run_lines, enabled=False):
 def _native_setup_observation_lines(stage):
     # Child-local optional probes: nil/0 are evidence, never new run gates.
     return [
-        'let((crescObsMain crescObsActive)',
-        "crescObsMain=errset(axlGetMainSetupDB(session) nil)",
-        "crescObsActive=if(crescObsMain && car(crescObsMain) && !equal(car(crescObsMain) 0) then errset(axlGetActiveSetup(car(crescObsMain)) nil) else nil)",
-        'printf("CRESCENDO_NATIVE_SETUP_OBSERVATION %s session=%%L mainSDB=%%L resolved=%%L active=%%L resolved_ok=%%L active_ok=%%L\\n" session mainSDB if(crescObsMain then car(crescObsMain) else nil) if(crescObsActive then car(crescObsActive) else nil) if(crescObsMain then t else nil) if(crescObsActive then t else nil))' % stage,
+        _contract_text('let((crescObsMain crescObsActive)'),
+        _contract_text("crescObsMain=errset(axlGetMainSetupDB(session) nil)"),
+        _contract_text("crescObsActive=if(crescObsMain && car(crescObsMain) && !equal(car(crescObsMain) 0) then errset(axlGetActiveSetup(car(crescObsMain)) nil) else nil)"),
+        _contract_text('printf("CRESCENDO_NATIVE_SETUP_OBSERVATION %s session=%%L mainSDB=%%L resolved=%%L active=%%L resolved_ok=%%L active_ok=%%L\\n" session mainSDB if(crescObsMain then car(crescObsMain) else nil) if(crescObsActive then car(crescObsActive) else nil) if(crescObsMain then t else nil) if(crescObsActive then t else nil))') % stage,
         ')']
 
 
@@ -134,13 +137,13 @@ def _native_run_error_boundary_lines(body):
     native error; all existing process, worker and point checks remain active.
     """
     return [
-        'let((crescRunSavedErrsetTrace)',
-        'crescRunSavedErrsetTrace=status(errsetTrace)',
+        _contract_text('let((crescRunSavedErrsetTrace)'),
+        _contract_text('crescRunSavedErrsetTrace=status(errsetTrace)'),
         'unwindProtect(progn(',
         'sstatus(errsetTrace nil)',
-        'printf("CRESCENDO_NATIVE_RUN_ERROR_POLICY caught=quiet escaping=fatal\\n")',
+        _contract_text('printf("CRESCENDO_NATIVE_RUN_ERROR_POLICY caught=quiet escaping=fatal\\n")'),
     ] + list(body) + [
-        ') sstatus(errsetTrace crescRunSavedErrsetTrace))',
+        _contract_text(') sstatus(errsetTrace crescRunSavedErrsetTrace))'),
         ')',
     ]
 
@@ -152,42 +155,42 @@ def _native_reader_trace_lines(body):
     Keep the original Run, errors and inherited function traces unchanged.
     """
     restore = [
-        'when(crescReaderPortSaved ptport=crescReaderOldPort)',
-        'when(crescReaderReadAdded untrace(readstring) crescReaderReadAdded=nil)',
-        'when(crescReaderLineAdded untrace(linereadstring) crescReaderLineAdded=nil)',
-        'when(crescMainAdded untrace(axlGetMainSetupDB) crescMainAdded=nil)',
-        'when(crescActiveAdded untrace(axlGetActiveSetup) crescActiveAdded=nil)',
-        'when(crescSimulationAdded untrace(maeRunSimulation) crescSimulationAdded=nil)',
-        'when(crescReaderFunctionsSaved unless(equal(crescReaderOldFunctions tracef()) error("native reader trace restoration mismatch")))',
+        _contract_text('when(crescReaderPortSaved ptport=crescReaderOldPort)'),
+        _contract_text('when(crescReaderReadAdded untrace(readstring) crescReaderReadAdded=nil)'),
+        _contract_text('when(crescReaderLineAdded untrace(linereadstring) crescReaderLineAdded=nil)'),
+        _contract_text('when(crescMainAdded untrace(axlGetMainSetupDB) crescMainAdded=nil)'),
+        _contract_text('when(crescActiveAdded untrace(axlGetActiveSetup) crescActiveAdded=nil)'),
+        _contract_text('when(crescSimulationAdded untrace(maeRunSimulation) crescSimulationAdded=nil)'),
+        _contract_text('when(crescReaderFunctionsSaved unless(equal(crescReaderOldFunctions tracef()) error("native reader trace restoration mismatch")))'),
         't']
     return [
-        'let((crescReaderBase crescReaderOldPort crescReaderOldFunctions crescReaderPortSaved crescReaderFunctionsSaved crescReaderReadAdded crescReaderLineAdded crescMainAdded crescActiveAdded crescSimulationAdded crescReaderSetup crescReaderRestore)',
-        'crescReaderBase=list(status(errsetTrace) status(stacktrace))',
+        _contract_text('let((crescReaderBase crescReaderOldPort crescReaderOldFunctions crescReaderPortSaved crescReaderFunctionsSaved crescReaderReadAdded crescReaderLineAdded crescMainAdded crescActiveAdded crescSimulationAdded crescReaderSetup crescReaderRestore)'),
+        _contract_text('crescReaderBase=list(status(errsetTrace) status(stacktrace))'),
         'unwindProtect(progn(',
         'sstatus(errsetTrace nil) sstatus(stacktrace 0)',
-        'crescReaderSetup=errset(progn(',
-        'crescReaderOldPort=ptport crescReaderPortSaved=t',
-        'crescReaderOldFunctions=tracef() crescReaderFunctionsSaved=t',
+        _contract_text('crescReaderSetup=errset(progn('),
+        _contract_text('crescReaderOldPort=ptport crescReaderPortSaved=t'),
+        _contract_text('crescReaderOldFunctions=tracef() crescReaderFunctionsSaved=t'),
         'ptport=poport',
-        "unless(memq('readstring crescReaderOldFunctions) crescReaderReadAdded=t tracef(readstring))",
-        "unless(memq('linereadstring crescReaderOldFunctions) crescReaderLineAdded=t tracef(linereadstring))",
-        "when(isCallable('axlGetMainSetupDB) && !memq('axlGetMainSetupDB crescReaderOldFunctions) crescMainAdded=t tracef(axlGetMainSetupDB))",
-        "when(isCallable('axlGetActiveSetup) && !memq('axlGetActiveSetup crescReaderOldFunctions) crescActiveAdded=t tracef(axlGetActiveSetup))",
-        "when(isCallable('maeRunSimulation) && !memq('maeRunSimulation crescReaderOldFunctions) crescSimulationAdded=t tracef(maeRunSimulation))",
+        _contract_text("unless(memq('readstring crescReaderOldFunctions) crescReaderReadAdded=t tracef(readstring))"),
+        _contract_text("unless(memq('linereadstring crescReaderOldFunctions) crescReaderLineAdded=t tracef(linereadstring))"),
+        _contract_text("when(isCallable('axlGetMainSetupDB) && !memq('axlGetMainSetupDB crescReaderOldFunctions) crescMainAdded=t tracef(axlGetMainSetupDB))"),
+        _contract_text("when(isCallable('axlGetActiveSetup) && !memq('axlGetActiveSetup crescReaderOldFunctions) crescActiveAdded=t tracef(axlGetActiveSetup))"),
+        _contract_text("when(isCallable('maeRunSimulation) && !memq('maeRunSimulation crescReaderOldFunctions) crescSimulationAdded=t tracef(maeRunSimulation))"),
         't) nil)',
-        'if(crescReaderSetup then',
-        'printf("CRESCENDO_NATIVE_READER_TRACE ENABLED public=readstring,linereadstring private_parser_coverage=unknown\\n")',
-        "printf(\"CRESCENDO_NATIVE_SETUP_TRACE main=%L active=%L run=%L\\n\" if(memq('axlGetMainSetupDB tracef()) then t else nil) if(memq('axlGetActiveSetup tracef()) then t else nil) if(memq('maeRunSimulation tracef()) then t else nil))",
+        _contract_text('if(crescReaderSetup then'),
+        _contract_text('printf("CRESCENDO_NATIVE_READER_TRACE ENABLED public=readstring,linereadstring private_parser_coverage=unknown\\n")'),
+        _contract_text("printf(\"CRESCENDO_NATIVE_SETUP_TRACE main=%L active=%L run=%L\\n\" if(memq('axlGetMainSetupDB tracef()) then t else nil) if(memq('axlGetActiveSetup tracef()) then t else nil) if(memq('maeRunSimulation tracef()) then t else nil))"),
         'else',
-        'crescReaderRestore=errset(progn('] + restore + [') nil)',
-        'printf("CRESCENDO_NATIVE_READER_TRACE UNAVAILABLE original_Run_will_execute_once\\n")',
+        _contract_text('crescReaderRestore=errset(progn(')] + restore + [') nil)',
+        _contract_text('printf("CRESCENDO_NATIVE_READER_TRACE UNAVAILABLE original_Run_will_execute_once\\n")'),
         ')',
-        'sstatus(stacktrace cadr(crescReaderBase)) sstatus(errsetTrace car(crescReaderBase))'] + list(body) + [
+        _contract_text('sstatus(stacktrace cadr(crescReaderBase)) sstatus(errsetTrace car(crescReaderBase))')] + list(body) + [
         ') progn(',
         'sstatus(errsetTrace nil) sstatus(stacktrace 0)',
-        'crescReaderRestore=errset(progn('] + restore + [') nil)',
-        'sstatus(stacktrace cadr(crescReaderBase)) sstatus(errsetTrace car(crescReaderBase))',
-        'printf("CRESCENDO_NATIVE_READER_TRACE RESTORE %s\\n" if(crescReaderRestore then "DONE" else "UNAVAILABLE"))',
+        _contract_text('crescReaderRestore=errset(progn(')] + restore + [') nil)',
+        _contract_text('sstatus(stacktrace cadr(crescReaderBase)) sstatus(errsetTrace car(crescReaderBase))'),
+        _contract_text('printf("CRESCENDO_NATIVE_READER_TRACE RESTORE %s\\n" if(crescReaderRestore then "DONE" else "UNAVAILABLE"))'),
         '))',
         ')']
 
@@ -198,13 +201,13 @@ MAX_READER_ENTRY_CHARS = 2048
 MAX_READER_ERROR_DISTANCE = 12
 
 _CODED_ERROR = re.compile(r'^\s*ERROR\s*\(([A-Z][A-Z0-9_]*-\d+)\)\s*:', re.I)
-_CRESCENDO_GUARD = re.compile(r'^\s*\*Error\*\s+(Crescendo [^\r\n]+)')
+_CRESCENDO_GUARD = re.compile(_contract_text(r'^\s*\*Error\*\s+(Crescendo [^\r\n]+)'))
 
 _SYNTAX = re.compile(r'\*Error\*\s+(?:lineread/read|read|load|eval).*?syntax error', re.I)
 _LOCATION = re.compile(r'line\s+(\d+)\s+column\s+(\d+)\s+in file\s+(.+?)\s*$', re.I)
 _DISPLAY_FATAL = re.compile(r'^\s*Aborting due to fatal X IO error\.\s*$', re.I)
-_BLOCK = re.compile(r'CRESCENDO_SKILL_BLOCK\s+(\S+)\s+(\d+)/(\d+)\s+lines=(\d+)\.\.(\d+)')
-_CDF_MARKER = re.compile(r'^\s*CRESCENDO_CDF_CALLBACK_INPUT\s+(.+)$')
+_BLOCK = re.compile(_contract_text(r'CRESCENDO_SKILL_BLOCK\s+(\S+)\s+(\d+)/(\d+)\s+lines=(\d+)\.\.(\d+)'))
+_CDF_MARKER = re.compile(_contract_text(r'^\s*CRESCENDO_CDF_CALLBACK_INPUT\s+(.+)$'))
 _CDF_FAILURE = re.compile(r'^\s*\*Error\*.*\bCDF callback failed for ([^:\s]+):')
 _INT_ERROR = re.compile(r'^\s*\*Error\*\s+int:\s+can\'t handle int\(\s*("(?:\\.|[^"\\])*")\s*\)')
 
@@ -272,7 +275,7 @@ def _cdf_marker_value(text):
             raise ValueError("Duplicate CDF marker field")
         return dict(rows)
     value = alist(parsed)
-    if value.get('schema_version') != 'crescendo.cdf_callback_input.v1':
+    if value.get('schema_version') != _contract_text('crescendo.cdf_callback_input.v1'):
         raise ValueError("Unrecognized CDF marker schema")
     fields = value.get('expression_fields') or []
     if not isinstance(fields, list) or len(fields) > 16:
@@ -353,7 +356,7 @@ def cdf_callback_failures(text, console_source=None):
             'form_init_proc', 'form_init_proc_truncated', 'done_proc', 'done_proc_truncated',
             'capture_stage')
                     if key in value)
-        item.update(schema_version='crescendo.cdf_callback_failure.v1', console_source=console_source,
+        item.update(schema_version=_contract_text('crescendo.cdf_callback_failure.v1'), console_source=console_source,
                     console_line=index + 1, callback_error=callback[1][:2048],
                     callback_error_line=callback[0] + 1, matching_expression_fields=[],
                     scope='same current console callback failure; candidate strings are not evaluated')
@@ -412,7 +415,7 @@ def generated_guard_context(text, message):
     literal = json.dumps(marker, ensure_ascii=False)[:-1] + '\\n"'
     lines = text.splitlines()
     matches = [number for number, line in enumerate(lines, 1) if literal in line]
-    result = {"association": "unique generated Crescendo guard literal; not a native stack location",
+    result = {"association": _contract_text("unique generated Crescendo guard literal; not a native stack location"),
               "native_stack_location": False, "guard_message": marker,
               "matching_lines": matches[:8], "match_count": len(matches),
               "context_status": "unique_guard_match" if len(matches) == 1 else "guard_not_unique_or_absent"}
@@ -449,9 +452,9 @@ def skill_command_diagnostics(command, script_path, required_marker=None, owned_
         text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
         if source in ('ocean.stdout', 'ocean.stderr'):
             marker = text.strip()
-            if marker.startswith(('CRESCENDO_NATIVE_SETUP_OBSERVATION ', 'CRESCENDO_NATIVE_SETUP_TRACE ')) and len(setup_observations) < 8:
+            if marker.startswith((_contract_text('CRESCENDO_NATIVE_SETUP_OBSERVATION '), _contract_text('CRESCENDO_NATIVE_SETUP_TRACE '))) and len(setup_observations) < 8:
                 setup_observations.append({'source': source, 'line': number, 'text': marker[:1024]})
-            evidence = re.match(r'^CRESCENDO_NATIVE_RUN_(STAGE (RunIdCheck|HistoryLookup|HistoryName) (BEGIN|RETURN)|VALUE (runId|history) (.*))$', marker)
+            evidence = re.match(_contract_text(r'^CRESCENDO_NATIVE_RUN_(STAGE (RunIdCheck|HistoryLookup|HistoryName) (BEGIN|RETURN)|VALUE (runId|history) (.*))$'), marker)
             if evidence and len(native_run_evidence) < 24:
                 if evidence.group(2):
                     native_run_evidence.append({'source': source, 'line': number,
@@ -459,33 +462,33 @@ def skill_command_diagnostics(command, script_path, required_marker=None, owned_
                 else:
                     native_run_evidence.append({'source': source, 'line': number,
                         'value_name': evidence.group(4), 'value': evidence.group(5)[:1024]})
-            if marker.startswith('CRESCENDO_NATIVE_READER_TRACE '):
+            if marker.startswith(_contract_text('CRESCENDO_NATIVE_READER_TRACE ')):
                 reader = reader_traces.setdefault(source, {'console_source': source,
                     'entry_count': 0, 'return_count': 0, 'abbreviated_entry_count': 0,
                     'scope': 'two public reader APIs; private C parser coverage unknown'})
-                if marker.startswith('CRESCENDO_NATIVE_READER_TRACE ENABLED '):
+                if marker.startswith(_contract_text('CRESCENDO_NATIVE_READER_TRACE ENABLED ')):
                     reader.update(availability='ENABLED', active=True)
-                elif marker.startswith('CRESCENDO_NATIVE_READER_TRACE UNAVAILABLE '):
+                elif marker.startswith(_contract_text('CRESCENDO_NATIVE_READER_TRACE UNAVAILABLE ')):
                     reader.update(availability='UNAVAILABLE', active=False)
                     reader_pending[source] = []
-                elif marker.startswith('CRESCENDO_NATIVE_READER_TRACE RESTORE '):
+                elif marker.startswith(_contract_text('CRESCENDO_NATIVE_READER_TRACE RESTORE ')):
                     reader.update(active=False, restore_status=marker.rsplit(' ', 1)[-1])
                     reader_pending[source] = []
-            if marker.startswith('CRESCENDO_NATIVE_RUN_TRACE ') or marker.startswith('CRESCENDO_NATIVE_RUN_STAGE '):
+            if marker.startswith(_contract_text('CRESCENDO_NATIVE_RUN_TRACE ')) or marker.startswith(_contract_text('CRESCENDO_NATIVE_RUN_STAGE ')):
                 trace = native_run_traces.setdefault(source, {
                     'console_source': source, 'arguments_enabled': False, 'stages': [],
                     'scope': 'observed diagnostic child markers; not solver or completion proof'})
-                if marker.startswith('CRESCENDO_NATIVE_RUN_TRACE ENABLED '):
+                if marker.startswith(_contract_text('CRESCENDO_NATIVE_RUN_TRACE ENABLED ')):
                     trace['arguments_enabled'] = True
                     trace['availability'] = 'ENABLED'
-                elif marker.startswith('CRESCENDO_NATIVE_RUN_TRACE UNAVAILABLE '):
+                elif marker.startswith(_contract_text('CRESCENDO_NATIVE_RUN_TRACE UNAVAILABLE ')):
                     trace['availability'] = 'UNAVAILABLE'
                     trace['arguments_enabled'] = False
-                elif marker.startswith('CRESCENDO_NATIVE_RUN_TRACE RESTORE '):
+                elif marker.startswith(_contract_text('CRESCENDO_NATIVE_RUN_TRACE RESTORE ')):
                     trace['restore_status'] = marker.rsplit(' ', 1)[-1]
                     trace['active_stage'] = None
                     trace['stage_marker_line'] = None
-                stage = re.match(r'^CRESCENDO_NATIVE_RUN_STAGE (Run|Wait) (BEGIN|RETURN)$', marker)
+                stage = re.match(_contract_text(r'^CRESCENDO_NATIVE_RUN_STAGE (Run|Wait) (BEGIN|RETURN)$'), marker)
                 if stage:
                     if stage.group(1) == 'Run' and stage.group(2) == 'BEGIN':
                         run_prefixes[source] = {'lines': collections.deque(maxlen=MAX_RUN_PREERROR_LINES), 'seen': 0, 'filtered': 0, 'frozen': False, 'begin_line': number}
@@ -641,7 +644,7 @@ def skill_command_diagnostics(command, script_path, required_marker=None, owned_
             for number, line in enumerate(str(command.get(name) or "").splitlines(), 1):
                 inspect_line(line, name, number)
     syntax_errors = [row for row in errors if row["kind"] == "skill_syntax_error"]
-    result = {"schema_version": "crescendo.native_skill_diagnostics.v1",
+    result = {"schema_version": _contract_text("crescendo.native_skill_diagnostics.v1"),
             "console_scope": "owned_full_logs" if inspected else "command_tails_only",
             "inspected_logs": inspected, "scan_complete": scan_complete,
             "syntax_error": bool(syntax_errors), "native_error": bool(errors),

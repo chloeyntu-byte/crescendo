@@ -1,4 +1,7 @@
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 
 import hashlib
 import json
@@ -353,7 +356,7 @@ def build_objective_presentation(rows, objectives):
             "objective_scores": [float(objective["score"]) for objective in metric_objectives],
         })
     return {
-        "schema_version": "crescendo.objective_presentation.v1",
+        "schema_version": _contract_text("crescendo.objective_presentation.v1"),
         "objective_count": len(descriptors),
         "objectives": descriptors,
         "pairs": objective_pair_descriptors(objectives),

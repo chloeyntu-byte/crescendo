@@ -12,7 +12,7 @@ Crescendo 是运行在 Cadence Maestro 里的引导式电路优化器。勾选�
 - **简洁 / 专业两种模式**：默认只显示主流程；Pro mode 打开私有套件、历史结果、可选的 PDK 范围检查、算法参数、执行与提交命令、EDA 覆盖和三级链路诊断。切换只改显示，不改设置。
 - **搜索算法**：NSGA-II（两个及以上目标时自动使用）、差分进化、贝叶斯优化；目标和约束可按角点选择，支持 `max` / `mean` 聚合。
 - **执行**：Spectre 或 ALPS，本地或批处理集群；每轮使用私有的 Maestro 副本，每个候选完成后写断点，可停止后续跑。
-- **实时结果**：指标卡、每个目标的历代最优收敛曲线、候选表、点击即跳转的 Pareto 图，可导出 CSV 和完整数据集。
+- **实时结果**：指标卡、每个目标的历代最优收敛曲线、候选表、点击即跳转的 Pareto 图，可导出 CSV 和完整数据集。**Timing details...** 展示每代与选中候选的分阶段耗时；求解器证据、覆盖率和并行边界见[执行计时指南](docs/EXECUTION_TIMING.md)。
 - **大工程**：在 4000 个模块、50,726 个参数的合成工程上，参数树渲染期间界面最长无响应 74 ms。
 
 ## 环境要求
@@ -44,6 +44,17 @@ python3 -m crescendo.demo_main --scale small --autoload
 3. 重启 Virtuoso，在 **Maestro → Plug-in → Open Crescendo Optimizer** 打开（没有 Plug-in 菜单时用顶部 **Crescendo** 菜单）。
 
 Crescendo 读取打开它的那个 Maestro 窗口。工具、模型目录和仿真器从该窗口的环境自动识别，也可以在 **Settings → EDA**（Pro mode）中覆盖。
+
+Pro 执行设置还提供以下资源控制；新运行会冻结这些值：
+
+| 设置 | 默认值 | 含义 |
+| --- | --- | --- |
+| `native_candidate_batching` | 新配置为 `generation` | 每代一次原生分组运行；`serial` 逐候选运行。缺少此键的已有配置和旧 checkpoint 保持串行。Private Netlist 模板仍直接实例化。 |
+| `local_solver_max_jobs` | `1` | 显式设置 Local 求解槽位，实际并发同时受 Global 和 Test 限制。 |
+| `measurement_jobs` | `null`，自动取 `min(2, G)` | 本机 reader worker 数；显式值受 Global 容量 `G` 限制。 |
+| `progress_flush_interval_seconds` | `0.5` | 显示快照的最短写入间隔；终态、ownership 和 checkpoint ACK 仍立即持久化。 |
+
+这些控件只在 Pro 模式显示。详见[原生分组](docs/NATIVE_BATCHING.md)和[执行计时](docs/EXECUTION_TIMING.md)。
 
 集群模式在 Pro 模式的 EDA 执行设置或 `runtime.execution_commands` 中配置三条 argv 模板：
 `submission_template` 必须包含 `{job_script}`，`scheduler_query_template`、

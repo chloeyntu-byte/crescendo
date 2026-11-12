@@ -5,11 +5,14 @@ import hashlib
 import json
 import os
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .utils import sha256_file
 from .workspace import source_design_identity, source_change_summary, verify_sources_unchanged, compact_source_guard
 
 
-_SCHEMA_VERSION = "crescendo.prepared_freshness.v1"
+_SCHEMA_VERSION = _contract_text("crescendo.prepared_freshness.v1")
 
 
 def _canonical_fingerprint(payload):
@@ -21,7 +24,7 @@ def _canonical_fingerprint(payload):
 
 def _loaded_identity(prepared, components=False):
     payload = {
-        "schema_version": "crescendo.loaded_design_identity.v1",
+        "schema_version": _contract_text("crescendo.loaded_design_identity.v1"),
         "setup": prepared.get("setup"),
         "hierarchy": prepared.get("hierarchy"),
         "parameters": prepared.get("parameters"),

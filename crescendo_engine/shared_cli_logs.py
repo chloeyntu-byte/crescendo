@@ -4,11 +4,14 @@ import os
 import re
 import stat
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .owned_solver_logs import OwnedSolverLogError, owned_solver_log_reader
 from .utils import atomic_write_json, atomic_write_text, utc_timestamp
 
 
-RETAINED_SCHEMA = "crescendo.shared_cli_retained_log.v1"
+RETAINED_SCHEMA = _contract_text("crescendo.shared_cli_retained_log.v1")
 MAX_LOG_BYTES = 64 * 1024
 
 

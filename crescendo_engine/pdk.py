@@ -7,14 +7,18 @@ import os
 import re
 import shlex
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .resources import pdk_adapter_path
 
 
-SCHEMA_CDS_LIBRARY_MAP = "crescendo.cds_library_map.v1"
-SCHEMA_PDK_CONTEXTS = "crescendo.pdk_contexts.v2"
-SCHEMA_PDK_PROFILE = "crescendo.pdk_profile.v1"
-SCHEMA_ADAPTER_MANIFEST = "crescendo.pdk_adapter_manifest.v1"
-ADAPTER_ABI = "crescendo.pdk_adapter.v1"
+SCHEMA_CDS_LIBRARY_MAP = _contract_text("crescendo.cds_library_map.v1")
+SCHEMA_PDK_CONTEXTS = _contract_text("crescendo.pdk_contexts.v2")
+SCHEMA_PDK_PROFILE = _contract_text("crescendo.pdk_profile.v1")
+SCHEMA_ADAPTER_MANIFEST = _contract_text("crescendo.pdk_adapter_manifest.v1")
+from .runtime import contract as _runtime_contract
+ADAPTER_ABI = _runtime_contract()['dialect']['adapter_abi']
 GENERIC_ADAPTER_ID = "generic-cdf"
 
 SYSTEM_LIBRARIES = frozenset((
@@ -119,7 +123,7 @@ BUILTIN_ADAPTER_MANIFESTS = (
         (r"(?i)examplekit[^/]*65[^/]*pas", r"(?i)examplekit65pas"),
         skill_name="cadence_pas_transaction.il",
     ),
-)
+) if _runtime_contract()['adapter_manifests'] is None else ()
 
 
 def _canonical_json(value):
@@ -372,7 +376,7 @@ def normalize_pdk_profile(profile, base_dir=None):
         _as_list(profile.get("technology_libraries")) + _as_list(profile.get("technology_library"))
     )
     package_root = _normalize_path(
-        profile.get("package_root") or profile.get("pdk_dir"), base_dir,
+        profile.get("package_root") or profile.get(_contract_text("pdk_dir")), base_dir,
     )
     custom_adapter = profile.get("custom_adapter")
     legacy_adapter = profile.get("pdk_adapter")
@@ -426,13 +430,13 @@ def normalize_pdk_profiles(config, base_dir=None):
         return normalized
     legacy_adapter = cadence.get("pdk_adapter")
     legacy_present = any(cadence.get(key) not in (None, "", []) for key in (
-        "pdk_name", "pdk_dir", "model_roots", "model_path_remaps", "startup_extensions",
+        "pdk_name", _contract_text("pdk_dir"), "model_roots", "model_path_remaps", "startup_extensions",
     )) or legacy_adapter not in (None, "", GENERIC_ADAPTER_ID)
     if not legacy_present:
         return []
     legacy = {
         "name": cadence.get("pdk_name"),
-        "package_root": cadence.get("pdk_dir"),
+        "package_root": cadence.get(_contract_text("pdk_dir")),
         "pdk_adapter": legacy_adapter,
         "model_roots": cadence.get("model_roots"),
         "model_path_remaps": cadence.get("model_path_remaps"),
@@ -575,7 +579,7 @@ def discover_pdk_contexts(cds_lib, referenced_libraries, design_libraries=None,
         if profile:
             technology = sorted(set(technology + profile.get("technology_libraries", [])))
         context = {
-            "schema_version": "crescendo.pdk_context.v2",
+            "schema_version": _contract_text("crescendo.pdk_context.v2"),
             "id": profile.get("id") if profile else _context_id(libraries, bucket["package_root"]),
             "name": profile.get("name") if profile and profile.get("name") else "+".join(libraries),
             "package_root": bucket["package_root"],
@@ -684,6 +688,14 @@ def validate_adapter_manifest(manifest):
     if manifest.get("abi") != ADAPTER_ABI:
         raise ValueError("unsupported PDK adapter ABI: %s" % manifest.get("abi"))
     implementation = manifest.get("implementation") or {}
+    entry = implementation.get('entry_symbol', _runtime_contract()['dialect']['adapter_entry'])
+    if not isinstance(entry, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', entry):
+        raise ValueError('Invalid PDK adapter entry symbol')
+    if implementation.get('resource_group') or implementation.get('resource_name'):
+        from .resources import resource_path
+        manifest = copy.deepcopy(manifest)
+        implementation = manifest['implementation']
+        implementation['skill_path'] = resource_path(implementation['resource_group'], implementation['resource_name'])
     if implementation.get("type") not in ("generic-cdf", "generic-delegate", "skill"):
         raise ValueError("unsupported PDK adapter implementation type")
     matcher = manifest.get("matcher") or {}
@@ -718,7 +730,9 @@ def load_adapter_manifest(path):
 
 
 def adapter_registry(custom_manifests=None):
-    manifests = [validate_adapter_manifest(row) for row in BUILTIN_ADAPTER_MANIFESTS]
+    injected = _runtime_contract()['adapter_manifests']
+    defaults = BUILTIN_ADAPTER_MANIFESTS if injected is None else injected
+    manifests = [validate_adapter_manifest(copy.deepcopy(row)) for row in defaults]
     for row in custom_manifests or []:
         manifests.append(
             load_adapter_manifest(row) if isinstance(row, str) else validate_adapter_manifest(row)
@@ -729,6 +743,11 @@ def adapter_registry(custom_manifests=None):
         if adapter_id in result:
             raise ValueError("duplicate PDK adapter id: %s" % adapter_id)
         result[adapter_id] = manifest
+    expected = _runtime_contract().get('registry_sha256')
+    if expected is not None and not custom_manifests:
+        identities = [adapter_identity(result[key]) for key in sorted(result)]
+        if _sha256_text(_canonical_json(identities)) != expected:
+            raise ValueError('Application adapter registry content identity changed')
     return dict((key, result[key]) for key in sorted(result))
 
 
@@ -979,7 +998,7 @@ def adapter_identity(manifest, skill_path=None):
             raise ValueError("PDK adapter SKILL file does not exist: %s" % skill_path)
         skill_sha256 = _sha256_file(skill_path)
     identity = {
-        "schema_version": "crescendo.pdk_adapter_identity.v1",
+        "schema_version": _contract_text("crescendo.pdk_adapter_identity.v1"),
         "adapter_id": manifest["id"],
         "version": manifest["version"],
         "abi": manifest["abi"],
@@ -994,7 +1013,20 @@ def adapter_registry_identity(registry=None):
     registry = registry or adapter_registry()
     identities = [adapter_identity(registry[key]) for key in sorted(registry)]
     return {
-        "schema_version": "crescendo.pdk_adapter_registry_identity.v1",
+        "schema_version": _contract_text("crescendo.pdk_adapter_registry_identity.v1"),
         "adapters": identities,
         "fingerprint": _sha256_text(_canonical_json(identities)),
     }
+
+
+def adapter_entry_symbol(skill_path=None):
+    """Select the manifest entry for this resource; never evaluate Python names."""
+    default = _runtime_contract()['dialect']['adapter_entry']
+    if skill_path is None:
+        return default
+    matches = [row.get('implementation') or {} for row in adapter_registry().values()
+               if (row.get('implementation') or {}).get('skill_path') == skill_path]
+    entries = set(row.get('entry_symbol', default) for row in matches)
+    if len(entries) > 1:
+        raise ValueError('Conflicting PDK resource entry symbols')
+    return next(iter(entries)) if entries else default

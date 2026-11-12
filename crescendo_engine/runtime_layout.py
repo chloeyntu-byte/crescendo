@@ -1,5 +1,8 @@
 """Project-local persistent state and readable, collision-safe run names."""
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 
 import hashlib
 import json
@@ -40,7 +43,7 @@ def legacy_design_storage_root(source, libraries, base_root=None):
     name = "%s__%s_%s_%s" % (path_component(source.get("cell")),
                               path_component(source.get("library"), "lib", 36),
                               path_component(source.get("view"), "maestro", 24), digest)
-    base = os.path.realpath(os.path.abspath(base_root)) if base_root else os.path.join(project_directory(source=source), ".crescendo")
+    base = os.path.realpath(os.path.abspath(base_root)) if base_root else os.path.join(project_directory(source=source), _contract_text(".crescendo"))
     return os.path.join(base, name)
 
 
@@ -59,7 +62,7 @@ def design_storage_root(source, libraries=None, base_root=None):
     name = '%s__%s_%s_%s' % (path_component(source.get('cell')),
                               path_component(source.get('library'), 'lib', 36),
                               path_component(source.get('view'), 'maestro', 24), digest)
-    base = os.path.realpath(os.path.abspath(base_root)) if base_root else os.path.join(work, '.crescendo')
+    base = os.path.realpath(os.path.abspath(base_root)) if base_root else os.path.join(work, _contract_text('.crescendo'))
     return os.path.join(base, name)
 
 
@@ -73,4 +76,4 @@ def optimization_run_name(display_name=None):
 def settings_filename(config=None, source=None):
     config = config or {}
     source = source or config.get("_selected_setup_source") or ((config.get("_maestro_launch_context") or {}).get("source") or {})
-    return "CRESCENDO_%s_Settings.json" % path_component(source.get("cell"))
+    return _contract_text("CRESCENDO_%s_Settings.json") % path_component(source.get("cell"))

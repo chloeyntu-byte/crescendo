@@ -4,6 +4,9 @@ Only observed XML boundaries are modified. Source and previous baseline are
 never written. The caller must perform native readback before publishing.
 """
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 
 import copy
 import json
@@ -387,7 +390,7 @@ def update_saved_sections(prepared, config, sections):
     baseline = verify_setup_baseline(original)
     if not baseline:
         raise ValueError('Selective update requires an existing saved Maestro baseline')
-    with open(os.path.join(baseline['root'], 'setup.json')) as stream:
+    with open(os.path.join(baseline['root'], _contract_text('setup.json'))) as stream:
         previous_snapshot = json.load(stream)
     old_policy = previous_snapshot.get('job_policy')
     incoming_policy = prepared.get('_incoming_job_policy')
@@ -457,14 +460,14 @@ def update_saved_sections(prepared, config, sections):
             else:
                 policy.pop('save_options', None)
         snapshot = {'setup': copy.deepcopy(setup), 'job_policy': policy}
-        atomic_write_json(os.path.join(root, 'setup.json'), snapshot)
+        atomic_write_json(os.path.join(root, _contract_text('setup.json')), snapshot)
         manifest = {'schema_version': SCHEMA, 'baseline_id': token, 'owner_uid': os.getuid(),
                     'origin_canonical_path': os.path.realpath(source), 'origin_setup_path': source,
                     'view_relative_path': _view_relative(original), 'setup_filename': os.path.basename(source),
-                    'files': _files(view), 'setup_snapshot_sha256': sha256_file(os.path.join(root, 'setup.json'))}
-        atomic_write_json(os.path.join(root, 'manifest.json'), manifest)
+                    'files': _files(view), 'setup_snapshot_sha256': sha256_file(os.path.join(root, _contract_text('setup.json')))}
+        atomic_write_json(os.path.join(root, _contract_text('manifest.json')), manifest)
         setup['baseline'] = {'schema_version': SCHEMA, 'baseline_id': token, 'root': root,
-                             'setup_path': target, 'manifest_sha256': sha256_file(os.path.join(root, 'manifest.json')),
+                             'setup_path': target, 'manifest_sha256': sha256_file(os.path.join(root, _contract_text('manifest.json'))),
                              'fingerprint': _digest(manifest)}
         verify_setup_baseline(setup)
         setup['baseline_job_policy'] = copy.deepcopy(policy)

@@ -1,4 +1,7 @@
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 
 import copy
 import math
@@ -183,7 +186,7 @@ def run_range_validation(job, prepared, variables, config, cancel_event, update,
                         timeout_seconds=float(config.get("runtime", {}).get("range_validation_shutdown_timeout_seconds", 15)))
                 except Exception as cleanup_error:
                     cleanup = {"cleanup_proven": False, "reason": str(cleanup_error)}
-                atomic_write_json(os.path.join(root, "range_cleanup.json"), cleanup)
+                atomic_write_json(os.path.join(root, _contract_text("range_cleanup.json")), cleanup)
             if not cleanup.get("cleanup_proven") or bool(error and (
                     getattr(error, "unsafe_to_optimize", False) or getattr(error, "cleanup_failed", False))):
                 update(state="failed", message="Native validation process cleanup could not be proven; evidence retained.",

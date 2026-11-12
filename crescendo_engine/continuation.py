@@ -13,11 +13,14 @@ try:
 except ImportError:  # pragma: no cover - Cadence deployments are POSIX/Linux.
     fcntl = None
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .utils import atomic_write_json, ensure_dir, load_json, utc_timestamp
 
 
-PENDING_SCHEMA_VERSION = "crescendo.continuation_pending.v1"
-PENDING_NAME = "pending.json"
+PENDING_SCHEMA_VERSION = _contract_text("crescendo.continuation_pending.v1")
+PENDING_NAME = _contract_text("pending.json")
 
 
 class ContinuationLeaseBusy(RuntimeError):
@@ -81,7 +84,7 @@ def continuation_checkpoint_path(runtime_root, continuation_id, create=False):
             return os.path.join(
                 runtime_root, ".continuation_checkpoints",
                 hashlib.sha256(continuation_id.encode("utf-8")).hexdigest(),
-                "checkpoint.json",
+                _contract_text("checkpoint.json"),
             )
         ensure_dir(runtime_root)
     if os.path.islink(runtime_root) or not os.path.isdir(runtime_root):
@@ -97,7 +100,7 @@ def continuation_checkpoint_path(runtime_root, continuation_id, create=False):
         continuation_root, anchor_root, 0o700,
         "continuation checkpoint directory", create,
     )
-    return os.path.join(continuation_root, "checkpoint.json")
+    return os.path.join(continuation_root, _contract_text("checkpoint.json"))
 
 
 def continuation_pending_path(runtime_root, continuation_id, create=False):
@@ -311,7 +314,7 @@ class ContinuationLease(object):
                 self.recovered_stale_owner = previous
             self.descriptor = descriptor
             self.metadata = {
-                "schema_version": "crescendo.continuation_lease.v1",
+                "schema_version": _contract_text("crescendo.continuation_lease.v1"),
                 "state": "held",
                 "lease_kind": self.lease_kind,
                 "continuation_id": self.continuation_id,

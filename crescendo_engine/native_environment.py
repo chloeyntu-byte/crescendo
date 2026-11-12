@@ -4,6 +4,9 @@ Snapshots carry None for an unset variable and an empty string for a variable
 set to empty. Values are private launch data and must not be logged.
 """
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 
 import json
 import os
@@ -14,12 +17,12 @@ GUI_ENV_NAMES = (
 )
 LEGACY_NATIVE_ENV_NAMES = ("PATH", "CDS_LIC_FILE", "LM_LICENSE_FILE") + GUI_ENV_NAMES
 HOME_NATIVE_ENV_NAMES = LEGACY_NATIVE_ENV_NAMES + ("HOME",)
-MODEL_ENV_NAMES = ("PDK", "CRESCENDO_SPECTRE_MODEL_DIR", "CRESCENDO_ALPS_MODEL_DIR")
+MODEL_ENV_NAMES = ("PDK", _contract_text("CRESCENDO_SPECTRE_MODEL_DIR"), _contract_text("CRESCENDO_ALPS_MODEL_DIR"))
 NATIVE_ENV_NAMES = HOME_NATIVE_ENV_NAMES + MODEL_ENV_NAMES
-SCHEDULER_HOME_SET = "CRESCENDO_SCHEDULER_HOME_SET"
-SCHEDULER_HOME_VALUE = "CRESCENDO_SCHEDULER_HOME_VALUE"
-NATIVE_ENV_SCHEMA = "crescendo.native_environment.v1"
-NATIVE_ENV_SNAPSHOT_VAR = "CRESCENDO_NATIVE_ENV_SNAPSHOT"
+SCHEDULER_HOME_SET = _contract_text("CRESCENDO_SCHEDULER_HOME_SET")
+SCHEDULER_HOME_VALUE = _contract_text("CRESCENDO_SCHEDULER_HOME_VALUE")
+NATIVE_ENV_SCHEMA = _contract_text("crescendo.native_environment.v1")
+NATIVE_ENV_SNAPSHOT_VAR = _contract_text("CRESCENDO_NATIVE_ENV_SNAPSHOT")
 MAX_SNAPSHOT_BYTES = 1024 * 1024
 MAX_VALUE_CHARS = 16384
 
@@ -86,8 +89,8 @@ def native_snapshot_warnings(values):
     if not missing:
         return []
     return [
-        "The caller environment snapshot lacks %s. Reopen Crescendo from the updated "
-        "Maestro menu; unknown GUI override states are cleared." % ", ".join(missing)
+        _contract_text("The caller environment snapshot lacks %s. Reopen Crescendo from the updated "
+        "Maestro menu; unknown GUI override states are cleared.") % ", ".join(missing)
     ]
 
 
@@ -116,8 +119,8 @@ def scheduler_environment(environ):
     marker = result.pop(SCHEDULER_HOME_SET, None)
     value = result.pop(SCHEDULER_HOME_VALUE, "")
     if marker is not None:
-        result["CRESCENDO_SIMULATION_HOME_SET"] = "x" if "HOME" in result else ""
-        result["CRESCENDO_SIMULATION_HOME_VALUE"] = result.get("HOME", "")
+        result[_contract_text("CRESCENDO_SIMULATION_HOME_SET")] = "x" if "HOME" in result else ""
+        result[_contract_text("CRESCENDO_SIMULATION_HOME_VALUE")] = result.get("HOME", "")
     if marker == "x":
         result["HOME"] = value
     elif marker == "":

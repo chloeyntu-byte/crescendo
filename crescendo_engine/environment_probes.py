@@ -5,6 +5,9 @@ or grants a completion/stop proof.  Native execution remains in the existing
 engines.  Every failed/unknown probe is reported and later probes still run.
 """
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 
 import errno
 from concurrent.futures import ThreadPoolExecutor
@@ -24,7 +27,7 @@ import tempfile
 import threading
 import time
 
-SCHEMA = "crescendo.environment_probe.v1"
+SCHEMA = _contract_text("crescendo.environment_probe.v1")
 OUTPUT_LIMIT = 128 * 1024
 OUTPUT_TAIL = 24 * 1024
 MAX_JOB_QUERIES = 64
@@ -123,7 +126,7 @@ def _command_status(result):
 def _redact(value, environment):
     """Do not expose complete environments, license endpoints or snapshots."""
     protected = [source.get(key) for source in (environment, os.environ) for key in source if key in
-                 ("CDS_LIC_FILE", "LM_LICENSE_FILE", "CRESCENDO_NATIVE_ENV_SNAPSHOT") or
+                 ("CDS_LIC_FILE", "LM_LICENSE_FILE", _contract_text("CRESCENDO_NATIVE_ENV_SNAPSHOT")) or
                  re.search(r"(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|COOKIE|API_?KEY)", key, re.I)]
     protected = [item for item in protected if isinstance(item, str) and item]
     if isinstance(value, str):
@@ -136,7 +139,7 @@ def _redact(value, environment):
         return value
     if isinstance(value, dict):
         result = {}
-        native_snapshot = (value.get("schema") or value.get("schema_version")) == "crescendo.native_environment.v1"
+        native_snapshot = (value.get("schema") or value.get("schema_version")) == _contract_text("crescendo.native_environment.v1")
         for key, item in value.items():
             name = str(key)
             if _PRIVATE_FIELD.search(name) and item is not None and not isinstance(item, bool):
@@ -248,7 +251,7 @@ except Exception as e:
 print(json.dumps(r,sort_keys=True))
 '''
 
-_FILESYSTEM_PROBE = r'''
+_FILESYSTEM_PROBE = _contract_text(r'''
 import errno, json, os, stat, sys, tempfile
 path=os.path.abspath(sys.argv[1]); existing=path
 while not os.path.exists(existing):
@@ -286,7 +289,7 @@ finally:
         except Exception as e:
             r["write_probe"].update(cleaned=False,cleanup_error=str(e),retained_path=temporary)
 print(json.dumps(r,sort_keys=True))
-'''
+''')
 
 
 def _json_probe(source, args, root, env, cancel, timeout=5.0):
@@ -409,16 +412,20 @@ def _scheduler_capability(config, prepared, root, env, cancel, spec=None, capabi
         binaries.append({"submit_argv": argv, "binary": binary,
                          "executable": bool(binary and os.access(binary, os.X_OK)),
                          "test": row.get("test")})
-    result = dict(scheduler_capability(settings), submission_not_performed=True,
+    context = {'config': config, 'spec': spec or {}, 'prepared': prepared,
+               'submit_argv': (binaries[0]['submit_argv'] if binaries else []),
+               'root': root, 'environment': env, 'cancel': cancel,
+               'observation_only': True, '_help_cache': capability_cache}
+    result = dict(scheduler_capability(settings, context), submission_not_performed=True,
                   commands=binaries, query_supported=False)
     if not commands:
         return "NOT_TESTED", "Current Job Setup has no Command distribution", result
     if any(not row["executable"] for row in binaries):
         return "FAIL", "The configured submission executable is unavailable in the native child environment", result
-    if not result['available']:
-        return "FAIL", result['reason'], result
+    if not result['available'] and not result.get('query_available'):
+        return ("NOT_TESTED" if result.get('receipt_only') else "FAIL"), result['reason'], result
     from .execution_commands import _split_template
-    for kind in ("query", "cancel"):
+    for kind in (("query", "cancel") if result['available'] else ("query",)):
         argv, unused = _split_template(result[kind + "_template"])
         binary = resolve_scheduler_binary(argv[0], environment=env)
         result[kind + "_binary"] = binary
@@ -465,7 +472,7 @@ def query_scheduler_jobs(config, prepared, root, job_ids, emit=None, cancel=None
         home, environment = _native_context(config, root)
         from .native_environment import scheduler_environment
         private_home = environment.get("HOME")
-        home_source = "captured_caller_home" if "CRESCENDO_SCHEDULER_HOME_SET" in environment else "legacy_caller_context"
+        home_source = "captured_caller_home" if _contract_text("CRESCENDO_SCHEDULER_HOME_SET") in environment else "legacy_caller_context"
         environment = scheduler_environment(environment)
         reporter.environment = environment
         reporter.add("scheduler.auth_context", "PASS" if environment.get("HOME") else "WARN",
@@ -476,14 +483,13 @@ def query_scheduler_jobs(config, prepared, root, job_ids, emit=None, cancel=None
         capability = reporter.check("scheduler.query_capability", lambda: _scheduler_capability(
             config, prepared, root, environment, cancel, spec, capability_cache))
         if capability["status"] != "PASS":
-            reporter.add("scheduler.jobs", "NOT_TESTED", "Exact scheduler queries require configured query and cancel templates")
+            reporter.add("scheduler.jobs", "NOT_TESTED", "Exact scheduler queries require a proven one-ID query template")
             return reporter.checks
         operations = []
         for row in bounded[:MAX_JOB_QUERIES]:
             def query(row=row):
-                from .scheduler_cli import scheduler_command_argv
-                from .scheduler_protocol import parse_scheduler_observation
-                result = bounded_command(scheduler_command_argv(capability["details"]["query_template"], row["job_id"], dict(row, cwd=root)),
+                from .scheduler_providers import command, observation as parse_scheduler_observation
+                result = bounded_command(command("query", {"scheduler_query_template":capability["details"]["query_template"]}, row["job_id"], dict(row, cwd=root)),
                     cwd=root, env=environment, timeout=3.0, cancel=cancel)
                 status = _command_status(result)
                 observation = parse_scheduler_observation(
@@ -542,7 +548,7 @@ def _run_expanded_environment_probes(config, prepared, root, emit=None, cancel=N
             if sys.version_info < (3, 6) or required_failures or not (details.get("tk") or {}).get("ok"):
                 status, message = "FAIL", "Current Python or required stdlib/Tcl/Tk check failed"
             elif failures:
-                status, message = "WARN", "Optional stdlib extensions are unavailable; current Crescendo engine dependencies passed"
+                status, message = "WARN", _contract_text("Optional stdlib extensions are unavailable; current Crescendo engine dependencies passed")
             elif (details.get("tk") or {}).get("display_status") == "NOT_TESTED":
                 status, message = "WARN", "Python and Tcl succeeded; a graphical Tk display was unavailable"
         return status, message, details
@@ -649,7 +655,7 @@ def _run_expanded_environment_probes(config, prepared, root, emit=None, cancel=N
         paths += [("work", storage.get("work_dir")), ("state", storage.get("states_root")),
                   ("simulation", storage.get("data_root")), ("run", storage.get("run_root"))]
     local_base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
-    paths.append(("local_cache", os.path.join(local_base, "crescendo")))
+    paths.append(("local_cache", os.path.join(local_base, _contract_text("crescendo"))))
     for name, path in paths:
         def filesystem_check(name=name, path=path):
             if not path:
@@ -802,7 +808,7 @@ def run_environment_probes(config, prepared, root, emit=None, cancel=None, spec=
         "selected_measurements": {kind: [row.get("output_key") for row in spec.get(kind) or []] for kind in ("objectives", "constraints")},
         "job_policies": policies,
         "basis": "application is already running; no prior result replaces this new run",
-        "execution_protocol": ["crescendo.maestro_baseline.v1", "crescendo.execution_pipeline.v1"],
+        "execution_protocol": [_contract_text("crescendo.maestro_baseline.v1"), _contract_text("crescendo.execution_pipeline.v1")],
         "netlist_sources": ["maestro_baseline", "private_netlist", "maestro_netlist"],
         "selected_simulator": spec.get("simulator") or cadence.get("simulator") or "spectre",
         "execution_commands": spec.get("execution_commands") or {},

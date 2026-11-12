@@ -9,6 +9,9 @@ import re
 import stat
 import xml.etree.ElementTree as ET
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .utils import sha256_file
 
 
@@ -34,7 +37,7 @@ def _json_sha256(value):
 
 
 def validate_external_eda_environment_identity(identity):
-    if not isinstance(identity, dict) or identity.get("schema_version") != "crescendo.external_eda_environment.v1":
+    if not isinstance(identity, dict) or identity.get("schema_version") != _contract_text("crescendo.external_eda_environment.v1"):
         raise ValueError("external EDA environment identity schema is not supported")
     expected = identity.get("fingerprint")
     if not isinstance(expected, str) or not re.match(r"^[0-9a-f]{64}$", expected):
@@ -944,7 +947,7 @@ def collect_external_eda_environment(setup, cadence, pdk, submission=None):
         if path:
             _collect_model_tree(collector, path, alps_include_dirs)
 
-    pdk_dir = pdk.get("pdk_dir") or cadence.get("pdk_dir")
+    pdk_dir = pdk.get(_contract_text("pdk_dir")) or cadence.get(_contract_text("pdk_dir"))
     technology_found = False
     candidate_roots = []
     if pdk_dir:
@@ -975,7 +978,7 @@ def collect_external_eda_environment(setup, cadence, pdk, submission=None):
         key=lambda row: json.dumps(row, separators=(",", ":"), sort_keys=True),
     )
     identity = {
-        "schema_version": "crescendo.external_eda_environment.v1",
+        "schema_version": _contract_text("crescendo.external_eda_environment.v1"),
         "artifacts": artifacts,
         "coverage": {
             "simulator_executable": any(row["role"] == "simulator_executable" for row in artifacts),

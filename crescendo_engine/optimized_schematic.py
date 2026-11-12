@@ -17,6 +17,9 @@ import time
 import unicodedata
 import uuid
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .cadence import child_environment, run_command, write_readonly_cds_context
 from .engineering import parse_engineering_number
 from .netlist_measurement import run_owned_command
@@ -25,8 +28,8 @@ from .workspace import (CADENCE_STARTUP_LOCK, _skill_quote, _configured_startup_
                         resolve_copy_libraries, source_design_identity, tree_content_fingerprint)
 
 
-SCHEMA = "crescendo.optimized_schematic.v1"
-EVIDENCE_SCHEMA = "crescendo.optimized_schematic_evidence.v1"
+SCHEMA = _contract_text("crescendo.optimized_schematic.v1")
+EVIDENCE_SCHEMA = _contract_text("crescendo.optimized_schematic_evidence.v1")
 MAX_VIEW_NAME = 96
 SNAPSHOT_LIMIT = 32 * 1024 * 1024
 
@@ -71,30 +74,30 @@ def export_snapshot_skill(rows, output_path):
     identities = sorted(set((str(row["library"]), str(row["cell"]),
                              str(row.get("view") or "schematic"), str(row["instance"]))
                             for row in rows))
-    lines = ['crescExportSnapshot = outfile("%s")' % _skill_quote(output_path),
-             'unless(crescExportSnapshot error("Crescendo cannot write export snapshot\\n"))']
+    lines = [_contract_text('crescExportSnapshot = outfile("%s")') % _skill_quote(output_path),
+             _contract_text('unless(crescExportSnapshot error("Crescendo cannot write export snapshot\\n"))')]
     for row in rows:
-        lines.append('fprintf(crescExportSnapshot "TARGET\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" "%s" "%s")' % tuple(
+        lines.append(_contract_text('fprintf(crescExportSnapshot "TARGET\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" "%s" "%s")') % tuple(
             _skill_quote(str(value)) for value in (row["parameter_id"], row["library"], row["cell"],
                                                    row.get("view") or "schematic", row["instance"])))
     for library, cell, view, instance in identities:
         quoted = tuple(_skill_quote(value) for value in (library, cell, view, instance))
         lines.extend([
-            'crescExportCv = dbOpenCellViewByType("%s" "%s" "%s" "schematic" "r")' % quoted[:3],
-            'unless(crescExportCv error("Crescendo export snapshot owner cannot open\\n"))',
-            'crescExportInstances = setof(item crescExportCv~>instances item~>name == "%s")' % quoted[3],
-            'unless(length(crescExportInstances) == 1 error("Crescendo export snapshot instance is not unique\\n"))',
-            'crescExportInst = car(crescExportInstances)',
-            'foreach(crescExportProp crescExportInst~>prop',
-            '  fprintf(crescExportSnapshot "PROP\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" "%s" crescExportProp~>name crescExportProp~>valueType crescExportProp~>value)' % quoted,
+            _contract_text('crescExportCv = dbOpenCellViewByType("%s" "%s" "%s" "schematic" "r")') % quoted[:3],
+            _contract_text('unless(crescExportCv error("Crescendo export snapshot owner cannot open\\n"))'),
+            _contract_text('crescExportInstances = setof(item crescExportCv~>instances item~>name == "%s")') % quoted[3],
+            _contract_text('unless(length(crescExportInstances) == 1 error("Crescendo export snapshot instance is not unique\\n"))'),
+            _contract_text('crescExportInst = car(crescExportInstances)'),
+            _contract_text('foreach(crescExportProp crescExportInst~>prop'),
+            _contract_text('  fprintf(crescExportSnapshot "PROP\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" "%s" crescExportProp~>name crescExportProp~>valueType crescExportProp~>value)') % quoted,
             ')',
-            'crescExportCdf = cdfGetInstCDF(crescExportInst)',
-            'when(crescExportCdf foreach(crescExportParam crescExportCdf~>parameters',
-            '  fprintf(crescExportSnapshot "CDF\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" "%s" crescExportParam~>name crescExportParam~>type crescExportParam~>value)' % quoted,
+            _contract_text('crescExportCdf = cdfGetInstCDF(crescExportInst)'),
+            _contract_text('when(crescExportCdf foreach(crescExportParam crescExportCdf~>parameters'),
+            _contract_text('  fprintf(crescExportSnapshot "CDF\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" "%s" crescExportParam~>name crescExportParam~>type crescExportParam~>value)') % quoted,
             '))',
-            'dbClose(crescExportCv)',
+            _contract_text('dbClose(crescExportCv)'),
         ])
-    lines.append('close(crescExportSnapshot)')
+    lines.append(_contract_text('close(crescExportSnapshot)'))
     return lines
 
 
@@ -300,11 +303,11 @@ def _resolved_properties(group, evidence):
             snapshot = matches[0]
             properties = copy.deepcopy(snapshot.get("properties") or {})
             for name, row in (snapshot.get("cdf") or {}).items():
-                if name not in properties and isinstance(row.get("value"), str) and "CRESCENDO_NL_" in row["value"]:
+                if name not in properties and isinstance(row.get("value"), str) and _contract_text("CRESCENDO_NL_") in row["value"]:
                     properties[name] = {"type": "string", "value": row["value"]}
             for name, row in properties.items():
                 value, value_type = row.get("value"), row.get("type")
-                if isinstance(value, str) and "CRESCENDO_NL_" in value:
+                if isinstance(value, str) and _contract_text("CRESCENDO_NL_") in value:
                     try: numeric = _expression_value(value, symbols)
                     except (ValueError, SyntaxError, TypeError, ZeroDivisionError, OverflowError) as error:
                         raise OptimizedSchematicError("Cannot resolve native derived property %s: %s" % (name, error))
@@ -330,59 +333,59 @@ def _resolved_properties(group, evidence):
 
 
 def _readback_lines(group, view_expression, records, label, validate=False, collect=False):
-    lines = ['crescCv = dbOpenCellViewByType("%s" "%s" %s "schematic" "r")' %
+    lines = [_contract_text('crescCv = dbOpenCellViewByType("%s" "%s" %s "schematic" "r")') %
              (_skill_quote(group["library"]), _skill_quote(group["cell"]), view_expression),
-             'unless(crescCv error("Crescendo optimized readback failed to open\\n"))']
+             _contract_text('unless(crescCv error("Crescendo optimized readback failed to open\\n"))')]
     for row in group["assignments"]:
         lines.extend([
-            'crescMatches = setof(item crescCv~>instances item~>name == "%s")' % _skill_quote(row["instance"]),
-            'unless(length(crescMatches) == 1 error("Crescendo optimized instance is not unique\\n"))',
-            'crescInst = car(crescMatches)',
-            'crescProp = dbFindProp(crescInst "%s")' % _skill_quote(row["property"]),
-            'crescCdf = cdfGetInstCDF(crescInst)',
-            'crescParam = get(crescCdf stringToSymbol("%s"))' % _skill_quote(row["property"]),
-            'unless(crescProp && crescParam error("Crescendo optimized actual property or CDF is missing\\n"))',
+            _contract_text('crescMatches = setof(item crescCv~>instances item~>name == "%s")') % _skill_quote(row["instance"]),
+            _contract_text('unless(length(crescMatches) == 1 error("Crescendo optimized instance is not unique\\n"))'),
+            _contract_text('crescInst = car(crescMatches)'),
+            _contract_text('crescProp = dbFindProp(crescInst "%s")') % _skill_quote(row["property"]),
+            _contract_text('crescCdf = cdfGetInstCDF(crescInst)'),
+            _contract_text('crescParam = get(crescCdf stringToSymbol("%s"))') % _skill_quote(row["property"]),
+            _contract_text('unless(crescProp && crescParam error("Crescendo optimized actual property or CDF is missing\\n"))'),
         ])
         if validate:
             lines.extend([
-                'crescPropNumber = crescExportNumber(crescProp~>value)',
-                'crescCdfNumber = crescExportNumber(crescParam~>value)',
-                'unless(numberp(crescPropNumber) && numberp(crescCdfNumber) error("Crescendo optimized numeric readback is unavailable\\n"))',
-                'unless(abs(crescPropNumber - %.17g) <= max(abs(crescPropNumber) %.17g 1e-300)*1e-10 && abs(crescCdfNumber - %.17g) <= max(abs(crescCdfNumber) %.17g 1e-300)*1e-10 error("Crescendo optimized readback changed completed solution for %s\\n"))' %
+                _contract_text('crescPropNumber = crescExportNumber(crescProp~>value)'),
+                _contract_text('crescCdfNumber = crescExportNumber(crescParam~>value)'),
+                _contract_text('unless(numberp(crescPropNumber) && numberp(crescCdfNumber) error("Crescendo optimized numeric readback is unavailable\\n"))'),
+                _contract_text('unless(abs(crescPropNumber - %.17g) <= max(abs(crescPropNumber) %.17g 1e-300)*1e-10 && abs(crescCdfNumber - %.17g) <= max(abs(crescCdfNumber) %.17g 1e-300)*1e-10 error("Crescendo optimized readback changed completed solution for %s\\n"))') %
                 (row["actual_value"], abs(row["actual_value"]), row["actual_value"], abs(row["actual_value"]), _skill_quote(row["parameter_id"])),
             ])
         if collect:
-            lines.append('crescExportReadbacks = cons(list("%s" "%s" "%s" %s crescProp~>value crescParam~>value) crescExportReadbacks)' %
+            lines.append(_contract_text('crescExportReadbacks = cons(list("%s" "%s" "%s" %s crescProp~>value crescParam~>value) crescExportReadbacks)') %
                          (_skill_quote(row["parameter_id"]), _skill_quote(group["library"]),
                           _skill_quote(group["cell"]), view_expression))
         else:
-            lines.append('fprintf(crescRecords "%s\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" %s crescProp~>value crescParam~>value)' %
+            lines.append(_contract_text('fprintf(crescRecords "%s\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" %s crescProp~>value crescParam~>value)') %
                          (label, _skill_quote(row["parameter_id"]), _skill_quote(group["library"]),
                           _skill_quote(group["cell"]), view_expression))
-    lines.append('dbClose(crescCv)')
+    lines.append(_contract_text('dbClose(crescCv)'))
     return lines
 
 
 def _stage_script(plan, evidence, records, ready_path):
-    lines = ['crescReady = outfile("%s") close(crescReady)' % _skill_quote(ready_path),
-             'crescRecords = outfile("%s")' % _skill_quote(records)]
+    lines = [_contract_text('crescReady = outfile("%s") close(crescReady)') % _skill_quote(ready_path),
+             _contract_text('crescRecords = outfile("%s")') % _skill_quote(records)]
     for group in plan["groups"]:
         library, cell, source, stage = tuple(_skill_quote(group[name]) for name in
                                              ("library", "cell", "source_view", "staging_view"))
         lines.extend([
-            'when(ddGetObj("%s" "%s" "%s") error("Crescendo owned export staging already exists\\n"))' % (library, cell, stage),
-            'crescSource = dbOpenCellViewByType("%s" "%s" "%s" "schematic" "r")' % (library, cell, source),
-            'unless(crescSource error("Crescendo original schematic cannot open\\n"))',
-            'crescCv = dbCopyCellView(crescSource "%s" "%s" "%s")' % (library, cell, stage),
-            'unless(crescCv error("Crescendo optimized staging copy failed\\n"))',
-            'dbClose(crescSource)',
+            _contract_text('when(ddGetObj("%s" "%s" "%s") error("Crescendo owned export staging already exists\\n"))') % (library, cell, stage),
+            _contract_text('crescSource = dbOpenCellViewByType("%s" "%s" "%s" "schematic" "r")') % (library, cell, source),
+            _contract_text('unless(crescSource error("Crescendo original schematic cannot open\\n"))'),
+            _contract_text('crescCv = dbCopyCellView(crescSource "%s" "%s" "%s")') % (library, cell, stage),
+            _contract_text('unless(crescCv error("Crescendo optimized staging copy failed\\n"))'),
+            _contract_text('dbClose(crescSource)'),
         ])
         for row in _resolved_properties(group, evidence):
             lines.extend([
-                'crescMatches = setof(item crescCv~>instances item~>name == "%s")' % _skill_quote(row["instance"]),
-                'unless(length(crescMatches) == 1 error("Crescendo optimized instance is not unique\\n"))',
-                'crescInst = car(crescMatches)',
-                'dbReplaceProp(crescInst "%s" "%s" %s)' % (_skill_quote(row["name"]), row["type"], _literal(row["value"], row["type"])),
+                _contract_text('crescMatches = setof(item crescCv~>instances item~>name == "%s")') % _skill_quote(row["instance"]),
+                _contract_text('unless(length(crescMatches) == 1 error("Crescendo optimized instance is not unique\\n"))'),
+                _contract_text('crescInst = car(crescMatches)'),
+                _contract_text('dbReplaceProp(crescInst "%s" "%s" %s)') % (_skill_quote(row["name"]), row["type"], _literal(row["value"], row["type"])),
             ])
         if not evidence.get("snapshot"):
             # Compatibility for completed old runs that retained direct actual
@@ -390,24 +393,24 @@ def _stage_script(plan, evidence, records, ready_path):
             # readback must still equal that actual completed solution.
             for row in group["assignments"]:
                 lines.extend([
-                    'crescInst = car(setof(item crescCv~>instances item~>name == "%s"))' % _skill_quote(row["instance"]),
-                    'cdfgData = cdfGetInstCDF(crescInst)',
-                    'crescParam = get(cdfgData stringToSymbol("%s"))' % _skill_quote(row["property"]),
-                    'unless(crescParam error("Crescendo original parameter CDF is missing\\n"))',
-                    'crescParam~>value = "%s"' % ("%.17g" % row["actual_value"]),
-                    'when(crescParam~>callback && crescParam~>callback != "" evalstring(crescParam~>callback))',
-                    'when(isCallable(\'cdfUpdateInstParam) cdfUpdateInstParam(crescInst))',
+                    _contract_text('crescInst = car(setof(item crescCv~>instances item~>name == "%s"))') % _skill_quote(row["instance"]),
+                    _contract_text('cdfgData = cdfGetInstCDF(crescInst)'),
+                    _contract_text('crescParam = get(cdfgData stringToSymbol("%s"))') % _skill_quote(row["property"]),
+                    _contract_text('unless(crescParam error("Crescendo original parameter CDF is missing\\n"))'),
+                    _contract_text('crescParam~>value = "%s"') % ("%.17g" % row["actual_value"]),
+                    _contract_text('when(crescParam~>callback && crescParam~>callback != "" evalstring(crescParam~>callback))'),
+                    _contract_text('when(isCallable(\'cdfUpdateInstParam) cdfUpdateInstParam(crescInst))'),
                 ])
-        lines.extend(['schCheck(crescCv)', 'unless(dbSave(crescCv) error("Crescendo optimized staging save failed\\n"))', 'dbClose(crescCv)'])
+        lines.extend([_contract_text('schCheck(crescCv)'), _contract_text('unless(dbSave(crescCv) error("Crescendo optimized staging save failed\\n"))'), _contract_text('dbClose(crescCv)')])
         lines.extend(_readback_lines(group, '"%s"' % stage, records, "STAGE"))
-    lines.extend(['close(crescRecords)', 'printf("CRESCENDO_OPTIMIZED_STAGE_DONE\\n")', 'exit()'])
+    lines.extend([_contract_text('close(crescRecords)'), _contract_text('printf("CRESCENDO_OPTIMIZED_STAGE_DONE\\n")'), 'exit()'])
     return "\n".join(lines) + "\n"
 
 
 def _publish_script(plan, records, ready_path):
-    lines = ['crescReady = outfile("%s") close(crescReady)' % _skill_quote(ready_path),
-             'crescRecords = outfile("%s")' % _skill_quote(records),
-             'procedure(crescExportNumber(value) let((parsed)',
+    lines = [_contract_text('crescReady = outfile("%s") close(crescReady)') % _skill_quote(ready_path),
+             _contract_text('crescRecords = outfile("%s")') % _skill_quote(records),
+             _contract_text('procedure(crescExportNumber(value) let((parsed)'),
              '  if(numberp(value) then value else',
              '    if(stringp(value) && isCallable(\'cdfParseFloatString) then',
              '      parsed = errset(cdfParseFloatString(value) t)',
@@ -419,62 +422,62 @@ def _publish_script(plan, records, ready_path):
         library, cell, stage, target, backup, fallback = tuple(_skill_quote(group[name]) for name in
             ("library", "cell", "staging_view", "target_view", "backup_view", "fallback_view"))
         lines.extend([
-            'crescStage = dbOpenCellViewByType("%s" "%s" "%s" "schematic" "r")' % (library, cell, stage),
-            'unless(crescStage error("Crescendo verified export staging is unavailable\\n"))',
-            'crescTarget = "%s"' % (fallback if group.get("overwrite_blocked") else target),
-            'crescBackupCreated = nil',
-            'crescExisting = ddGetObj("%s" "%s" crescTarget)' % (library, cell),
-            'when(crescExisting',
-            '  crescExistingCv = dbOpenCellViewByType("%s" "%s" crescTarget "schematic" "r")' % (library, cell),
-            '  crescBackup = if(crescExistingCv then errset(dbCopyCellView(crescExistingCv "%s" "%s" "%s") t) else nil)' % (library, cell, backup),
-            '  when(crescExistingCv dbClose(crescExistingCv))',
-            '  if(crescBackup && car(crescBackup) then',
-            '    dbSave(car(crescBackup)) dbClose(car(crescBackup)) crescBackupCreated = t',
-            '  else crescTarget = "%s")' % fallback,
+            _contract_text('crescStage = dbOpenCellViewByType("%s" "%s" "%s" "schematic" "r")') % (library, cell, stage),
+            _contract_text('unless(crescStage error("Crescendo verified export staging is unavailable\\n"))'),
+            _contract_text('crescTarget = "%s"') % (fallback if group.get("overwrite_blocked") else target),
+            _contract_text('crescBackupCreated = nil'),
+            _contract_text('crescExisting = ddGetObj("%s" "%s" crescTarget)') % (library, cell),
+            _contract_text('when(crescExisting'),
+            _contract_text('  crescExistingCv = dbOpenCellViewByType("%s" "%s" crescTarget "schematic" "r")') % (library, cell),
+            _contract_text('  crescBackup = if(crescExistingCv then errset(dbCopyCellView(crescExistingCv "%s" "%s" "%s") t) else nil)') % (library, cell, backup),
+            _contract_text('  when(crescExistingCv dbClose(crescExistingCv))'),
+            _contract_text('  if(crescBackup && car(crescBackup) then'),
+            _contract_text('    dbSave(car(crescBackup)) dbClose(car(crescBackup)) crescBackupCreated = t'),
+            _contract_text('  else crescTarget = "%s")') % fallback,
             ')',
-            'crescExportReadbacks = nil',
-            'crescPublished = errset(progn(',
-            '  crescCopied = dbCopyCellView(crescStage "%s" "%s" crescTarget nil nil t)' % (library, cell),
-            '  unless(crescCopied error("Crescendo optimized view copy failed\\n"))',
-            '  unless(dbSave(crescCopied) error("Crescendo optimized view save failed\\n"))',
-            '  dbClose(crescCopied)',
+            _contract_text('crescExportReadbacks = nil'),
+            _contract_text('crescPublished = errset(progn('),
+            _contract_text('  crescCopied = dbCopyCellView(crescStage "%s" "%s" crescTarget nil nil t)') % (library, cell),
+            _contract_text('  unless(crescCopied error("Crescendo optimized view copy failed\\n"))'),
+            _contract_text('  unless(dbSave(crescCopied) error("Crescendo optimized view save failed\\n"))'),
+            _contract_text('  dbClose(crescCopied)'),
         ])
-        lines.extend(_readback_lines(group, 'crescTarget', records, "FINAL", validate=True, collect=True))
+        lines.extend(_readback_lines(group, _contract_text('crescTarget'), records, "FINAL", validate=True, collect=True))
         lines.extend([
             '  t',
             ') t)',
-            'unless(crescPublished && car(crescPublished)',
-            '  when(crescCopied errset(dbClose(crescCopied) t))',
-            '  when(crescBackupCreated',
-            '    crescRecovery = dbOpenCellViewByType("%s" "%s" "%s" "schematic" "r")' % (library, cell, backup),
-            '    crescRestored = errset(progn(',
-            '      crescRestoreCv = dbCopyCellView(crescRecovery "%s" "%s" "%s" nil nil t)' % (library, cell, target),
-            '      unless(crescRestoreCv error("Crescendo original optimized target restore failed\\n"))',
-            '      unless(dbSave(crescRestoreCv) error("Crescendo original optimized target restore save failed\\n"))',
-            '      dbClose(crescRestoreCv) t',
+            _contract_text('unless(crescPublished && car(crescPublished)'),
+            _contract_text('  when(crescCopied errset(dbClose(crescCopied) t))'),
+            _contract_text('  when(crescBackupCreated'),
+            _contract_text('    crescRecovery = dbOpenCellViewByType("%s" "%s" "%s" "schematic" "r")') % (library, cell, backup),
+            _contract_text('    crescRestored = errset(progn('),
+            _contract_text('      crescRestoreCv = dbCopyCellView(crescRecovery "%s" "%s" "%s" nil nil t)') % (library, cell, target),
+            _contract_text('      unless(crescRestoreCv error("Crescendo original optimized target restore failed\\n"))'),
+            _contract_text('      unless(dbSave(crescRestoreCv) error("Crescendo original optimized target restore save failed\\n"))'),
+            _contract_text('      dbClose(crescRestoreCv) t'),
             '    ) t)',
-            '    when(crescRecovery dbClose(crescRecovery))',
-            '    unless(crescRestored && car(crescRestored) error("Crescendo overwrite failed; original target backup retained at %s/%s/%s\\n"))' % (library, cell, backup),
+            _contract_text('    when(crescRecovery dbClose(crescRecovery))'),
+            _contract_text('    unless(crescRestored && car(crescRestored) error("Crescendo overwrite failed; original target backup retained at %s/%s/%s\\n"))') % (library, cell, backup),
             '  )',
-            '  crescTarget = "%s"' % fallback,
-            '  when(ddGetObj("%s" "%s" crescTarget) error("Crescendo unique optimized fallback already exists\\n"))' % (library, cell),
-            '  crescExportReadbacks = nil',
-            '  crescCopied = dbCopyCellView(crescStage "%s" "%s" crescTarget)' % (library, cell),
-            '  unless(crescCopied error("Crescendo optimized fallback view copy failed\\n"))',
-            '  unless(dbSave(crescCopied) error("Crescendo optimized fallback view save failed\\n"))',
-            '  dbClose(crescCopied)',
+            _contract_text('  crescTarget = "%s"') % fallback,
+            _contract_text('  when(ddGetObj("%s" "%s" crescTarget) error("Crescendo unique optimized fallback already exists\\n"))') % (library, cell),
+            _contract_text('  crescExportReadbacks = nil'),
+            _contract_text('  crescCopied = dbCopyCellView(crescStage "%s" "%s" crescTarget)') % (library, cell),
+            _contract_text('  unless(crescCopied error("Crescendo optimized fallback view copy failed\\n"))'),
+            _contract_text('  unless(dbSave(crescCopied) error("Crescendo optimized fallback view save failed\\n"))'),
+            _contract_text('  dbClose(crescCopied)'),
         ])
-        lines.extend(_readback_lines(group, 'crescTarget', records, "FINAL", validate=True, collect=True))
+        lines.extend(_readback_lines(group, _contract_text('crescTarget'), records, "FINAL", validate=True, collect=True))
         lines.extend([
             ')',
-            'dbClose(crescStage)',
-            'foreach(crescRow reverse(crescExportReadbacks) fprintf(crescRecords "FINAL\\t%L\\t%L\\t%L\\t%L\\t%L\\t%L\\n" car(crescRow) cadr(crescRow) caddr(crescRow) cadddr(crescRow) nth(4 crescRow) nth(5 crescRow)))',
-            'fprintf(crescRecords "VIEW\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" crescTarget)' % (library, cell, target),
-            'crescOwnedStage = ddGetObj("%s" "%s" "%s")' % (library, cell, stage),
-            'when(crescOwnedStage ddDeleteObj(crescOwnedStage))',
-            'when(crescBackupCreated crescOwnedBackup = ddGetObj("%s" "%s" "%s") when(crescOwnedBackup ddDeleteObj(crescOwnedBackup)))' % (library, cell, backup),
+            _contract_text('dbClose(crescStage)'),
+            _contract_text('foreach(crescRow reverse(crescExportReadbacks) fprintf(crescRecords "FINAL\\t%L\\t%L\\t%L\\t%L\\t%L\\t%L\\n" car(crescRow) cadr(crescRow) caddr(crescRow) cadddr(crescRow) nth(4 crescRow) nth(5 crescRow)))'),
+            _contract_text('fprintf(crescRecords "VIEW\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" crescTarget)') % (library, cell, target),
+            _contract_text('crescOwnedStage = ddGetObj("%s" "%s" "%s")') % (library, cell, stage),
+            _contract_text('when(crescOwnedStage ddDeleteObj(crescOwnedStage))'),
+            _contract_text('when(crescBackupCreated crescOwnedBackup = ddGetObj("%s" "%s" "%s") when(crescOwnedBackup ddDeleteObj(crescOwnedBackup)))') % (library, cell, backup),
         ])
-    lines.extend(['close(crescRecords)', 'printf("CRESCENDO_OPTIMIZED_EXPORT_DONE\\n")', 'exit()'])
+    lines.extend([_contract_text('close(crescRecords)'), _contract_text('printf("CRESCENDO_OPTIMIZED_EXPORT_DONE\\n")'), 'exit()'])
     return "\n".join(lines) + "\n"
 
 
@@ -555,7 +558,7 @@ def export_optimized_schematic(prepared, spec, candidate, config, export_root,
     plan = build_export_plan(evidence, spec.get("display_name") or spec.get("name") or "optimization", protected_views, libraries)
     for group in plan["groups"]:
         token = uuid.uuid4().hex[:20]
-        group.update(staging_view="cr_export_stage_" + token, backup_view="cr_export_backup_" + token,
+        group.update(staging_view=_contract_text("cr_export_stage_") + token, backup_view=_contract_text("cr_export_backup_") + token,
                      fallback_view=group["target_view"][:MAX_VIEW_NAME - 22] + "_" + token)
         _resolved_properties(group, evidence)  # Fail unsupported expressions before any native write.
     if cancel_check and cancel_check(): raise OptimizedSchematicError("Schematic export cancelled")
@@ -578,12 +581,12 @@ def export_optimized_schematic(prepared, spec, candidate, config, export_root,
     context = ensure_dir(os.path.join(root, "context"))
     cadence = config.get("cadence") or {}
     write_readonly_cds_context(context, primary, libraries[primary], source_cds_lib_override=source_cds or cadence.get("cds_lib"))
-    startup = ['; Crescendo authorized optimized-view export; original views are read only.']
+    startup = [_contract_text('; Crescendo authorized optimized-view export; original views are read only.')]
     startup.extend('load("%s")' % _skill_quote(path) for path in _configured_startup_extensions(prepared["setup"], prepared.get("hierarchy"), config))
-    startup.append("crescExportStartupLoaded = t")
+    startup.append(_contract_text("crescExportStartupLoaded = t"))
     atomic_write_text(os.path.join(context, ".cdsinit"), "\n".join(startup) + "\n")
     deadline = time.monotonic() + float(timeout_seconds or config.get("runtime", {}).get("command_timeout_seconds", 180))
-    atomic_write_json(os.path.join(root, "export_plan.json"), plan)
+    atomic_write_json(os.path.join(root, _contract_text("export_plan.json")), plan)
     result = {"schema_version": SCHEMA, "candidate_id": candidate["candidate_id"], "root": root, "ok": False,
               "started_at": utc_timestamp(), "commands": [], "retained_owned_views": [
                   {"library": group["library"], "cell": group["cell"], "view": group[key]} for group in plan["groups"]
@@ -596,13 +599,13 @@ def export_optimized_schematic(prepared, spec, candidate, config, export_root,
             control = ensure_dir(os.path.join(root, phase)); records = os.path.join(control, "readback.records")
             ready = os.path.join(control, "ready"); script = os.path.join(control, "export.il")
             text = _stage_script(plan, evidence, records, ready) if phase == "stage" else _publish_script(plan, records, ready)
-            prefix = 'unless(boundp(\'crescExportStartupLoaded) load("%s"))\n' % _skill_quote(os.path.join(context, ".cdsinit"))
+            prefix = _contract_text('unless(boundp(\'crescExportStartupLoaded) load("%s"))\n') % _skill_quote(os.path.join(context, ".cdsinit"))
             # A restore-file error otherwise drops Ocean into an interactive
             # prompt. Convert any native phase error into a terminal owned
             # command immediately, preserving its full stdout diagnostics.
             body = prefix + text.rsplit('exit()', 1)[0]
-            atomic_write_text(script, 'crescExportPhaseResult = errset(progn(\n' + body +
-                              ') t)\nunless(crescExportPhaseResult exit(1))\nexit()\n')
+            atomic_write_text(script, _contract_text('crescExportPhaseResult = errset(progn(\n') + body +
+                              _contract_text(') t)\nunless(crescExportPhaseResult exit(1))\nexit()\n'))
             argv = [cadence["ocean_bin"], "-nograph", "-restore", script]
             if progress_callback: progress_callback({"stage": "optimized_schematic_" + phase, "argv": argv})
             def guarded_runner(arguments, **kwargs):
@@ -610,7 +613,7 @@ def export_optimized_schematic(prepared, spec, candidate, config, export_root,
             command = run_owned_command(argv, cwd=context, env=child_environment(config, context), timeout_seconds=remaining,
                                         control_root=control, token="optimized-export-" + uuid.uuid4().hex,
                                         cancel_check=cancel_check, command_runner=guarded_runner)
-            result["commands"].append(command); atomic_write_json(os.path.join(root, "export_result.json"), result)
+            result["commands"].append(command); atomic_write_json(os.path.join(root, _contract_text("export_result.json")), result)
             if command.get("returncode") != 0 or command.get("timed_out") or command.get("cancelled") or command.get("termination_failed"):
                 raise OptimizedSchematicError("Optimized schematic %s failed; inspect %s" % (phase, os.path.join(control, "ocean.stdout")),
                                               {"phase": phase, "command": command})
@@ -635,4 +638,4 @@ def export_optimized_schematic(prepared, spec, candidate, config, export_root,
         if isinstance(error, OptimizedSchematicError): result["detail"] = error.detail
         raise
     finally:
-        atomic_write_json(os.path.join(root, "export_result.json"), result)
+        atomic_write_json(os.path.join(root, _contract_text("export_result.json")), result)

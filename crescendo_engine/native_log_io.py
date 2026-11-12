@@ -5,6 +5,9 @@ other processes are gone. Existing process and remote-stop proofs remain
 required. No descriptor is closed on behalf of an unrelated reader.
 """
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 
 import contextlib
 import threading
@@ -54,7 +57,7 @@ def native_log_cleanup_scope(timeout=5.0):
     before = _reader_snapshot()
     started = time.monotonic()
     acquired = _IO_LOCK.acquire(timeout=timeout)
-    detail = {"schema_version": "crescendo.native_log_reader_barrier.v1",
+    detail = {"schema_version": _contract_text("crescendo.native_log_reader_barrier.v1"),
               "wait_seconds": round(time.monotonic() - started, 6),
               "timeout_seconds": timeout, "readers_before_wait": before,
               "scope": "this_process_threads_only", "cross_process_absence_proven": False}

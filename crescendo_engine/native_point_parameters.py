@@ -5,11 +5,14 @@ import os
 import time
 import uuid
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .cadence import child_environment
 from .netlist_measurement import _quote, run_owned_command, NetlistMeasurementError
 from .utils import atomic_write_json, atomic_write_text, ensure_dir
 
-PROTOCOL = 'CRESCENDO_NATIVE_POINT_PARAMS_1'
+PROTOCOL = _contract_text('CRESCENDO_NATIVE_POINT_PARAMS_1')
 
 
 def prefetch_point_parameters(requests, config, candidate_root, session, cancel_check=None):
@@ -32,37 +35,37 @@ def render_point_parameter_script(requests, path, token, result_reader="spectre"
     lines = ['; Read exact completed point PSF parameters; no ADE/source writes.']
     def mark(stage):
         if progress_path:
-            lines.extend(['crescProgressPort=outfile(%s)' % _quote(progress_path),
-                          'when(crescProgressPort fprintf(crescProgressPort %s) close(crescProgressPort))' % _quote(token + '\t' + stage + '\n')])
+            lines.extend([_contract_text('crescProgressPort=outfile(%s)') % _quote(progress_path),
+                          _contract_text('when(crescProgressPort fprintf(crescProgressPort %s) close(crescProgressPort))') % _quote(token + '\t' + stage + '\n')])
     mark('script_started')
     for index, line in enumerate(startup_lines or []):
         mark('startup_extension_%d' % index)
         lines.append(line)
     mark('select_reader')
-    lines += ['crescReader=errset(simulator(\'%s) t)' % result_reader,
-             'unless(crescReader error("Crescendo selected PSF reader unavailable\\n"))',
-             'crescPointPort=outfile(%s)' % _quote(path),
-             'unless(crescPointPort error("Crescendo point parameter records unavailable\\n"))',
-             'fprintf(crescPointPort "%s\\t%s\\n")' % (PROTOCOL, token), 'crescPointFailed=nil']
+    lines += [_contract_text('crescReader=errset(simulator(\'%s) t)') % result_reader,
+             _contract_text('unless(crescReader error("Crescendo selected PSF reader unavailable\\n"))'),
+             _contract_text('crescPointPort=outfile(%s)') % _quote(path),
+             _contract_text('unless(crescPointPort error("Crescendo point parameter records unavailable\\n"))'),
+             _contract_text('fprintf(crescPointPort "%s\\t%s\\n")') % (PROTOCOL, token), _contract_text('crescPointFailed=nil')]
     for index, request in enumerate(requests):
         mark('open_results_%d' % index)
-        lines += ['crescPointOpened=errset(openResults(%s) t)' % _quote(request['psf_dir']),
-                  'unless(crescPointOpened && car(crescPointOpened) error("Crescendo exact point PSF unavailable\\n"))']
+        lines += [_contract_text('crescPointOpened=errset(openResults(%s) t)') % _quote(request['psf_dir']),
+                  _contract_text('unless(crescPointOpened && car(crescPointOpened) error("Crescendo exact point PSF unavailable\\n"))')]
         for variable_index, name in enumerate(request['names']):
             mark('read_parameter_%d_%d' % (index, variable_index))
-            lines += ['crescPointValue=errset(pv("top-level" %s ?result \'designParamVals) t)' % _quote(name)]
+            lines += [_contract_text('crescPointValue=errset(pv("top-level" %s ?result \'designParamVals) t)') % _quote(name)]
             if name == 'temperature':
-                lines += ['unless(crescPointValue && numberp(car(crescPointValue)) crescPointValue=errset(pv("top-level" "temp" ?result \'designParamVals) t))']
+                lines += [_contract_text('unless(crescPointValue && numberp(car(crescPointValue)) crescPointValue=errset(pv("top-level" "temp" ?result \'designParamVals) t))')]
             lines += [
-                      'if(crescPointValue && numberp(car(crescPointValue)) then',
-                      'fprintf(crescPointPort "P\\t%d\\t%d\\t%%.17g\\n" car(crescPointValue))' % (index, variable_index),
-                      'else', 'fprintf(crescPointPort "X\\t%d\\t%d\\tunavailable_design_parameter\\n")' % (index, variable_index),
-                      'crescPointFailed=t', ')']
+                      _contract_text('if(crescPointValue && numberp(car(crescPointValue)) then'),
+                      _contract_text('fprintf(crescPointPort "P\\t%d\\t%d\\t%%.17g\\n" car(crescPointValue))') % (index, variable_index),
+                      'else', _contract_text('fprintf(crescPointPort "X\\t%d\\t%d\\tunavailable_design_parameter\\n")') % (index, variable_index),
+                      _contract_text('crescPointFailed=t'), ')']
     mark('write_complete')
-    lines += ['fprintf(crescPointPort "END\\t%d\\n")' % len(requests), 'close(crescPointPort)']
+    lines += [_contract_text('fprintf(crescPointPort "END\\t%d\\n")') % len(requests), _contract_text('close(crescPointPort)')]
     mark('script_complete')
     if exit_after:
-        lines.append('if(crescPointFailed then exit(3) else exit(0))')
+        lines.append(_contract_text('if(crescPointFailed then exit(3) else exit(0))'))
     return '\n'.join(lines) + '\n'
 
 
@@ -103,10 +106,10 @@ def _read_in_session(session, script, token, budget, cancel_check):
     with open(script, encoding='utf-8') as stream:
         body = stream.read()
     atomic_write_text(script, '\n'.join([
-        'unless(equal(crescBaselineNonce %s) error("Point reader session nonce mismatch\\n"))' % _quote(session.nonce),
-        'crescPointRead=errset(progn(', body, 't) t)',
-        'if(crescPointRead then crescBaselineRecord("POINT_PARAMS_DONE" %s)' % _quote(token),
-        'else crescBaselineRecord("POINT_PARAMS_ERROR" %s))' % _quote(token)]) + '\n')
+        _contract_text('unless(equal(crescBaselineNonce %s) error("Point reader session nonce mismatch\\n"))') % _quote(session.nonce),
+        _contract_text('crescPointRead=errset(progn('), body, 't) t)',
+        _contract_text('if(crescPointRead then crescBaselineRecord("POINT_PARAMS_DONE" %s)') % _quote(token),
+        _contract_text('else crescBaselineRecord("POINT_PARAMS_ERROR" %s))') % _quote(token)]) + '\n')
     command = {'reader_transport': 'existing_native_baseline_ocean', 'execution_mode': 'same_owned_ocean',
                'native_session_nonce': session.nonce,
                'guardian_pid': session.state.get('guardian_pid'), 'process_exit_observed': False}
@@ -142,7 +145,7 @@ def read_point_parameters(requests, config, candidate_root, command_runner=None,
         raise NetlistMeasurementError('Ocean is unavailable for exact point parameter readback', paths)
     reader = (config.get("cadence") or {}).get("simulator_result_reader") or "spectre"
     from .netlist_measurement import _startup_lines
-    atomic_write_json(os.path.join(root, 'reader_request.json'), {'token': token, 'requests': requests, 'reader': reader, 'paths': paths})
+    atomic_write_json(os.path.join(root, _contract_text('reader_request.json')), {'token': token, 'requests': requests, 'reader': reader, 'paths': paths})
     atomic_write_text(progress, token + '\tscript_not_observed\n')
     startup_lines = _startup_lines(config) if native_session is None else []
     atomic_write_text(script, render_point_parameter_script(requests, records, token, reader, progress, startup_lines,
@@ -191,7 +194,7 @@ def read_point_parameters(requests, config, candidate_root, command_runner=None,
             pass
     detail = dict(paths, command=command, last_stage=stage, timeout_seconds=budget, cwd=cwd,
                   records_present=records_present, records_current_token=records_current)
-    atomic_write_json(os.path.join(root, 'reader_status.json'), dict(detail, token=token))
+    atomic_write_json(os.path.join(root, _contract_text('reader_status.json')), dict(detail, token=token))
     if command.get('returncode') != 0 or any(command.get(key) for key in ('timed_out', 'cancelled', 'termination_failed')):
         reason = ('timed out' if command.get('timed_out') else
                   'cancelled' if command.get('cancelled') else
@@ -208,7 +211,7 @@ def read_point_parameters(requests, config, candidate_root, command_runner=None,
         detail['record_detail'] = getattr(error, 'detail', {})
         raise NetlistMeasurementError('Exact point PSF parameter records invalid: %s (script: %s; records: %s)' %
                                       (error, script, records), detail)
-    atomic_write_json(os.path.join(root, 'point_identity.json'), {'schema_version': 'crescendo.native_point_parameters.v1',
+    atomic_write_json(os.path.join(root, _contract_text('point_identity.json')), {'schema_version': _contract_text('crescendo.native_point_parameters.v1'),
         'param_source': 'current_psf_designParamVals', 'points': [dict(request, parameters=value) for request, value in zip(requests, values)],
         'command': command})
     return values

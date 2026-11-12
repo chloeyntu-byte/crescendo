@@ -8,6 +8,9 @@ import hashlib
 import os
 import re
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .scheduler_protocol import valid_job_id
 from .owned_solver_logs import OwnedSolverLogError, owned_solver_log_reader
 
@@ -34,7 +37,7 @@ def parse_scheduler_task_log(text, expected_id):
     record cannot be collapsed into a successful last record.
     """
     expected = str(expected_id) if valid_job_id(expected_id) else None
-    result = {'schema_version': 'crescendo.scheduler_task_log.v1',
+    result = {'schema_version': _contract_text('crescendo.scheduler_task_log.v1'),
         'expected_job_id': expected, 'job_id': None, 'observed_job_ids': [],
         'valid': False, 'records': [], 'resource_usage': {},
         'ignored_job_ids': [], 'foreign_record_count': 0, 'selected_line_ranges': [],
@@ -290,7 +293,7 @@ def collect_solver_artifacts(task, owned_root, launch_epoch, job_id=None,
             row['scheduler_task_observation'] = observation
             row['context'] = scheduler_log_context(text, observation)
         artifacts.append(row)
-    return {'schema_version': 'crescendo.solver_artifacts.v1',
+    return {'schema_version': _contract_text('crescendo.solver_artifacts.v1'),
         'task_id': task.get('task_id'), 'test': task.get('test'), 'corner': task.get('corner'),
         'point_id': task.get('point_id'), 'execution_simulator': task.get('execution_simulator', 'spectre'),
         'scheduler_job_id': str(job_id) if valid_job_id(job_id) else None,

@@ -51,12 +51,25 @@ class NativeTemplateQualificationRevisionTests(unittest.TestCase):
                 private_netlist.materialize_candidate(template, {"p": 1000}, destination, "c1")
             self.assertFalse(os.path.lexists(destination))
 
+    def test_v4_template_cannot_materialize_or_relabel_old_evidence(self):
+        with tempfile.TemporaryDirectory() as root:
+            template = self.template(root)
+            template["qualification"]["revision"] = "crescendo.native_point_qualification.v4"
+            template["netlist_generation"]["qualification_revision"] = "crescendo.native_point_qualification.v4"
+            self.seal(template)
+            destination = os.path.join(root, "candidate")
+            with self.assertRaisesRegex(private_netlist.PrivateNetlistUnsupported, "older point-qualification"):
+                private_netlist.materialize_candidate(template, {"p": 1000}, destination, "c1")
+            self.assertFalse(os.path.lexists(destination))
+            self.assertEqual(template["qualification"]["revision"], "crescendo.native_point_qualification.v4")
+
     def test_stale_missing_or_mismatched_stamp_rejected_even_without_file_checks(self):
         with tempfile.TemporaryDirectory() as root:
             template = self.template(root)
             for field in ("qualification", "netlist_generation"):
                 name = "revision" if field == "qualification" else "qualification_revision"
-                for value in (None, "crescendo.native_point_qualification.v1", True, 2):
+                for value in (None, "crescendo.native_point_qualification.v1",
+                              "crescendo.native_point_qualification.v4", True, 2):
                     with self.subTest(field=field, value=value):
                         changed = copy.deepcopy(template)
                         if value is None:

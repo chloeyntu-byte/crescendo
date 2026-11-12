@@ -1,5 +1,8 @@
 """One bounded user-facing run log; JSON files remain machine evidence."""
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 
 from collections import OrderedDict
 import datetime
@@ -10,7 +13,7 @@ import stat
 import threading
 
 
-LOG_NAME = "crescendo.log"
+LOG_NAME = _contract_text("crescendo.log")
 MAX_EVENT_BYTES = 65536
 MAX_LOG_BYTES = 16 * 1024 * 1024
 _lock = threading.RLock()
@@ -140,7 +143,7 @@ def observe_saved_json(path, value):
         return
     name = os.path.basename(path)
     root = os.path.dirname(os.path.abspath(path))
-    if name == "status.json" and value.get("schema_version") == "crescendo.run_status.v1":
+    if name == _contract_text("status.json") and value.get("schema_version") == _contract_text("crescendo.run_status.v1"):
         fields = ("run_id", "display_name", "state", "message", "generation", "total_generations",
                   "execution_backend", "completed_candidates", "failed_candidates", "infrastructure_failed_candidates",
                   "maestro_max_jobs", "effective_parallel_jobs", "primary_failure", "shared_preparation_failure", "cleanup_failure", "final_cleanup")
@@ -155,18 +158,18 @@ def observe_saved_json(path, value):
                 _last_status.popitem(last=False)
         append_run_event(root, value.get("state") or "status", value.get("message"), details,
                          "ERROR" if value.get("state") == "failed" else "INFO")
-    elif name == "startup_failure.json" and value.get("schema_version") == "crescendo.startup_failure.v1":
+    elif name == _contract_text("startup_failure.json") and value.get("schema_version") == _contract_text("crescendo.startup_failure.v1"):
         details = dict((key, value[key]) for key in ("stage", "native_error", "diagnostic", "log_paths", "loading_file", "last_successful_step") if key in value)
         append_run_event(root, value.get("stage") or "startup", value.get("native_error") or value.get("message"), details, "ERROR")
-    elif name == "server_error.json":
+    elif name == _contract_text("server_error.json"):
         append_run_event(root, "run_failure", value.get("message"),
                          dict((key, _text(value[key], 12000)) for key in ("error_type", "traceback", "remote_traceback") if value.get(key)), "ERROR")
-    elif name == "worker_shutdown.json" and value.get("schema_version") == "crescendo.worker_shutdown.v1":
+    elif name == _contract_text("worker_shutdown.json") and value.get("schema_version") == _contract_text("crescendo.worker_shutdown.v1"):
         ok = all(row.get("ok") is True for row in value.get("workers") or [])
         if value.get("final_cleanup") is not None:
             ok = ok and value["final_cleanup"].get("artifact_cleanup_complete") is True
         append_run_event(root, "cleanup", "Owned tasks stopped and artifacts cleaned" if ok else "Owned task shutdown/artifact cleanup failed", _shutdown_summary(value), "INFO" if ok else "ERROR")
-    elif name == "candidate.json" and value.get("candidate_id") == os.path.basename(root) and os.path.basename(os.path.dirname(root)) == "candidates":
+    elif name == _contract_text("candidate.json") and value.get("candidate_id") == os.path.basename(root) and os.path.basename(os.path.dirname(root)) == "candidates":
         fields = ("candidate_id", "status", "execution_backend", "failure_stage", "error", "execution_started", "shared_preparation_failed", "metrics")
         append_run_event(os.path.dirname(os.path.dirname(root)), "candidate", value.get("status"),
                          dict((key, value[key]) for key in fields if key in value),

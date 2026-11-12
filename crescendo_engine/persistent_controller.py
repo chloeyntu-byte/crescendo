@@ -21,6 +21,9 @@ try:
 except ImportError:
     fcntl = None
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .utils import atomic_write_json, ensure_dir, load_json, utc_timestamp
 from .native_environment import clean_gui_environment
 from .session_health import sample_owned_process_tree
@@ -35,12 +38,12 @@ from .legacy_guardian import (
 from .retention import parse_worker_epoch_component, parse_worker_epoch_namespace
 
 
-SCHEMA_VERSION = "crescendo.persistent_controller.v1"
-LIVENESS_LOCK_SCHEMA = "crescendo.controller_liveness.v1"
+SCHEMA_VERSION = _contract_text("crescendo.persistent_controller.v1")
+LIVENESS_LOCK_SCHEMA = _contract_text("crescendo.controller_liveness.v1")
 PR_SET_PDEATHSIG = 1
-_LIVENESS_FD_ENV = "CRESCENDO_CONTROLLER_LIVENESS_FD"
-_LIVENESS_PATH_ENV = "CRESCENDO_CONTROLLER_LIVENESS_PATH"
-_LIVENESS_SCHEMA_ENV = "CRESCENDO_CONTROLLER_LIVENESS_SCHEMA"
+_LIVENESS_FD_ENV = _contract_text("CRESCENDO_CONTROLLER_LIVENESS_FD")
+_LIVENESS_PATH_ENV = _contract_text("CRESCENDO_CONTROLLER_LIVENESS_PATH")
+_LIVENESS_SCHEMA_ENV = _contract_text("CRESCENDO_CONTROLLER_LIVENESS_SCHEMA")
 
 
 class PersistentControllerError(RuntimeError):
@@ -317,7 +320,7 @@ def _worker_launch_lock_status(path):
 
 def _worker_epoch_proof(epoch_root):
     epoch_root = os.path.abspath(epoch_root)
-    state_path = os.path.join(epoch_root, "worker_state.json")
+    state_path = os.path.join(epoch_root, _contract_text("worker_state.json"))
     state = None
     if os.path.lexists(state_path):
         if os.path.islink(state_path) or not os.path.isfile(state_path):
@@ -348,7 +351,7 @@ def _worker_epoch_proof(epoch_root):
             epoch_root, namespace["epoch_identity"],
         )
         if state is not None:
-            if state.get("schema_version") not in (None, "crescendo.persistent_maestro_worker.v1"):
+            if state.get("schema_version") not in (None, _contract_text("crescendo.persistent_maestro_worker.v1")):
                 return {"ok": False, "epoch_root": epoch_root, "kind": "worker_state_schema_mismatch"}
             if state.get("worker_index") is not None:
                 try:
@@ -362,7 +365,7 @@ def _worker_epoch_proof(epoch_root):
             for key, expected in (
                 ("workspace_root", os.path.join(epoch_root, "workspace")),
                 ("control_root", expected_control),
-                ("guardian_state_path", os.path.join(expected_control, "guardian_state.json")),
+                ("guardian_state_path", os.path.join(expected_control, _contract_text("guardian_state.json"))),
             ):
                 value = state.get(key)
                 if value is not None and (
@@ -400,7 +403,7 @@ def _worker_epoch_proof(epoch_root):
                 continue
             if os.path.islink(control_root) or not os.path.isdir(control_root):
                 return {"ok": False, "epoch_root": epoch_root, "kind": "unsafe_guardian_control"}
-            path = os.path.join(control_root, "guardian_state.json")
+            path = os.path.join(control_root, _contract_text("guardian_state.json"))
             if not os.path.lexists(path):
                 continue
             if os.path.islink(path) or not os.path.isfile(path):
@@ -505,7 +508,7 @@ def _worker_epoch_proof(epoch_root):
 def _active_worker_session_identity(run_root, worker_index, controller_epoch,
                                     baseline_worker_epochs, health):
     result = {
-        "schema_version": "crescendo.persistent_session_identity.v1",
+        "schema_version": _contract_text("crescendo.persistent_session_identity.v1"),
         "proven": False,
         "worker_index": int(worker_index),
         "controller_epoch": controller_epoch,
@@ -529,7 +532,7 @@ def _active_worker_session_identity(run_root, worker_index, controller_epoch,
         )
         if namespace is None or int(namespace["controller_epoch"]) != controller_epoch:
             raise ValueError("active worker epoch namespace is invalid")
-        state_path = os.path.join(epoch_root, "worker_state.json")
+        state_path = os.path.join(epoch_root, _contract_text("worker_state.json"))
         state_stat = os.lstat(state_path)
         if stat.S_ISLNK(state_stat.st_mode) or not stat.S_ISREG(state_stat.st_mode):
             raise ValueError("active worker state is not a regular non-symbolic file")
@@ -626,7 +629,7 @@ class PersistentControllerProxy(object):
 
     @property
     def state_path(self):
-        return os.path.join(self.epoch_root, "controller_state.json") if self.epoch_root else None
+        return os.path.join(self.epoch_root, _contract_text("controller_state.json")) if self.epoch_root else None
 
     def _write_state(self, status, **updates):
         document = {
@@ -701,7 +704,7 @@ class PersistentControllerProxy(object):
         try:
             requests_root = ensure_dir(os.path.join(self.epoch_root, "requests"))
             responses_root = ensure_dir(os.path.join(self.epoch_root, "responses"))
-            bootstrap_path = os.path.join(self.epoch_root, "bootstrap.json")
+            bootstrap_path = os.path.join(self.epoch_root, _contract_text("bootstrap.json"))
             bootstrap = {
                 "schema_version": SCHEMA_VERSION,
                 "token": self.token,
@@ -711,7 +714,7 @@ class PersistentControllerProxy(object):
                 "requests_root": requests_root,
                 "responses_root": responses_root,
                 "state_path": self.state_path,
-                "ready_path": os.path.join(self.epoch_root, "ready.json"),
+                "ready_path": os.path.join(self.epoch_root, _contract_text("ready.json")),
                 "parent_pid": self._parent_pid,
                 "parent_start_ticks": self._parent_start_ticks,
                 "launch_boot_id": self._launch_boot_id,
@@ -723,11 +726,12 @@ class PersistentControllerProxy(object):
             }
             atomic_write_json(bootstrap_path, bootstrap)
             self._write_state("launch_intent", bootstrap_path=bootstrap_path)
-            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            from .runtime import application_root
+            project_root = application_root(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             command = (
                 self.command_builder(bootstrap_path)
                 if self.command_builder is not None else
-                [sys.executable, "-m", "crescendo_engine.persistent_controller", "--bootstrap", bootstrap_path]
+                [sys.executable, "-m", _contract_text("crescendo_engine.persistent_controller"), "--bootstrap", bootstrap_path]
             )
             self._stdout_handle = open(os.path.join(self.epoch_root, "controller.stdout"), "ab", 0)
             self._stderr_handle = open(os.path.join(self.epoch_root, "controller.stderr"), "ab", 0)
@@ -1106,7 +1110,7 @@ class PersistentControllerProxy(object):
                 paths.extend([
                     os.path.join(control_root, "ocean.stdout"),
                     os.path.join(control_root, "ocean.stderr"),
-                    os.path.join(control_root, "spectre_timeout.log"),
+                    os.path.join(control_root, _contract_text("spectre_timeout.log")),
                 ])
         return paths
 
@@ -1172,7 +1176,7 @@ class PersistentControllerProxy(object):
         }
         try:
             bootstrap = self._load_epoch_identity_document(
-                os.path.join(self.epoch_root, "bootstrap.json"), "controller bootstrap",
+                os.path.join(self.epoch_root, _contract_text("bootstrap.json")), "controller bootstrap",
             )
             state = self._load_epoch_identity_document(
                 self.state_path, "controller state",
@@ -1187,7 +1191,7 @@ class PersistentControllerProxy(object):
                 "requests_root": os.path.join(self.epoch_root, "requests"),
                 "responses_root": os.path.join(self.epoch_root, "responses"),
                 "state_path": self.state_path,
-                "ready_path": os.path.join(self.epoch_root, "ready.json"),
+                "ready_path": os.path.join(self.epoch_root, _contract_text("ready.json")),
             }
             for key, expected in expected_paths.items():
                 if os.path.abspath(bootstrap.get(key) or "") != os.path.abspath(expected):
@@ -1488,7 +1492,7 @@ class PersistentControllerProxy(object):
         if not request or not self._controller_identity_is_owned():
             return {"required": True, "remote_stop_proven": False,
                     "reason": "owned live controller is unavailable for native cluster stop"}
-        path = os.path.join(self.epoch_root, "native_stop.json")
+        path = os.path.join(self.epoch_root, _contract_text("native_stop.json"))
         timeout = max(0.1, float(self.config.get("runtime", {}).get(
             "cluster_stop_timeout_seconds", 15,
         )))
@@ -1832,7 +1836,7 @@ def run_controller(bootstrap):
             except Exception as error:
                 native = {"remote_stop_proven": False, "error": str(error)}
             document = dict(request_identity, native=native, finished_at=utc_timestamp())
-            atomic_write_json(os.path.join(os.path.dirname(bootstrap["state_path"]), "native_stop.json"), document)
+            atomic_write_json(os.path.join(os.path.dirname(bootstrap["state_path"]), _contract_text("native_stop.json")), document)
 
         thread = threading.Thread(target=stop_owned_native, name="native-maestro-stop")
         thread.daemon = True

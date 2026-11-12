@@ -22,6 +22,9 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .cadence import child_environment, run_command
 from .hierarchy import parse_physical_number
 from .spectre_values import parse_spectre_number
@@ -35,10 +38,10 @@ from .workspace import (
     workspace_test_design_lines, write_schematic_patch,
 )
 
-SCHEMA = "crescendo.private_netlist.v1"
+SCHEMA = _contract_text("crescendo.private_netlist.v1")
 MAX_NETLIST_BYTES = 64 * 1024 * 1024
 MAX_METADATA_BYTES = 32 * 1024 * 1024
-SYMBOL_PREFIX = "CRESCENDO_NL_"
+SYMBOL_PREFIX = _contract_text("CRESCENDO_NL_")
 PREPARATION_PHASES = ("baseline", "baseline_fallback", "symbolic", "reference_low", "reference_high", "numeric")
 
 
@@ -48,6 +51,9 @@ class PrivateNetlistError(RuntimeError):
 
 class PrivateNetlistUnsupported(PrivateNetlistError):
     """Template reuse is unsupported; only explicitly classified native evidence permits fallback."""
+    def __init__(self, message, reason="binding_unresolved", **details):
+        super(PrivateNetlistUnsupported, self).__init__(message)
+        self.detail = dict(details, reason=reason)
 
 
 def reconcile_preparation(root, request_cancel=True, timeout_seconds=12):
@@ -83,11 +89,11 @@ def reconcile_preparation(root, request_cancel=True, timeout_seconds=12):
         try:
             if not os.path.isdir(phase) or os.path.realpath(phase) != phase:
                 raise PrivateNetlistError("unsafe preparation phase root")
-            manifest_path = os.path.join(phase, "legacy_guardian_launch.json")
+            manifest_path = os.path.join(phase, _contract_text("legacy_guardian_launch.json"))
             if not os.path.lexists(manifest_path):
                 # No launch ever occurred only if there is no process evidence.
                 if any(os.path.lexists(os.path.join(phase, entry)) for entry in
-                       ("guardian_state.json", "command.json", "ocean.stdout", "native_capture_ready")):
+                       (_contract_text("guardian_state.json"), _contract_text("command.json"), "ocean.stdout", "native_capture_ready")):
                     raise PrivateNetlistError("capture launch ownership evidence is missing")
                 result["phases"].append({"name": name, "state": "not_launched"})
                 continue
@@ -122,7 +128,7 @@ def reconcile_preparation(root, request_cancel=True, timeout_seconds=12):
         from .same_library_views import cleanup_same_library_views
         result["view_cleanup"] = []
         for workspace_name in ("workspace", "workspace_fallback"):
-            path = os.path.join(root, workspace_name, "workspace.json")
+            path = os.path.join(root, workspace_name, _contract_text("workspace.json"))
             if not os.path.lexists(path):
                 continue
             try:
@@ -178,7 +184,7 @@ def _text(path):
 
 def _retain_failed_capture_inputs(workspace, root, captures, invocation_prefix):
     """Retain bounded current-wrapper inputs as evidence, never qualification."""
-    summary = {"schema_version": "crescendo.failed_capture_inputs.v1", "status": "unavailable",
+    summary = {"schema_version": _contract_text("crescendo.failed_capture_inputs.v1"), "status": "unavailable",
                "qualification": "diagnostic_only", "retained_scs_paths": [],
                "retained_file_count": 0, "bytes": 0, "reasons": [],
                "include_search_contexts": [], "dependency_samples": []}
@@ -210,7 +216,7 @@ def _retain_failed_capture_inputs(workspace, root, captures, invocation_prefix):
             raise ValueError("failure input destination is unsafe")
         attempt = os.path.join(failure_root, invocation_prefix.split(".")[1])
         os.mkdir(attempt, 0o700)
-        summary["manifest_path"] = os.path.join(attempt, "manifest.json")
+        summary["manifest_path"] = os.path.join(attempt, _contract_text("manifest.json"))
         total_limit, file_limit, count_limit = 32 * 1024 * 1024, 8 * 1024 * 1024, 64
         def read_owned(path):
             path = os.path.abspath(path)
@@ -324,7 +330,7 @@ def _retain_failed_capture_inputs(workspace, root, captures, invocation_prefix):
                         seen.add(path)
                         try:
                             data = read_owned(path)
-                            name = "input.scs" if primary else (hashlib.sha256(path.encode("utf-8")).hexdigest()[:12]
+                            name = _contract_text("input.scs") if primary else (hashlib.sha256(path.encode("utf-8")).hexdigest()[:12]
                                     + "_" + re.sub(r"[^A-Za-z0-9_.-]", "_", os.path.basename(path))[:100])
                             destination = os.path.join(destination_root, name)
                             partial = destination + ".partial"
@@ -618,6 +624,8 @@ def resolve_native_parameters(rows, overrides=None):
             break
     for row in result:
         row["value"] = variables.get(row["name"])
+        if row["value"] is None:
+            row["resolution_reason"] = "unsupported_expression"
         if row["name"] in (overrides or {}):
             row["expression"] = "%.17g" % float(overrides[row["name"]])
     return result
@@ -710,7 +718,7 @@ def native_capture_point_coverage(tasks, parsed, tests, schedule=None):
         return [{"point_id": point, "test": test, "corner": points.get(point, {}).get("corner_name"),
                  "design_point": points.get(point, {}).get("designPointNumber")} for point, test in sorted(keys)]
     duplicates = [key for key, count in counts.items() if count > 1]
-    return {"schema_version": "crescendo.native_capture_point_coverage.v1",
+    return {"schema_version": _contract_text("crescendo.native_capture_point_coverage.v1"),
             "ok": bool(observed) and expected == observed and not duplicates,
             "expected_test_point_count": len(expected), "captured_test_point_count": len(observed),
             "missing_test_points": rows(expected - observed), "unexpected_test_points": rows(observed - expected),
@@ -734,35 +742,23 @@ def qualify_symbolic_netlist(symbolic_text, references, symbols, expected_target
     if not symbol_names or not references:
         raise PrivateNetlistUnsupported("native parameterization has no identity/reference evidence")
     uses = dict((name, []) for name in symbol_names)
-    globals_ = {}
-    # Native Parameters emits DPAR_N aliases. Track owned symbols through
-    # those declarations while preserving the native device/derived formulas.
-    for _library, _cell, text, _view in statements:
-        if text.startswith("parameters "):
-            globals_.update((name, value) for name, value, _a, _b in statement_pairs(text))
-    aliases = dict((name, {name}) for name in symbol_names)
-    for _unused in range(min(len(globals_) + 1, 64)):
-        changed = False
-        for name, value in globals_.items():
-            dependencies = set(symbol for token in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", value)
-                               for symbol in aliases.get(token, set()))
-            if dependencies and aliases.get(name) != dependencies:
-                aliases[name] = dependencies
-                changed = True
-        if not changed:
-            break
-    for library, cell, text, view in statements:
-        pairs = statement_pairs(text)
-        if text.startswith("parameters "):
-            continue
-        for name, value, _a, _b in pairs:
-            dependencies = set(symbol for token in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", value)
-                               for symbol in aliases.get(token, set()))
-            for symbol in dependencies:
-                if symbol in uses:
+    from .netlist_scope import NetlistScope, BindingError
+    try:
+        lexical = NetlistScope(symbolic_text, symbol_names)
+        all_bindings = set()
+        for index, (library, cell, text, view) in enumerate(statements):
+            for name, value, _a, _b in statement_pairs(text):
+                number, dependencies, bindings = lexical.trace(value, lexical.scopes[index])
+                if dependencies:
+                    all_bindings.update(lexical.last_references)
+                if text.startswith(("parameters ", "subckt ")):
+                    continue
+                for symbol in dependencies:
                     uses[symbol].append({"library": library, "cell": cell, "view": view,
-                                         "instance": "$design_variables" if text.startswith("parameters ") else text.split(None, 1)[0], "property": name,
-                                         "expression": value})
+                        "instance": text.split(None, 1)[0], "property": name, "expression": value})
+        lexical.validate_instance_bindings(all_bindings)
+    except BindingError as error:
+        raise PrivateNetlistUnsupported(str(error), **error.detail)
     for key, symbol in symbols.items():
         if not uses[symbol]:
             raise PrivateNetlistUnsupported("native netlist does not use selected parameter %s" % key)
@@ -770,29 +766,22 @@ def qualify_symbolic_netlist(symbolic_text, references, symbols, expected_target
         fields = ("library", "cell", "view", "instance") if target and len(target) == 4 else ("library", "cell", "instance")
         if target and any(tuple(row[field] for field in fields) != tuple(target)
                           for row in uses[symbol]):
-            raise PrivateNetlistUnsupported("native symbol escaped its selected occurrence: %s" % key)
+            raise PrivateNetlistUnsupported("native symbol escaped its selected occurrence: %s" % key, "scope_shadow")
     checks = []
     numeric_companions = []
     for reference in references:
         native = _logical_statements(reference["text"], include_view=True)
         if len(native) != len(statements):
-            raise PrivateNetlistUnsupported("native callback changes model/topology/statement count")
+            raise PrivateNetlistUnsupported("native callback changes model/topology/statement count", "topology_change")
         variables = dict((symbols[key], float(value)) for key, value in reference["values"].items())
-        pending = dict((key, value) for key, value in globals_.items() if key not in symbol_names)
-        for _ in range(min(len(pending) + 1, 64)):
-            advanced = False
-            for key in list(pending):
-                try:
-                    variables[key] = _expression_value(pending[key], variables)
-                    pending.pop(key)
-                    advanced = True
-                except (ValueError, SyntaxError, TypeError, ZeroDivisionError, OverflowError):
-                    pass
-            if not advanced: break
+        try:
+            observed_scope = NetlistScope(reference["text"])
+        except BindingError as error:
+            raise PrivateNetlistUnsupported(str(error), **error.detail)
         assignment_count = 0
-        for symbolic, observed in zip(statements, native):
+        for index, (symbolic, observed) in enumerate(zip(statements, native)):
             if symbolic[:2] != observed[:2] or symbolic[3] != observed[3]:
-                raise PrivateNetlistUnsupported("native callback changes the owning cell/view scope")
+                raise PrivateNetlistUnsupported("native callback changes the owning cell/view scope", "scope_shadow")
             left, right = symbolic[2], observed[2]
             left_pairs, right_pairs = statement_pairs(left), statement_pairs(right)
             if left.startswith("parameters "):
@@ -801,9 +790,18 @@ def qualify_symbolic_netlist(symbolic_text, references, symbols, expected_target
             left_prefix = _space(left[:statement_pairs(left)[0][2]]) if statement_pairs(left) else _space(left)
             right_prefix = _space(right[:statement_pairs(right)[0][2]]) if statement_pairs(right) else _space(right)
             if left_prefix != right_prefix or [row[0] for row in left_pairs] != [row[0] for row in right_pairs]:
-                raise PrivateNetlistUnsupported("native callback changes model/topology/parameter fields")
+                raise PrivateNetlistUnsupported("native callback changes model/topology/parameter fields", "topology_change")
             for before, after in zip(left_pairs, right_pairs):
-                if not _equal_values(before[1], after[1], variables):
+                try:
+                    left_value, dependencies, bindings = lexical.trace(before[1], lexical.scopes[index], variables)
+                    right_value, unused, unused_bindings = observed_scope.trace(after[1], observed_scope.scopes[index])
+                except BindingError as error:
+                    raise PrivateNetlistUnsupported(str(error), **error.detail)
+                equal = ((not dependencies or left_value is not None and right_value is not None) and
+                         (_space(before[1]) == _space(after[1]) or
+                         left_value is not None and right_value is not None and
+                         abs(left_value - right_value) <= max(abs(left_value), abs(right_value), 1e-300) * 1e-8))
+                if not equal:
                     # Some PDK callbacks export numeric companion DPARs, not
                     # expressions. Never fit a formula or freeze the seed.
                     # Finish checking every statement/reference before granting
@@ -815,18 +813,20 @@ def qualify_symbolic_netlist(symbolic_text, references, symbols, expected_target
                     except (ValueError, SyntaxError, TypeError, ZeroDivisionError, OverflowError):
                         pass
                     if (left.startswith("parameters ") and re.fullmatch(r"DPAR_[0-9]+", before[0])
-                            and before[0] not in aliases and numeric):
+                            and not dependencies and numeric):
                         numeric_companions.append({"parameter": before[0], "reference": reference.get("name"),
                                                    "template_value": before[1], "native_value": after[1]})
                         continue
                     raise PrivateNetlistUnsupported("native derived parameter is not represented: %s/%s/%s %s" %
-                                                  (symbolic[0], symbolic[1], left.split(None, 1)[0], before[0]))
+                                                  (symbolic[0], symbolic[1], left.split(None, 1)[0], before[0]),
+                        "unsupported_expression" if left_value is None or right_value is None else "binding_unresolved",
+                        expression=before[1], native_expression=after[1])
                 assignment_count += 1
         checks.append({"reference": reference.get("name"), "assignment_count": assignment_count})
     if numeric_companions:
         error = PrivateNetlistUnsupported("native derived parameter is not represented: parameters %s; native generation required per candidate" %
                                           numeric_companions[0]["parameter"])
-        error.detail = {"failure_stage": "native_numeric_derived_parameters", "native_generation_required": True,
+        error.detail = {"reason": "numeric_companion", "failure_stage": "native_numeric_derived_parameters", "native_generation_required": True,
                         "template_qualified": False, "numeric_derived_parameters": numeric_companions}
         raise error
     from .native_qualification import NATIVE_QUALIFICATION_REVISION
@@ -854,7 +854,7 @@ def _without_symbol_declarations(text, symbols):
     marker = "simulator lang=spectre\n"
     if marker not in text:
         raise PrivateNetlistUnsupported("native netlist has no Spectre language header")
-    return text.replace(marker, marker + 'include "cr_candidate_parameters.scs"\n', 1)
+    return text.replace(marker, marker + _contract_text('include "cr_candidate_parameters.scs"\n'), 1)
 
 
 def validate_manifest(manifest, verify_files=True, require_current_qualification=True):
@@ -914,12 +914,12 @@ def compact_preparation_artifacts(manifest):
     """
     from .retention import _reject_unsafe_regular_tree, _fsync_directory
     root = os.path.abspath(manifest.get("root") or "")
-    result = {"schema_version": "crescendo.netlist_preparation_compaction.v1",
+    result = {"schema_version": _contract_text("crescendo.netlist_preparation_compaction.v1"),
               "ok": False, "artifact_cleanup_complete": False,
               "root": root, "removed": [], "retained": []}
     try:
         validate_manifest(manifest, require_current_qualification=False)
-        persisted = os.path.join(root, "private_netlist.json")
+        persisted = os.path.join(root, _contract_text("private_netlist.json"))
         _regular(persisted, root, MAX_METADATA_BYTES)
         with open(persisted, "r", encoding="utf-8") as stream:
             if json.load(stream) != manifest:
@@ -970,7 +970,7 @@ def compact_preparation_artifacts(manifest):
             if len(includes) != len(include_start.findall(text)):
                 unresolved.append("native include syntax could not be inspected: %s" % filename)
             for name in includes:
-                if name == "cr_candidate_parameters.scs":
+                if name == _contract_text("cr_candidate_parameters.scs"):
                     continue
                 choices = [name] if os.path.isabs(name) else [
                     os.path.join(os.path.dirname(filename), name), os.path.join(native_cwd, name)]
@@ -999,7 +999,7 @@ def compact_preparation_artifacts(manifest):
         result["dependency_warnings"] = unresolved[:20]
         receipt = dict(result, ok=True, manifest_sha256=manifest["manifest_sha256"],
                        planned_payloads=planned, recorded_at=utc_timestamp())
-        receipt_path = os.path.join(root, "preparation_cleanup.json")
+        receipt_path = os.path.join(root, _contract_text("preparation_cleanup.json"))
         atomic_write_json(receipt_path, receipt)
         _fsync_directory(root)
         for item in planned:
@@ -1101,12 +1101,12 @@ def materialize_candidate(manifest, values, candidate_root, candidate_id):
             ensure_dir(os.path.dirname(destination))
             shutil.copyfile(row["path"], destination)
             artifacts[destination] = row["sha256"]
-        parameters_path = os.path.join(cwd, "cr_candidate_parameters.scs")
+        parameters_path = os.path.join(cwd, _contract_text("cr_candidate_parameters.scs"))
         payload = "simulator lang=spectre\nparameters " + " ".join(
             "%s=%.17g" % (symbols[key], float(values[key])) for key in sorted(symbols)) + "\n"
         atomic_write_text(parameters_path, payload)
         artifacts[parameters_path] = _digest(parameters_path)
-        netlist = os.path.join(cwd, "input.scs")
+        netlist = os.path.join(cwd, _contract_text("input.scs"))
         simulator = (template.get("simulator_contract") or {}).get("execution_simulator", "spectre")
         log = os.path.join(psf, simulator + ".out")
         task.update(netlist_path=netlist, cwd=cwd, psf_dir=psf, spectre_log=log,
@@ -1141,7 +1141,7 @@ def materialize_candidate(manifest, values, candidate_root, candidate_id):
             if symbols[key] not in native_names]
         result["tasks"].append(task)
     result["manifest_sha256"] = _manifest_digest(result)
-    atomic_write_json(os.path.join(root, "private_netlist_candidate.json"), result)
+    atomic_write_json(os.path.join(root, _contract_text("private_netlist_candidate.json")), result)
     validate_manifest(result)
     return result
 
@@ -1338,7 +1338,7 @@ def _native_unresolved_binding_fallback(references, symbols):
         normalized = current_normalized
         checks.append({"reference": name, "task_count": len(tasks), "parameter_point_count": len(current_points),
                        "scope": "exact_structure_except_top_level_numeric_DPAR_values"})
-    return {"failure_stage": "native_selected_parameter_binding", "native_generation_required": True,
+    return {"reason": "binding_unresolved", "failure_stage": "native_selected_parameter_binding", "native_generation_required": True,
             "template_qualified": False, "selected_parameter_bindings": bindings, "reference_checks": checks}
 
 
@@ -1355,9 +1355,10 @@ def _symbolize_native_dpar_phase(numeric, symbols, root):
             if not points:
                 continue
             names = list(points[0]["dpar_values"])
-            if len(names) != 1 or names[0] in binding:
+            if len(names) != 1 or any(name == names[0] for scope, name in binding):
                 raise PrivateNetlistUnsupported("native selected parameter has no unique DPAR template binding: " + key)
-            binding[names[0]] = symbol
+            evidence = points[0].get("dpar_bindings") or [{"name": names[0], "scope": []}]
+            binding[(tuple(evidence[0]["scope"]), names[0])] = symbol
         target = ensure_dir(os.path.join(root, "tasks", task["task_id"], "netlist"))
         for row in task["template_files"]:
             destination = os.path.join(target, row["relative_path"])
@@ -1366,24 +1367,30 @@ def _symbolize_native_dpar_phase(numeric, symbols, root):
             row["path"] = destination
         text = _text(task["netlist_path"])
         replaced, edits = set(), []
+        from .netlist_scope import NetlistScope
+        lexical = NetlistScope(text)
+        parameter_scopes = iter(lexical.scopes[index] for index, row in enumerate(lexical.statements)
+                                if row[2].startswith("parameters "))
         for statement_start, _statement_end, statement in parameter_statement_spans(text):
+            scope = next(parameter_scopes)
             for name, _value, start, end in parameter_declaration_spans(statement):
-                if name in binding:
-                    if name in replaced:
+                key = (scope, name)
+                if key in binding:
+                    if key in replaced:
                         raise PrivateNetlistUnsupported("duplicate owned DPAR declaration")
                     edits.append((statement_start + start, statement_start + end,
-                                  name + "=" + binding[name]))
-                    replaced.add(name)
+                                  name + "=" + binding[key]))
+                    replaced.add(key)
         for start, end, replacement in reversed(edits):
             text = text[:start] + replacement + text[end:]
         if replaced != set(binding):
             raise PrivateNetlistUnsupported("owned native DPAR declaration not found")
-        task.update(cwd=target, netlist_path=os.path.join(target, "input.scs"),
+        task.update(cwd=target, netlist_path=os.path.join(target, _contract_text("input.scs")),
                     psf_dir=os.path.join(os.path.dirname(target), "psf"))
         task["spectre_log"] = os.path.join(task["psf_dir"], "spectre.out")
         atomic_write_text(task["netlist_path"], text)
         task["native_parameters"] = top_level_native_parameters(_text(task["netlist_path"]))
-        task["native_dpar_template_bindings"] = binding
+        task["native_dpar_template_bindings"] = {"/".join(scope + (name,)): symbol for (scope, name), symbol in binding.items()}
     return phase
 
 
@@ -1573,71 +1580,71 @@ def _normalize_private_corner_paths(contract, workspace, source_work_dir=None):
 def native_corner_schedule_skill(setup, path, main_sdb="mainSDB", include_disabled_tests=False, include_members=False, masks_only=False):
     """Read native group counts and test masks in the already open session."""
     lines = [
-        'crescCornerPort=outfile("%s")' % _skill_quote(path),
-        'unless(crescCornerPort error("Crescendo native corner metadata could not be written\\n"))',
-        'foreach(crescCornerName cadr(axlGetCorners(%s))' % main_sdb,
-        'crescCornerHandle=axlGetCorner(%s crescCornerName)' % main_sdb,
-        ('crescCornerCount=nil' if masks_only else 'crescCornerCount=axlGetCornerCountForName(%s crescCornerName)' % main_sdb),
-        'printf("CRESCENDO_CORNER_OBS name=%L handle=%L count=%L\\n" crescCornerName crescCornerHandle crescCornerCount)',
-        ('unless(crescCornerHandle && crescCornerHandle!=0 && integerp(crescCornerCount) && crescCornerCount>0 error("Crescendo native corner group could not be qualified\\n"))' if not masks_only else 'unless(crescCornerHandle && crescCornerHandle!=0 error(\"Crescendo native corner group unavailable\\n\"))'),
-        ('fprintf(crescCornerPort "GROUP\\t%L\\t%d\\t%d\\n" crescCornerName if(axlGetEnabled(crescCornerHandle) then 1 else 0) crescCornerCount)' if not masks_only else 'fprintf(crescCornerPort \"GROUP_META\\t%L\\t%d\\n\" crescCornerName if(axlGetEnabled(crescCornerHandle) then 1 else 0))'),
-        'foreach(crescDisabledTest cadr(axlGetCornerDisabledTests(crescCornerHandle))',
-        'fprintf(crescCornerPort "DISABLED\\t%L\\t%L\\n" crescCornerName crescDisabledTest)', ')', ')',
-        'fprintf(crescCornerPort "NOMINAL\\t%%d\\n" if(axlGetNominalCornerEnabled(%s) then 1 else 0))' % main_sdb,
+        _contract_text('crescCornerPort=outfile("%s")') % _skill_quote(path),
+        _contract_text('unless(crescCornerPort error("Crescendo native corner metadata could not be written\\n"))'),
+        _contract_text('foreach(crescCornerName cadr(axlGetCorners(%s))') % main_sdb,
+        _contract_text('crescCornerHandle=axlGetCorner(%s crescCornerName)') % main_sdb,
+        (_contract_text('crescCornerCount=nil') if masks_only else _contract_text('crescCornerCount=axlGetCornerCountForName(%s crescCornerName)') % main_sdb),
+        _contract_text('printf("CRESCENDO_CORNER_OBS name=%L handle=%L count=%L\\n" crescCornerName crescCornerHandle crescCornerCount)'),
+        (_contract_text('unless(crescCornerHandle && crescCornerHandle!=0 && integerp(crescCornerCount) && crescCornerCount>0 error("Crescendo native corner group could not be qualified\\n"))') if not masks_only else _contract_text('unless(crescCornerHandle && crescCornerHandle!=0 error(\"Crescendo native corner group unavailable\\n\"))')),
+        (_contract_text('fprintf(crescCornerPort "GROUP\\t%L\\t%d\\t%d\\n" crescCornerName if(axlGetEnabled(crescCornerHandle) then 1 else 0) crescCornerCount)') if not masks_only else _contract_text('fprintf(crescCornerPort \"GROUP_META\\t%L\\t%d\\n\" crescCornerName if(axlGetEnabled(crescCornerHandle) then 1 else 0))')),
+        _contract_text('foreach(crescDisabledTest cadr(axlGetCornerDisabledTests(crescCornerHandle))'),
+        _contract_text('fprintf(crescCornerPort "DISABLED\\t%L\\t%L\\n" crescCornerName crescDisabledTest)'), ')', ')',
+        _contract_text('fprintf(crescCornerPort "NOMINAL\\t%%d\\n" if(axlGetNominalCornerEnabled(%s) then 1 else 0))') % main_sdb,
     ]
     for test in setup.get("tests") or []:
         if include_disabled_tests or test.get("enabled", True):
             lines.extend([
-                'crescCornerTest=axlGetTest(%s "%s")' % (main_sdb, _skill_quote(test["name"])),
-                'unless(crescCornerTest && crescCornerTest!=0 error("Crescendo corner test identity unavailable\\n"))',
-                'fprintf(crescCornerPort "NOMINAL_TEST\\t%%L\\t%%d\\n" "%s" if(axlGetNominalCornerTestEnabled(crescCornerTest) then 1 else 0))' % _skill_quote(test["name"]),
+                _contract_text('crescCornerTest=axlGetTest(%s "%s")') % (main_sdb, _skill_quote(test["name"])),
+                _contract_text('unless(crescCornerTest && crescCornerTest!=0 error("Crescendo corner test identity unavailable\\n"))'),
+                _contract_text('fprintf(crescCornerPort "NOMINAL_TEST\\t%%L\\t%%d\\n" "%s" if(axlGetNominalCornerTestEnabled(crescCornerTest) then 1 else 0))') % _skill_quote(test["name"]),
             ])
     if include_members:
         # Collect in memory first: incomplete optional queries never become a
         # partially trusted membership map. Restore and verify before Run.
         lines.extend([
-            "crescMembersOK=nil crescMemberRows=nil crescMemberPairs=nil",
+            _contract_text("crescMembersOK=nil crescMemberRows=nil crescMemberPairs=nil"),
             "when(isCallable('axlGetCornersForATest) && isCallable('maeSetSetup)",
-            'crescMemberNames=cadr(axlGetCorners(%s))' % main_sdb,
-            'crescMemberFlags=mapcar(lambda((n) list(n axlGetEnabled(axlGetCorner(%s n)))) crescMemberNames)' % main_sdb,
-            'crescMemberNominal=axlGetNominalCornerEnabled(%s)' % main_sdb,
-            'crescMemberResult=errset(unwindProtect(progn(',
-            'foreach(crescMemberTarget crescMemberFlags',
-            'when(cadr(crescMemberTarget)',
-            'foreach(crescMemberRow crescMemberFlags',
-            'unless(maeSetSetup(?corners list(car(crescMemberRow)) ?enabled equal(car(crescMemberRow) car(crescMemberTarget)) ?session session) error("Crescendo corner membership isolation failed\\n")))',
-            'foreach(crescMemberRow crescMemberFlags unless(equal(equal(car(crescMemberRow) car(crescMemberTarget)) axlGetEnabled(axlGetCorner(%s car(crescMemberRow)))) error("Crescendo corner membership isolation readback differs\\n")))' % main_sdb,
+            _contract_text('crescMemberNames=cadr(axlGetCorners(%s))') % main_sdb,
+            _contract_text('crescMemberFlags=mapcar(lambda((n) list(n axlGetEnabled(axlGetCorner(%s n)))) crescMemberNames)') % main_sdb,
+            _contract_text('crescMemberNominal=axlGetNominalCornerEnabled(%s)') % main_sdb,
+            _contract_text('crescMemberResult=errset(unwindProtect(progn('),
+            _contract_text('foreach(crescMemberTarget crescMemberFlags'),
+            _contract_text('when(cadr(crescMemberTarget)'),
+            _contract_text('foreach(crescMemberRow crescMemberFlags'),
+            _contract_text('unless(maeSetSetup(?corners list(car(crescMemberRow)) ?enabled equal(car(crescMemberRow) car(crescMemberTarget)) ?session session) error("Crescendo corner membership isolation failed\\n")))'),
+            _contract_text('foreach(crescMemberRow crescMemberFlags unless(equal(equal(car(crescMemberRow) car(crescMemberTarget)) axlGetEnabled(axlGetCorner(%s car(crescMemberRow)))) error("Crescendo corner membership isolation readback differs\\n")))') % main_sdb,
             'axlSetNominalCornerEnabled(%s 0)' % main_sdb,
-            'when(axlGetNominalCornerEnabled(%s) error("Crescendo nominal corner isolation readback differs\\n"))' % main_sdb,
-            'crescMemberDisabled=cadr(axlGetCornerDisabledTests(axlGetCorner(%s car(crescMemberTarget))))' % main_sdb,
+            _contract_text('when(axlGetNominalCornerEnabled(%s) error("Crescendo nominal corner isolation readback differs\\n"))') % main_sdb,
+            _contract_text('crescMemberDisabled=cadr(axlGetCornerDisabledTests(axlGetCorner(%s car(crescMemberTarget))))') % main_sdb,
         ])
         for test in setup.get("tests") or []:
             if include_disabled_tests or test.get("enabled", True):
                 name = _skill_quote(test["name"])
                 lines.extend([
-                    'crescMemberTest="%s"' % name,
-                    'crescMemberPairs=cons(list(car(crescMemberTarget) crescMemberTest) crescMemberPairs)',
-                    'unless(member(crescMemberTest crescMemberDisabled)',
-                    'crescMemberQuery=errset(axlGetCornersForATest(session crescMemberTest) nil)',
-                    'unless(crescMemberQuery && listp(car(crescMemberQuery)) && car(crescMemberQuery) error("Crescendo corner membership query unavailable\\n"))',
-                    'foreach(crescMemberPoint car(crescMemberQuery)',
-                    'unless(listp(crescMemberPoint) && stringp(car(crescMemberPoint)) && car(crescMemberPoint)!="" error("Crescendo corner membership entry invalid\\n"))',
-                    'crescMemberRows=cons(list(car(crescMemberTarget) crescMemberTest car(crescMemberPoint)) crescMemberRows)))',
+                    _contract_text('crescMemberTest="%s"') % name,
+                    _contract_text('crescMemberPairs=cons(list(car(crescMemberTarget) crescMemberTest) crescMemberPairs)'),
+                    _contract_text('unless(member(crescMemberTest crescMemberDisabled)'),
+                    _contract_text('crescMemberQuery=errset(axlGetCornersForATest(session crescMemberTest) nil)'),
+                    _contract_text('unless(crescMemberQuery && listp(car(crescMemberQuery)) && car(crescMemberQuery) error("Crescendo corner membership query unavailable\\n"))'),
+                    _contract_text('foreach(crescMemberPoint car(crescMemberQuery)'),
+                    _contract_text('unless(listp(crescMemberPoint) && stringp(car(crescMemberPoint)) && car(crescMemberPoint)!="" error("Crescendo corner membership entry invalid\\n"))'),
+                    _contract_text('crescMemberRows=cons(list(car(crescMemberTarget) crescMemberTest car(crescMemberPoint)) crescMemberRows)))'),
                 ])
         lines.extend([
             ')) t)',
-            'progn(foreach(crescMemberRow crescMemberFlags errset(maeSetSetup(?corners list(car(crescMemberRow)) ?enabled cadr(crescMemberRow) ?session session) nil))',
-            'errset(axlSetNominalCornerEnabled(%s if(crescMemberNominal then 1 else 0)) nil))) nil)' % main_sdb,
-            'foreach(crescMemberRow crescMemberFlags unless(equal(cadr(crescMemberRow) axlGetEnabled(axlGetCorner(%s car(crescMemberRow)))) error("Crescendo corner membership restore failed; Run blocked\\n")))' % main_sdb,
-            'unless(equal(crescMemberNominal axlGetNominalCornerEnabled(%s)) error("Crescendo nominal corner restore failed; Run blocked\\n"))' % main_sdb,
-            'when(crescMemberResult crescMembersOK=t))',
-            'if(crescMembersOK then',
-            'foreach(crescMemberRow crescMemberPairs fprintf(crescCornerPort "MEMBER_TEST\\t%L\\t%L\\n" car(crescMemberRow) cadr(crescMemberRow)))',
-            'foreach(crescMemberRow crescMemberRows fprintf(crescCornerPort "MEMBER\\t%L\\t%L\\t%L\\n" car(crescMemberRow) cadr(crescMemberRow) caddr(crescMemberRow)))',
-            'fprintf(crescCornerPort "MEMBERS_DONE\\n")',
-            'else fprintf(crescCornerPort "MEMBERS_UNAVAILABLE\\n"))',
+            _contract_text('progn(foreach(crescMemberRow crescMemberFlags errset(maeSetSetup(?corners list(car(crescMemberRow)) ?enabled cadr(crescMemberRow) ?session session) nil))'),
+            _contract_text('errset(axlSetNominalCornerEnabled(%s if(crescMemberNominal then 1 else 0)) nil))) nil)') % main_sdb,
+            _contract_text('foreach(crescMemberRow crescMemberFlags unless(equal(cadr(crescMemberRow) axlGetEnabled(axlGetCorner(%s car(crescMemberRow)))) error("Crescendo corner membership restore failed; Run blocked\\n")))') % main_sdb,
+            _contract_text('unless(equal(crescMemberNominal axlGetNominalCornerEnabled(%s)) error("Crescendo nominal corner restore failed; Run blocked\\n"))') % main_sdb,
+            _contract_text('when(crescMemberResult crescMembersOK=t))'),
+            _contract_text('if(crescMembersOK then'),
+            _contract_text('foreach(crescMemberRow crescMemberPairs fprintf(crescCornerPort "MEMBER_TEST\\t%L\\t%L\\n" car(crescMemberRow) cadr(crescMemberRow)))'),
+            _contract_text('foreach(crescMemberRow crescMemberRows fprintf(crescCornerPort "MEMBER\\t%L\\t%L\\t%L\\n" car(crescMemberRow) cadr(crescMemberRow) caddr(crescMemberRow)))'),
+            _contract_text('fprintf(crescCornerPort "MEMBERS_DONE\\n")'),
+            _contract_text('else fprintf(crescCornerPort "MEMBERS_UNAVAILABLE\\n"))'),
         ])
-    lines.extend(['fprintf(crescCornerPort "READ_OK\\n")', 'close(crescCornerPort)'])
+    lines.extend([_contract_text('fprintf(crescCornerPort "READ_OK\\n")'), _contract_text('close(crescCornerPort)')])
     return lines
 
 
@@ -1713,7 +1720,7 @@ def parse_native_corner_schedule(path):
 
 def _normalize_projected_default_slot(original, full_original, private, workspace):
     """Ignore only an identical saved empty disabled nominal slot after projection."""
-    selected = workspace.get("_cr_selected_corners")
+    selected = workspace.get(_contract_text("_cr_selected_corners"))
     if (not (workspace.get("setup") or {}).get("selected_test") or not isinstance(selected, list)
             or not selected or "_default" in selected):
         return private, None
@@ -1742,7 +1749,7 @@ def _capture_setup_identity(workspace, root, owned_symbols=None, config=None):
     setup = workspace["setup"]
     source = setup.get("source") or {}
     path = source.get("setup_db") or source.get("maestro_sdb")
-    detail = {"schema_version": "crescendo.native_corner_identity.v1", "ok": False,
+    detail = {"schema_version": _contract_text("crescendo.native_corner_identity.v1"), "ok": False,
               "phase": os.path.basename(root), "inspected_source": source,
               "private_setup_path": workspace.get("setup_sdb"), "differences": []}
     selected = (config or {}).get("_selected_setup_source") or {}
@@ -1761,7 +1768,7 @@ def _capture_setup_identity(workspace, root, owned_symbols=None, config=None):
     detail["model_path_context"] = {"source_work_dir": source_work_dir, "source": base_source,
                                     "native_capture_work_dir": workspace.get("root"),
                                     "relative_path_policy": "explicit_source_and_native_bases_with_captured_include_search"}
-    diagnostic_path = os.path.join(root, "corner_identity.json")
+    diagnostic_path = os.path.join(root, _contract_text("corner_identity.json"))
     try:
         from .setup_baseline import effective_setup_path
         full_original = _saved_corner_contract(effective_setup_path(setup))
@@ -1774,9 +1781,9 @@ def _capture_setup_identity(workspace, root, owned_symbols=None, config=None):
             state = os.path.join(os.path.dirname(effective_setup_path(setup)), "active.state")
             if os.path.isfile(state):
                 shutil.copy2(state, os.path.join(projection_dir, "active.state"))
-            manifest_path = os.path.join(projection_dir, "manifest.json")
+            manifest_path = os.path.join(projection_dir, _contract_text("manifest.json"))
             project_native_files(projected_path, setup["selected_test"], manifest_path,
-                                 selected_corners=workspace.get("_cr_selected_corners"))
+                                 selected_corners=workspace.get(_contract_text("_cr_selected_corners")))
             original = _saved_corner_contract(projected_path)
             detail["source_projection_manifest"] = manifest_path
         private = _saved_corner_contract(workspace["setup_sdb"])
@@ -1869,7 +1876,7 @@ def validate_capture_corners(setup, tasks, parsed, snapshot=None, schedule=None,
     enabled = [row for row in setup.get("corners") or [] if row.get("enabled", True)]
     expected_names = [normalize_corner_name(row.get("name")) for row in enabled]
     duplicates = sorted(set(name for name in expected_names if expected_names.count(name) > 1))
-    detail = {"schema_version": "crescendo.native_corner_coverage.v1", "ok": True,
+    detail = {"schema_version": _contract_text("crescendo.native_corner_coverage.v1"), "ok": True,
               "enabled_tests": tests, "explicit_enabled_corners": expected_names,
               "disabled_corners": [row.get("name") for row in setup.get("corners") or [] if not row.get("enabled", True)],
               "duplicate_source_corners": duplicates, "test_differences": [],
@@ -2171,7 +2178,7 @@ def _capture_timeout_profiles(config, tests):
         return {"scope": scope, "requested_overrides": copy.deepcopy(requested),
                 "effective_overrides": effective, "fields": fields,
                 "linger": copy.deepcopy(fields["linger_seconds"])}
-    return {"schema_version": "crescendo.native_capture_timeout_profiles.v1",
+    return {"schema_version": _contract_text("crescendo.native_capture_timeout_profiles.v1"),
             "global": scoped(global_properties, "global"),
             "tests": {name: scoped(dict(global_properties, **source_tests.get(name, {})), "test:" + name)
                       for name in tests}, "source_policy_modified": False,
@@ -2235,27 +2242,27 @@ def _capture_setup_skill(workspace, tests, profiles, path):
     # Every operation opens and closes the append-only record independently;
     # a native error cannot strand buffered evidence behind it.
     pre = [
-        'unless(equal(getShellEnvVar("HOME") %s) && equal(getWorkingDir() %s) error("Crescendo capture policy HOME/cwd escaped the owned workspace\\n"))' % (quote(workspace["root"]), quote(workspace["root"])),
-        'procedure(crescCaptureRecord(kind scope name operation succeeded value)',
+        _contract_text('unless(equal(getShellEnvVar("HOME") %s) && equal(getWorkingDir() %s) error("Crescendo capture policy HOME/cwd escaped the owned workspace\\n"))') % (quote(workspace["root"]), quote(workspace["root"])),
+        _contract_text('procedure(crescCaptureRecord(kind scope name operation succeeded value)'),
         '  let((port) port=outfile(%s "a")' % quote(path),
-        '    unless(port error("Crescendo capture policy/mode record unavailable\\n"))',
+        _contract_text('    unless(port error("Crescendo capture policy/mode record unavailable\\n"))'),
         '    fprintf(port "%s\\t%L\\t%L\\t%L\\t%L\\t%L\\n" kind scope name operation succeeded value)',
         '    close(port)))',
-        "unless(isCallable('axlAdd" "JobPolicy) && isCallable('axlGetJobPolicy) error(\"Crescendo capture policy alias APIs unavailable\\n\"))"]
+        _contract_text("unless(isCallable('axlAdd" "JobPolicy) && isCallable('axlGetJobPolicy) error(\"Crescendo capture policy alias APIs unavailable\\n\"))")]
     def call(lines, expression, kind, scope, name, operation, message):
         lines.extend([
-            'crescCaptureResult=errset(%s t)' % expression,
-            'crescCaptureRecord("%s" %s %s "%s" if(crescCaptureResult then t else nil) if(crescCaptureResult then car(crescCaptureResult) else nil))' %
+            _contract_text('crescCaptureResult=errset(%s t)') % expression,
+            _contract_text('crescCaptureRecord("%s" %s %s "%s" if(crescCaptureResult then t else nil) if(crescCaptureResult then car(crescCaptureResult) else nil))') %
                 (kind, quote(scope), quote(name), operation),
-            'unless(crescCaptureResult && car(crescCaptureResult) error("%s\\n"))' % message])
+            _contract_text('unless(crescCaptureResult && car(crescCaptureResult) error("%s\\n"))') % message])
     def read_policy(lines, expression, scope, name, expected):
-        lines.extend(['crescCaptureResult=errset(%s t)' % expression,
-            'crescCaptureRecord("GET" %s %s "policy" if(crescCaptureResult then t else nil) if(crescCaptureResult then car(crescCaptureResult) else nil))' % (quote(scope), quote(name)),
-            'unless(crescCaptureResult && listp(car(crescCaptureResult)) && car(crescCaptureResult) error("Crescendo capture policy readback unavailable\\n"))',
-            'crescCapturePolicy=car(crescCaptureResult)'])
+        lines.extend([_contract_text('crescCaptureResult=errset(%s t)') % expression,
+            _contract_text('crescCaptureRecord("GET" %s %s "policy" if(crescCaptureResult then t else nil) if(crescCaptureResult then car(crescCaptureResult) else nil))') % (quote(scope), quote(name)),
+            _contract_text('unless(crescCaptureResult && listp(car(crescCaptureResult)) && car(crescCaptureResult) error("Crescendo capture policy readback unavailable\\n"))'),
+            _contract_text('crescCapturePolicy=car(crescCaptureResult)')])
         for field, value in sorted(expected.items()):
-            lines.append('crescCaptureRecord("READ" %s %s "%s" t getq(crescCapturePolicy %s))' % (quote(scope), quote(name), field, field))
-            lines.append('unless(equal(getq(crescCapturePolicy %s) %s) error("Crescendo capture policy readback differs: %s/%s\\n"))' % (field, quote(value), _skill_quote(scope), field))
+            lines.append(_contract_text('crescCaptureRecord("READ" %s %s "%s" t getq(crescCapturePolicy %s))') % (quote(scope), quote(name), field, field))
+            lines.append(_contract_text('unless(equal(getq(crescCapturePolicy %s) %s) error("Crescendo capture policy readback differs: %s/%s\\n"))') % (field, quote(value), _skill_quote(scope), field))
     alias_expected = {"distributionmethod": "Local", "preemptivestart": "0", "maxjobs": "2", "usesameprocess": "0"}
     for name in names:
         target = os.path.join(policy_dir, name + ".jp")
@@ -2264,14 +2271,14 @@ def _capture_setup_skill(workspace, tests, profiles, path):
         expected = dict(alias_expected, name=name)
         props = 'list(nil ' + ' '.join("'%s %s" % (key, quote(value)) for key, value in sorted(expected.items())) + ')'
         call(pre, 'axlAdd' 'JobPolicy(%s %s %s)' % (quote(name), quote(directory), props),
-             "SET", "preopen_alias", name, "axlAdd" "JobPolicy", "Crescendo capture-only native policy alias could not be saved")
+             "SET", "preopen_alias", name, "axlAdd" "JobPolicy", _contract_text("Crescendo capture-only native policy alias could not be saved"))
         read_policy(pre, 'axlGetJobPolicy(%s)' % quote(name), "preopen_alias", name, expected)
     from .job_policy import timeout_override_skill_arguments, timeout_override_properties
     token = hashlib.sha256(workspace["root"].encode("utf-8")).hexdigest()[:12]
     post, final_names, final_expected = [], {}, {}
     for scope, test, profile in [("global", None, profiles["global"])] + [
             ("test:" + test, test, profiles["tests"][test]) for test in tests]:
-        name = "CRESCENDO_Capture_%s_%s" % (token, "global" if test is None else hashlib.sha256(test.encode("utf-8")).hexdigest()[:12])
+        name = _contract_text("CRESCENDO_Capture_%s_%s") % (token, "global" if test is None else hashlib.sha256(test.encode("utf-8")).hexdigest()[:12])
         final_names[scope] = name
         overrides = _capture_known_timeout_overrides(profile)
         profile["effective_overrides"] = copy.deepcopy(overrides)
@@ -2280,7 +2287,7 @@ def _capture_setup_skill(workspace, tests, profiles, path):
         final_expected[scope] = expected
         expression = 'maeSetJobPolicy(%s ?distributionmethod "Local" ?maxjobs "2" ?usesameprocess "0" ?preemptivestart "0"%s%s ?session session)' % (
             quote(name), args, ' ?tests list(%s)' % quote(test) if test is not None else '')
-        call(post, expression, "SET", scope, name, "maeSetJobPolicy", "Crescendo cannot isolate native capture policy")
+        call(post, expression, "SET", scope, name, "maeSetJobPolicy", _contract_text("Crescendo cannot isolate native capture policy"))
         read_policy(post, 'maeGetJobPolicy(%s?session session)' % ('?testName %s ' % quote(test) if test is not None else ''), scope, name, expected)
     return pre, post, {"records_path": path, "alias_directory": directory,
         "alias_names": names, "final_policy_names": final_names,
@@ -2298,12 +2305,12 @@ def _capture_mode_skill(tests):
             ('maeSetEnvOption(%s ?options list(list("controlMode" "batch")) ?session session)' % quoted,
              'maeGetEnvOption(%s ?option "controlMode" ?session session)' % quoted, "maeSetEnvOption")]:
             lines.extend([
-                'crescCaptureResult=errset(%s t)' % setter,
-                'crescCaptureRecord("SET" %s "controlMode" "%s" if(crescCaptureResult then t else nil) if(crescCaptureResult then car(crescCaptureResult) else nil))' % (quoted, operation),
-                'unless(crescCaptureResult && car(crescCaptureResult) error("Crescendo native test batch mode rejected: %s/%s\\n"))' % (_skill_quote(test), operation),
-                'crescCaptureResult=errset(%s t)' % getter,
-                'crescCaptureRecord("MODE" %s "controlMode" "%s" if(crescCaptureResult then t else nil) if(crescCaptureResult then car(crescCaptureResult) else nil))' % (quoted, operation),
-                'unless(crescCaptureResult && equal(car(crescCaptureResult) "batch") error("Crescendo native batch mode readback differs: %s/%s\\n"))' % (_skill_quote(test), operation)])
+                _contract_text('crescCaptureResult=errset(%s t)') % setter,
+                _contract_text('crescCaptureRecord("SET" %s "controlMode" "%s" if(crescCaptureResult then t else nil) if(crescCaptureResult then car(crescCaptureResult) else nil))') % (quoted, operation),
+                _contract_text('unless(crescCaptureResult && car(crescCaptureResult) error("Crescendo native test batch mode rejected: %s/%s\\n"))') % (_skill_quote(test), operation),
+                _contract_text('crescCaptureResult=errset(%s t)') % getter,
+                _contract_text('crescCaptureRecord("MODE" %s "controlMode" "%s" if(crescCaptureResult then t else nil) if(crescCaptureResult then car(crescCaptureResult) else nil))') % (quoted, operation),
+                _contract_text('unless(crescCaptureResult && equal(car(crescCaptureResult) "batch") error("Crescendo native batch mode readback differs: %s/%s\\n"))') % (_skill_quote(test), operation)])
     return lines
 
 
@@ -2316,7 +2323,7 @@ def _capture_environment_observation_skill(tests):
     errset print flag alone does not silence its stack on this runtime.
     """
     lines = [
-        'procedure(crescObserveCaptureEnvironment(test)',
+        _contract_text('procedure(crescObserveCaptureEnvironment(test)'),
         ' let((savedTrace savedStack observation options optionName literal matched shapeOK observationStatus)',
         '  savedTrace=status(errsetTrace) savedStack=status(stacktrace)',
         '  unwindProtect(',
@@ -2334,14 +2341,14 @@ def _capture_environment_observation_skill(tests):
         '         if(matched<8 then',
         '          literal=sprintf(nil "%L" cadr(row))',
         '          when(strlen(literal)>2048 literal=strcat(substring(literal 1 2048) "...[truncated]") observationStatus="TRUNCATED")',
-        '          crescCaptureRecord("ENV" test optionName "maeGetEnvOption.diagnostic" t literal)',
+        _contract_text('          crescCaptureRecord("ENV" test optionName "maeGetEnvOption.diagnostic" t literal)'),
         '          matched=matched+1',
         '         else observationStatus="TRUNCATED")))))',
-        '     crescCaptureRecord("ENV" test "__CRESCENDO_ENV_DIAGNOSTIC_STATUS__" "maeGetEnvOption.diagnostic" t observationStatus)',
+        _contract_text('     crescCaptureRecord("ENV" test "__CRESCENDO_ENV_DIAGNOSTIC_STATUS__" "maeGetEnvOption.diagnostic" t observationStatus)'),
         '    ) nil))',
         '   progn(sstatus(stacktrace savedStack) sstatus(errsetTrace savedTrace)))',
         ' ))']
-    lines.extend('crescObserveCaptureEnvironment("%s")' % _skill_quote(test) for test in tests)
+    lines.extend(_contract_text('crescObserveCaptureEnvironment("%s")') % _skill_quote(test) for test in tests)
     return lines
 
 
@@ -2372,7 +2379,7 @@ def _capture_setup_readback(plan, tests):
                 continue
             observation = observations.setdefault(row["scope"], {"test": row["scope"],
                 "status": "UNAVAILABLE", "fields": []})
-            if row["name"] == "__CRESCENDO_ENV_DIAGNOSTIC_STATUS__":
+            if row["name"] == _contract_text("__CRESCENDO_ENV_DIAGNOSTIC_STATUS__"):
                 observation["status"] = row["value"]
             elif len(observation["fields"]) < 8:
                 observation["fields"].append({"name": row["name"], "literal": row["value"]})
@@ -2455,7 +2462,7 @@ def _capture_worker_logs(workspace, before=None):
     """
     owned = os.path.realpath(workspace["root"])
     logs_root = os.path.join(owned, "logs_root")
-    result = {"schema_version": "crescendo.native_worker_diagnostics.v1", "owned_workspace": owned,
+    result = {"schema_version": _contract_text("crescendo.native_worker_diagnostics.v1"), "owned_workspace": owned,
               "logs_root": logs_root, "logs": [], "ok": True,
               "expected_post_generation_wrapper_failure": True,
               "expected_wrapper_aftermath_samples": [], "parent_capture_failed": False}
@@ -2599,7 +2606,7 @@ def _raise_capture_failure(cancelled, command, native_diagnostics, worker_diagno
 def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
                    emit_clones=False, symbolic=False, cancel_check=None, progress_callback=None,
                    verify_numeric_application=False, private_config_initialized=False,
-                   baseline_only=False, allow_effective_adjustment=False):
+                   baseline_only=False, allow_effective_adjustment=False, batch_plan=None):
     require_unique_run_variables(workspace.get("setup") or {},
                                  action="capture private SCS", multiplicity_only=True)
     if baseline_only and (values or symbols or seeds or symbolic or verify_numeric_application):
@@ -2615,12 +2622,12 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
                       eligible_corner_names(setup, setup["selected_test"]))
         if not wanted:
             raise PrivateNetlistUnsupported("No qualified corner selected for this Test")
-        previous = workspace.get("_cr_selected_corners")
+        previous = workspace.get(_contract_text("_cr_selected_corners"))
         if previous is None:
             project_native_files(workspace["setup_sdb"], setup["selected_test"],
-                                 os.path.join(root, "native_capture_projection.json"),
+                                 os.path.join(root, _contract_text("native_capture_projection.json")),
                                  selected_corners=wanted)
-            workspace["_cr_selected_corners"] = wanted
+            workspace[_contract_text("_cr_selected_corners")] = wanted
         elif previous != wanted:
             raise PrivateNetlistUnsupported("Corner selection changed without rebuilding the private setup")
     setup_identity = _capture_setup_identity(workspace, root, symbols.values(), config=config)
@@ -2664,6 +2671,9 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
         native_plan = build_native_parameter_plan(native_rows, run_setup.get("corners"),
             owned_paths=workspace.get("native_parameter_paths") or [],
             allowed_symbols=symbols.values() if symbolic else [])
+    if batch_plan is not None:
+        from .generation_batch import build_native_columns
+        build_native_columns(batch_plan, native_plan["selected"])
     captures = ensure_dir(os.path.join(root, "invocations"))
     invocation_prefix = "capture." + uuid.uuid4().hex + "."
     local_bin = ensure_dir(os.path.join(workspace["root"], "bin"))
@@ -2683,17 +2693,17 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
     # Verified IC618 policy: disable interactive worker reuse in this owned
     # child before opening Maestro. Otherwise one invocation can serve several
     # points through simiADEPlugin and an exit-only capture misses their SCS.
-    body = ['envSetVal("maestro.simulation" "interactiveA" \'boolean nil)',
+    body = (['ocnSetXLMode("assembler")'] if batch_plan is not None else []) + ['envSetVal("maestro.simulation" "interactiveA" \'boolean nil)',
             'envSetVal("maestro.simulation" "interactiveE" \'boolean nil)',
-            'when(envGetVal("maestro.simulation" "interactiveA") || envGetVal("maestro.simulation" "interactiveE") error("Crescendo native noninteractive capture policy did not apply\\n"))']
+            _contract_text('when(envGetVal("maestro.simulation" "interactiveA") || envGetVal("maestro.simulation" "interactiveE") error("Crescendo native noninteractive capture policy did not apply\\n"))')]
     body.extend(alias_lines)
     for field in ("interactiveA", "interactiveE"):
-        body.append('crescCaptureRecord("ENV" "child" "%s" "envGetVal" t envGetVal("maestro.simulation" "%s"))' % (field, field))
+        body.append(_contract_text('crescCaptureRecord("ENV" "child" "%s" "envGetVal" t envGetVal("maestro.simulation" "%s"))') % (field, field))
     body.extend([
-                  'unless(errset(load("%s") t) error("Crescendo private netlist parameterization failed\\n"))' % _skill_quote(patch),
-                  'unless(crescSchematicPatchResult error("Crescendo private netlist parameter patch did not complete\\n"))',
+                  _contract_text('unless(errset(load("%s") t) error("Crescendo private netlist parameterization failed\\n"))') % _skill_quote(patch),
+                  _contract_text('unless(crescSchematicPatchResult error("Crescendo private netlist parameter patch did not complete\\n"))'),
                   'session=maeOpenSetup("%s" "%s" "%s" ?mode "a")' % tuple(_skill_quote(workspace[key]) for key in ("primary_library", "setup_cell", "setup_view")),
-                  'unless(session error("Crescendo private Maestro could not open\\n"))',
+                  _contract_text('unless(session error("Crescendo private Maestro could not open\\n"))'),
                   'mainSDB=axlGetMainSetupDB(session)'])
     if config.get("_diagnostic_native_run_trace") is True:
         body.extend(_capture_environment_observation_skill(tests))
@@ -2706,7 +2716,7 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
     native_scope_path = os.path.join(root, "native_variable_scope.tsv")
     body.extend(native_variable_scope_skill_lines(run_setup, native_scope_path))
     for test in tests:
-        body.append('unless(equal(cadr(assoc("sim" axlGetTestToolArgs(axlGetTest(mainSDB "%s")))) "%s") error("Crescendo saved capture simulator identity changed\\n"))' % (_skill_quote(test), capture_simulator))
+        body.append(_contract_text('unless(equal(cadr(assoc("sim" axlGetTestToolArgs(axlGetTest(mainSDB "%s")))) "%s") error("Crescendo saved capture simulator identity changed\\n"))') % (_skill_quote(test), capture_simulator))
     body.extend(_capture_mode_skill(tests))
     from .single_test import native_selection, native_selection_lines
     native_execution_selection = native_selection(workspace["setup"])
@@ -2715,17 +2725,22 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
             native_execution_selection["analyses"][name] = list(execution_selection["analyses"][name])
     body.extend(native_selection_lines(native_execution_selection) if native_execution_selection else test_skill_lines(execution_selection))
     native_corner_selection = copy.deepcopy(corner_selection)
-    if native_corner_selection and workspace.get("_cr_selected_corners") is not None:
+    if native_corner_selection and workspace.get(_contract_text("_cr_selected_corners")) is not None:
         native_corner_selection["available"] = [name for name in native_corner_selection["available"]
-                                                if name in workspace["_cr_selected_corners"]]
+                                                if name in workspace[_contract_text("_cr_selected_corners")]]
     body.extend(selection_skill_lines(native_corner_selection))
     for key in sorted(symbols):
-        body.append('unless(maeSetVar("%s" "%.17g" ?session session) error("Crescendo private netlist symbol seed failed\\n"))' % (symbols[key], seeds[key]))
-    if native_plan:
-        from .native_maestro_parameters import native_parameter_skill_lines
-        body.extend(native_parameter_skill_lines(native_plan, native_settings_path))
+        body.append(_contract_text('unless(maeSetVar("%s" "%.17g" ?session session) error("Crescendo private netlist symbol seed failed\\n"))') % (symbols[key], seeds[key]))
     schedule_path = os.path.join(root, "native_corner_schedule.tsv")
     body.extend(native_corner_schedule_skill(run_setup, schedule_path, include_members=True))
+    if native_plan:
+        from .native_maestro_parameters import native_parameter_skill_lines
+        if batch_plan is None:
+            body.extend(native_parameter_skill_lines(native_plan, native_settings_path))
+        else:
+            from .generation_batch import native_batch_skill_lines
+            body.extend(native_batch_skill_lines(batch_plan, native_plan,
+                os.path.join(root, "native_batch_columns.tsv")))
     # A single Maestro worker can select interactive Spectre and abort the
     # remaining points when this capture-only entry intentionally exits 1.
     # Keep the established two-worker netlisting policy. This runs no solver;
@@ -2738,15 +2753,23 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
         "maeWaitUntilDone('All ?session session)"], enabled=run_trace_requested))
     from .storage_policy import native_history_readback_line, qualify_native_history_paths
     if workspace.get("native_storage"):
-        body.extend(['printf("CRESCENDO_NATIVE_RUN_STAGE HistoryLookup BEGIN\\n")',
+        body.extend([_contract_text('printf("CRESCENDO_NATIVE_RUN_STAGE HistoryLookup BEGIN\\n")'),
                      'runData=axlGetRunData(session runId)',
-                     'printf("CRESCENDO_NATIVE_RUN_VALUE history %L\\n" runData)',
-                     'when(!runData || equal(runData 0) error("Crescendo native capture history unavailable\\n"))',
-                     'printf("CRESCENDO_NATIVE_RUN_STAGE HistoryLookup RETURN\\n")',
+                     _contract_text('printf("CRESCENDO_NATIVE_RUN_VALUE history %L\\n" runData)'),
+                     _contract_text('when(!runData || equal(runData 0) error("Crescendo native capture history unavailable\\n"))'),
+                     _contract_text('printf("CRESCENDO_NATIVE_RUN_STAGE HistoryLookup RETURN\\n")'),
                      native_history_readback_line(workspace, root)])
+    if batch_plan is not None:
+        from .generation_batch import native_point_export_lines
+        body.extend(['runData=axlGetRunData(session runId)',
+                     'unless(runData && runData!=0 error("Exact capture Run missing\\n"))',
+                     'historyName=axlGetHistoryName(runData)',
+                     _contract_text('cr_captureRunOut=outfile(%s)') % ('"' + _skill_quote(os.path.join(root, 'native_batch_run.tsv')) + '"'),
+                     _contract_text('fprintf(cr_captureRunOut "%L\\t%s\\n" runId historyName) close(cr_captureRunOut)')])
+        body.extend(native_point_export_lines(os.path.join(root, "native_batch_points.tsv")))
     body.extend(['maeCloseSession(?session session ?forceClose t)',
-                 'printf("CRESCENDO_PRIVATE_NETLIST_CAPTURE_DONE\\n")'])
-    bounded, generation = bounded_skill_body_lines(body, result_name="crescNetlistCaptureBodyResult")
+                 _contract_text('printf("CRESCENDO_PRIVATE_NETLIST_CAPTURE_DONE\\n")')])
+    bounded, generation = bounded_skill_body_lines(body, result_name=_contract_text("crescNetlistCaptureBodyResult"))
     generation["native_run_trace"] = {
         "requested": run_trace_requested,
         "scope": "diagnostic owned native Run/Wait only; no automatic replay",
@@ -2757,8 +2780,8 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
         "effective_seconds": float(config.get("runtime", {}).get("private_netlist_prepare_timeout_seconds", 300)),
         "source": "direct_capture_runtime_or_legacy_default", "scope": "native_netlist_generation_only"})
     lines.extend(bounded)
-    lines.append('if(crescNetlistCaptureBodyResult then exit(0) else exit(1))')
-    atomic_write_json(os.path.join(root, "capture_generation.json"), generation)
+    lines.append(_contract_text('if(crescNetlistCaptureBodyResult then exit(0) else exit(1))'))
+    atomic_write_json(os.path.join(root, _contract_text("capture_generation.json")), generation)
     script = os.path.join(root, "capture.il")
     atomic_write_text(script, "\n".join(lines) + "\n")
     env = _capture_child_environment(config, workspace["root"], local_bin)
@@ -2774,13 +2797,13 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
                                 cwd=workspace["root"], env=env, timeout_seconds=timeout, control_root=root,
                                 token="netlist-capture-" + uuid.uuid4().hex,
                                 cancel_check=cancel_check, command_runner=guarded_runner)
-    atomic_write_json(os.path.join(root, "command.json"), command)
+    atomic_write_json(os.path.join(root, _contract_text("command.json")), command)
     from .native_diagnostics import skill_command_diagnostics
-    native_diagnostics = skill_command_diagnostics(command, script, required_marker="CRESCENDO_PRIVATE_NETLIST_CAPTURE_DONE", owned_root=root)
+    native_diagnostics = skill_command_diagnostics(command, script, required_marker=_contract_text("CRESCENDO_PRIVATE_NETLIST_CAPTURE_DONE"), owned_root=root)
     worker_diagnostics, _worker_after = _capture_worker_logs(workspace, worker_before)
-    atomic_write_json(os.path.join(root, "native_worker_diagnostics.json"), worker_diagnostics)
+    atomic_write_json(os.path.join(root, _contract_text("native_worker_diagnostics.json")), worker_diagnostics)
     capture_setup_readback = _capture_setup_readback(capture_policy_plan, tests)
-    capture_diagnostics = {"schema_version": "crescendo.native_capture_diagnostics.v1",
+    capture_diagnostics = {"schema_version": _contract_text("crescendo.native_capture_diagnostics.v1"),
                            "capture_only": True, "real_spectre_execution_started": False,
                            "unchanged_baseline_only": bool(baseline_only),
                            "native_control_mode": {"api": "maeSetEnvOption/maeGetEnvOption",
@@ -2801,12 +2824,12 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
                            "native_worker_diagnostics": worker_diagnostics,
                            "recorded_invocation_count": len(os.listdir(captures)),
                            "assembler_failure_explanation": "The capture wrapper records each invocation and intentionally exits 1; ASSEMBLER-5031 alone is expected at this phase."}
-    atomic_write_json(os.path.join(root, "capture_diagnostics.json"), capture_diagnostics)
+    atomic_write_json(os.path.join(root, _contract_text("capture_diagnostics.json")), capture_diagnostics)
     cancelled = bool(command.get("cancelled") or (cancel_check and cancel_check()))
     if cancelled or command.get("returncode") != 0 or command.get("timed_out") or command.get("termination_failed") or not native_diagnostics["ok"] or not worker_diagnostics["ok"]:
         worker_diagnostics["parent_capture_failed"] = True
         try:
-            atomic_write_json(os.path.join(root, "native_worker_diagnostics.json"), worker_diagnostics)
+            atomic_write_json(os.path.join(root, _contract_text("native_worker_diagnostics.json")), worker_diagnostics)
         except Exception:
             pass  # Secondary evidence cannot replace the native failure.
         try:
@@ -2816,7 +2839,7 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
                               "retained_scs_paths": [], "reasons": [str(collection_error)[:512]]}
         capture_diagnostics["failure_inputs"] = failure_inputs
         try:
-            atomic_write_json(os.path.join(root, "capture_diagnostics.json"), capture_diagnostics)
+            atomic_write_json(os.path.join(root, _contract_text("capture_diagnostics.json")), capture_diagnostics)
         except Exception:
             pass  # Diagnostic persistence cannot replace the native failure.
         _raise_capture_failure(cancelled, command, native_diagnostics, worker_diagnostics,
@@ -2827,7 +2850,12 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
     native_settings = None
     if native_plan:
         from .native_maestro_parameters import parse_native_parameter_settings
-        native_settings = parse_native_parameter_settings(native_settings_path, native_plan)
+        if batch_plan is None:
+            native_settings = parse_native_parameter_settings(native_settings_path, native_plan)
+        else:
+            from .generation_batch import read_native_batch_columns
+            native_settings = read_native_batch_columns(
+                os.path.join(root, "native_batch_columns.tsv"), batch_plan)
     from .native_variable_scope_readback import parse_native_variable_scope
     native_scope = parse_native_variable_scope(native_scope_path, run_setup)
     workspace["setup"] = copy.deepcopy(workspace["setup"])
@@ -2837,7 +2865,15 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
     require_unique_run_variables(run_setup, action="native SCS capture", multiplicity_only=True)
     load_native_storage_readback(workspace, required=bool(workspace.get("native_storage")))
     rdb_root = capture_rdb_root(workspace)
-    parsed = parse_latest_rdb(rdb_root)
+    if batch_plan is None:
+        parsed = parse_latest_rdb(rdb_root)
+    else:
+        from .rdb import parse_rdb
+        from .workspace import _record_literal
+        with open(os.path.join(root, "native_batch_run.tsv"), encoding="utf-8") as stream:
+            run_id, history_name = stream.read().strip().split("\t")
+        batch_plan.update(run_id=_record_literal(run_id), history=history_name)
+        parsed = parse_rdb(os.path.join(rdb_root, history_name + ".rdb"))
     _regular(parsed["path"], rdb_root, MAX_NETLIST_BYTES)
     if workspace.get("native_storage"):
         history_name = os.path.basename(parsed["path"])[:-4]
@@ -2877,46 +2913,67 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
         for current, directories, names in os.walk(cwd):
             directories[:] = [name for name in directories if name == "amap"] if current == cwd else directories
             for name in names:
-                if current == cwd and name not in ("input.scs", "netlist", "runObjFile", "designInfo"):
+                if current == cwd and name not in (_contract_text("input.scs"), "netlist", "runObjFile", "designInfo"):
                     continue
                 source = _regular(os.path.join(current, name), workspace["root"], maximum=MAX_METADATA_BYTES)
                 relative = os.path.relpath(source, cwd)
                 destination = os.path.join(snapshot, relative)
                 ensure_dir(os.path.dirname(destination)); shutil.copyfile(source, destination)
                 files.append({"path": destination, "relative_path": relative, "sha256": _digest(destination),
-                              "metadata": relative != "input.scs"})
+                              "metadata": relative != _contract_text("input.scs")})
         outputs = [dict(key="%s::%s" % (test_name, row["name"]), name=row["name"],
                         expression=row.get("expression"), output_type=row.get("output_type"))
                    for row in parsed["outputs"] if row["test"] == test_name and row.get("name") and not row["name"].startswith("/")]
         tasks.append({"task_id": task_id, "point_id": point["pointID"], "design_point": point["designPointNumber"],
-                      "corner": point["corner_name"], "test": test_name, "netlist_path": os.path.join(snapshot, "input.scs"),
+                      "corner": point["corner_name"], "test": test_name, "netlist_path": os.path.join(snapshot, _contract_text("input.scs")),
                       "cwd": snapshot, "psf_dir": os.path.dirname(snapshot) + "/psf", "spectre_log": os.path.dirname(snapshot) + "/psf/spectre.out",
                       "argv": [config["cadence"].get(capture_simulator + "_bin") or wrapper] + argv, "native_cwd": cwd,
                       "capture_executable_provenance": "configured_source_simulator" if config["cadence"].get(capture_simulator + "_bin") else "owned_capture_wrapper_only",
                       "outputs": outputs, "variables": [], "template_files": files,
-                      "native_parameters": top_level_native_parameters(_text(os.path.join(snapshot, "input.scs")))})
-        tasks[-1].update(native_netlist_identity(_text(os.path.join(snapshot, "input.scs"))))
+                      "native_parameters": top_level_native_parameters(_text(os.path.join(snapshot, _contract_text("input.scs"))))})
+        tasks[-1].update(native_netlist_identity(_text(os.path.join(snapshot, _contract_text("input.scs")))))
         from .native_identity import resolve_task_model_identity
         tasks[-1]["native_model_resolution"] = resolve_task_model_identity(
             tasks[-1], config, capture_simulator, run_setup, setup_identity, model_resolution_cache)
     schedule = parse_native_corner_schedule(schedule_path)
     setup_identity["native_schedule"] = schedule
-    corner_coverage = validate_capture_corners(run_setup, tasks, parsed, setup_identity, schedule)
+    partitions = None
+    if batch_plan is None:
+        corner_coverage = validate_capture_corners(run_setup, tasks, parsed, setup_identity, schedule)
+    else:
+        from .generation_batch import map_native_points, parse_native_rows
+        from .rdb import slice_candidate_rdb
+        mapped = map_native_points(batch_plan, batch_plan['run_id'], batch_plan['history'], parsed,
+            parse_native_rows(os.path.join(root, "native_batch_points.tsv")))
+        partitions, coverage_rows = {}, []
+        for row in batch_plan['rows']:
+            ids = {point['point_id'] for point in mapped[row['row_id']]}
+            row_tasks = [task for task in tasks if task['point_id'] in ids]
+            part = slice_candidate_rdb(parsed, {test: test for test in tests}, ids)
+            coverage = validate_capture_corners(run_setup, row_tasks, part, setup_identity, schedule)
+            partitions[row['row_id']] = {'tasks': row_tasks, 'parsed': part}
+            coverage_rows.append(dict(coverage, row_id=row['row_id']))
+        corner_coverage = {'ok': all(row['ok'] for row in coverage_rows),
+                          'rows': coverage_rows, 'enabled_tests': tests,
+                          'explicit_enabled_corners': native_plan['enabled_corners']}
+        batch_plan['corner_coverage'] = corner_coverage
+        batch_plan['native_schedule'] = schedule
+        batch_plan['job_policy'] = capture_setup_readback
     point_coverage = native_capture_point_coverage(tasks, parsed, tests, schedule=schedule)
     capture_diagnostics["point_coverage"] = point_coverage
     # Publish both independent checks before either gate raises. Expanded
     # group mapping failures can also affect masked RDB placeholder counts;
     # losing the corner evidence here used to hide the more specific cause.
     setup_identity["native_coverage"] = corner_coverage
-    identity_path = os.path.join(root, "corner_identity.json")
+    identity_path = os.path.join(root, _contract_text("corner_identity.json"))
     atomic_write_json(identity_path, setup_identity)
-    atomic_write_json(os.path.join(root, "capture_diagnostics.json"), capture_diagnostics)
+    atomic_write_json(os.path.join(root, _contract_text("capture_diagnostics.json")), capture_diagnostics)
     if not point_coverage["ok"]:
         failure = PrivateNetlistUnsupported("native netlist capture did not cover every enabled test/point (%s/%s captured)" %
                                             (point_coverage["captured_test_point_count"], point_coverage["expected_test_point_count"]))
         failure.detail = {"failure_stage": "native_capture_point_coverage", "execution_started": False,
                           "capture_only": True, "capture_capacity": int(capture_jobs),
-                          "diagnostic_path": os.path.join(root, "capture_diagnostics.json"),
+                          "diagnostic_path": os.path.join(root, _contract_text("capture_diagnostics.json")),
                           "corner_diagnostic_path": identity_path,
                           "corner_coverage_ok": corner_coverage["ok"],
                           "point_coverage": point_coverage}
@@ -2945,15 +3002,25 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
         from .native_maestro_parameters import verify_native_parameter_application
         expected = dict(seeds) if symbolic else dict(values)
         try:
-            application = verify_native_parameter_application(native_rows, tasks, expected,
-                run_setup, parsed, allow_effective_adjustment=allow_effective_adjustment)
+            if batch_plan is None:
+                application = verify_native_parameter_application(native_rows, tasks, expected,
+                    run_setup, parsed, allow_effective_adjustment=allow_effective_adjustment)
+            else:
+                for row in batch_plan['rows']:
+                    part = partitions[row['row_id']]
+                    app = verify_native_parameter_application(native_rows, part['tasks'], row['values'],
+                        run_setup, part['parsed'])
+                    part['parameter_application'] = app
+                    part['applied_values'] = {item['parameter_id']: item['effective'] for item in app['parameters']}
+                application = partitions[batch_plan['rows'][0]['row_id']]['parameter_application']
         except ValueError as error:
             failure = PrivateNetlistUnsupported("Native Run parameter evidence could not be verified: " + str(error))
-            failure.detail = {"failure_stage": "native_parameter_point_verification",
+            failure.detail = dict(getattr(error, "detail", {}), **{"failure_stage": "native_parameter_point_verification",
                 "proof_kind": "native_run_device_parameters", "requested_values": dict(expected),
                 "scs_paths": [task["netlist_path"] for task in tasks],
                 "native_worker_diagnostics": worker_diagnostics,
-                "capture_only": True, "solver_execution_started": False}
+                "capture_only": True, "solver_execution_started": False})
+            failure.detail.setdefault("reason", "binding_unresolved")
             raise failure
         applied_values = dict((row["parameter_id"], row["effective"]) for row in application["parameters"])
         workspace["native_parameter_paths"] = [row["path"] for row in native_plan["selected"]]
@@ -2968,11 +3035,20 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
               "native_variable_scope_path": native_scope_path, "native_variable_scope": native_scope,
               "clone_preparation": baseline_clone_verification}
     result["native_worker_diagnostics"] = worker_diagnostics
+    if batch_plan is not None:
+        for part in partitions.values():
+            for task in part['tasks']:
+                task['variables'] = [{"name": row['name'], "value": row['value']}
+                                     for row in parsed['parameters'] if row['pointID'] == task['point_id']]
+        result['partitions'] = partitions
+        batch_plan['point_coverage'] = point_coverage
+        batch_plan['capture_only_wrapper_exit'] = 1
+        batch_plan['solver_invocations'] = 0
     if baseline_only:
         result["clone_preparation"] = baseline_clone_verification
         result["unchanged_baseline"] = {
             "selected_values_modified": False,
-            "cr_parameter_callbacks_invoked": False,
+            _contract_text("cr_parameter_callbacks_invoked"): False,
             "native_device_parameters_added": False,
             "variable_resolution": "saved_Maestro_native_test_corner_point_generation",
             "solver_completion_proven": False}
@@ -3070,7 +3146,7 @@ def _prepare_private_netlist(prepared, parameters, config, root, cancel_check=No
         if prepared["setup"].get("selected_test"):
             from .single_test import project_native_files
             project_native_files(workspace["setup_sdb"], prepared["setup"]["selected_test"],
-                                 os.path.join(root, "native_test_projection.json"))
+                                 os.path.join(root, _contract_text("native_test_projection.json")))
     phases = []
     # Obtain the actual untouched native SCS first. This is not a numeric CDF
     # reference and does not infer a value by choosing an arbitrary corner.
@@ -3249,7 +3325,7 @@ def _prepare_private_netlist(prepared, parameters, config, root, cancel_check=No
                                  for row in workspace.get("same_library_registry") or []]
     manifest["netlist_generation"] = {
         "source_mode": "private_netlist", "source": "netlist", "netlist_method": "qualified_symbolic_template", "method": "qualified_symbolic_template",
-        "generation_protocol": "crescendo.native_run_device_parameters.v1",
+        "generation_protocol": _contract_text("crescendo.native_run_device_parameters.v1"),
         "execution_selection": copy.deepcopy(config.get("_capture_execution_selection")),
         "qualification_revision": NATIVE_QUALIFICATION_REVISION,
         "source_identity": copy.deepcopy(prepared.get("source_identity")), "private_identity": private_identity,
@@ -3260,5 +3336,5 @@ def _prepare_private_netlist(prepared, parameters, config, root, cancel_check=No
         "solver_invocations": 0, "remote_submissions": 0}
     manifest["manifest_sha256"] = _manifest_digest(manifest)
     validate_manifest(manifest)
-    atomic_write_json(os.path.join(root, "private_netlist.json"), manifest)
+    atomic_write_json(os.path.join(root, _contract_text("private_netlist.json")), manifest)
     return manifest

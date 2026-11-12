@@ -1,6 +1,9 @@
 from __future__ import print_function
 
 import copy
+from crescendo_engine.runtime import result_extension as _result_extension, bind_text
+_contract_text = bind_text()
+
 from .gui_performance import ScopeIndex, snapshot_copy, parameter_defaults, CachedCanvas, json_detail_tail
 import json
 import io
@@ -25,6 +28,7 @@ except ImportError:
 
 from .gui_activity import ActivityJournal
 from .diagnostic_plan import diagnostic_shape
+from .gui_timing import candidate_timing_lines, generation_timing_lines, seconds_text
 from .ui_gates import merge_gate_progress, setup_gate_progress
 from .gui_state import (
     ALGORITHM_FIELDS,
@@ -115,11 +119,11 @@ def execution_progress_text(status, execution=None):
     run_root = execution.get("run_root") or status.get("run_root")
     if run_root:
         lines.append("Run directory: {}".format(run_root))
-        lines.append("Main log: {}".format(execution.get("main_log_file") or os.path.join(run_root, "crescendo.log")))
+        lines.append("Main log: {}".format(execution.get("main_log_file") or os.path.join(run_root, _contract_text("crescendo.log"))))
     for key, label in (("status_file", "Status"), ("error_file", "Failure log")):
         path = execution.get(key)
         if not path and run_root:
-            path = os.path.join(run_root, "status.json" if key == "status_file" else "server_error.json")
+            path = os.path.join(run_root, _contract_text("status.json") if key == "status_file" else _contract_text("server_error.json"))
         if path:
             lines.append("{}: {}".format(label, path))
     if execution.get("startup_error_file"):
@@ -510,7 +514,7 @@ class MetricRow(ttk.Frame):
         )
         ttk.Label(self, text="Direction" if kind == "objective" else "Operator", style="CardMuted.TLabel").grid(row=2, column=0, sticky="w", pady=(8, 0))
         mode.grid(row=3, column=0, padx=(0, 8), sticky="ew")
-        self.value_entry = ttk.Entry(self, textvariable=self.value_var, width=14, style="Crescendo.Input.TEntry")
+        self.value_entry = ttk.Entry(self, textvariable=self.value_var, width=14, style=_contract_text("Crescendo.Input.TEntry"))
         value_label = "Target (only for target direction)" if kind == "objective" else "Limit"
         ttk.Label(self, text=value_label, style="CardMuted.TLabel").grid(row=2, column=1, sticky="w", pady=(8, 0))
         self.value_entry.grid(row=3, column=1, padx=(0, 8), sticky="ew")
@@ -1025,7 +1029,9 @@ class FastTreeview(ttk.Treeview):
 
 
 class OptimizerGui(object):
-    def __init__(self, root, service, launch_context=None):
+    def __init__(self, root, service, launch_context=None, diagnostic_actions=()):
+        from .diagnostic_actions import DiagnosticActions
+        self.diagnostic_extensions = DiagnosticActions(self, diagnostic_actions)
         self.root = root
         self.service = service
         self.launch_context = copy.deepcopy(launch_context) if launch_context else None
@@ -1176,7 +1182,7 @@ class OptimizerGui(object):
         style.configure("Treeview", background=PANEL, fieldbackground=PANEL, foreground=TEXT, rowheight=25)
         style.configure("Treeview.Heading", background="#e8eff5", foreground=TEXT)
         style.map("Treeview", background=[("selected", "#d4e5f2")], foreground=[("selected", TEXT)])
-        style.map("Crescendo.Input.TEntry", fieldbackground=[("disabled", "#e9eef2")],
+        style.map(_contract_text("Crescendo.Input.TEntry"), fieldbackground=[("disabled", "#e9eef2")],
                   foreground=[("disabled", "#687783")])
         style.configure("TNotebook", background=BACKGROUND, borderwidth=0)
         style.configure("TNotebook.Tab", padding=(10, 6))
@@ -1261,11 +1267,11 @@ class OptimizerGui(object):
         ttk.Label(self.activity_wait_frame, textvariable=self.activity_wait_var, style="Help.TLabel", width=36, anchor="e").pack(side="left", padx=6)
         self.progress_var = tk.DoubleVar(value=0.0)
         style = ttk.Style(self.root)
-        style.configure("Crescendo.Horizontal.TProgressbar", background="#39e64d",
+        style.configure(_contract_text("Crescendo.Horizontal.TProgressbar"), background="#39e64d",
                         lightcolor="#39e64d", darkcolor="#39e64d", bordercolor="#ced8e0",
                         troughcolor="#e4eaf0")
         self.progress_bar = ttk.Progressbar(self.activity_wait_frame, variable=self.progress_var,
-            maximum=1, length=170, mode="determinate", style="Crescendo.Horizontal.TProgressbar")
+            maximum=1, length=170, mode="determinate", style=_contract_text("Crescendo.Horizontal.TProgressbar"))
         self.progress_bar.pack(side="right")
         log_frame = ttk.Frame(self.activity_frame, style="Card.TFrame")
         log_frame.pack(fill="x", pady=(3, 0))
@@ -1277,7 +1283,7 @@ class OptimizerGui(object):
         scroll.pack(side="right", fill="y")
         self.activity_log.tag_configure("WARN", foreground=WARNING)
         self.activity_log.tag_configure("ERROR", foreground=DANGER)
-        self._activity_event("Crescendo ready. Load and Inspect reads the current saved Maestro.")
+        self._activity_event(_contract_text("Crescendo ready. Load and Inspect reads the current saved Maestro."))
 
     def _activity_destroyed(self, event):
         if event.widget is not self.root:
@@ -1533,7 +1539,7 @@ class OptimizerGui(object):
     def _watch_help_wrapping(self, container, labels=None):
         """Discover a card's help once, then resize only its known label list."""
         state = {"job": None, "labels": [], "closed": False}
-        container._cr_help_wrap_state = state
+        setattr(container, _contract_text("_cr_help_wrap_state"), state)
 
         def padding(widget, key="padding"):
             try:
@@ -2077,8 +2083,48 @@ class OptimizerGui(object):
                 row=index, column=3, pady=3)
         logs.columnconfigure(1, weight=1)
 
+    def _execution_resource_values(self):
+        return {key: variable.get() for key, variable in getattr(self, "execution_resource_vars", {}).items()}
+
+    def _collect_execution_resources(self):
+        from .execution_settings import normalize_execution_settings
+        return normalize_execution_settings(self._execution_resource_values())
+
+    def _restore_execution_resources(self, values):
+        values = dict(values)
+        values.setdefault('native_candidate_batching', 'serial')
+        for key, variable in getattr(self, "execution_resource_vars", {}).items():
+            if key in values:
+                variable.set("" if values[key] is None else str(values[key]))
+
+    def _build_execution_resources_card(self, parent):
+        card = self._card(parent)
+        self.execution_resources_card = card
+        self.execution_resources_pack = card.pack_info()
+        self.execution_resources_pack.pop("in", None)
+        ttk.Label(card, text="CLI Capacity and Progress", style="CardTitle.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        runtime = (getattr(self.service, "config", {}) or {}).get("runtime") or {}
+        self.execution_resource_vars = {}
+        for index, (key, label, default) in enumerate((
+                ("native_candidate_batching", "Native candidate batching", "generation"),
+                ("local_solver_max_jobs", "Local solver jobs", 1),
+                ("measurement_jobs", "Reader jobs (blank uses min(2, G))", None),
+                ("progress_flush_interval_seconds", "Progress flush interval (seconds)", 0.5)), 1):
+            value = runtime.get(key, default)
+            variable = tk.StringVar(value="" if value is None else str(value))
+            self.execution_resource_vars[key] = variable
+            ttk.Label(card, text=label).grid(row=index, column=0, sticky="w", padx=(0, 12), pady=4)
+            if key == "native_candidate_batching":
+                ttk.Combobox(card, textvariable=variable, values=("serial", "generation"), state="readonly", width=12).grid(row=index, column=1, sticky="w", pady=4)
+            else:
+                ttk.Entry(card, textvariable=variable, width=12).grid(row=index, column=1, sticky="w", pady=4)
+        if hasattr(self, "_advanced"):
+            self._advanced(card)
+
     def _build_execution_commands_card(self, parent):
         card = self._card(parent)
+        self.cli_commands_card = card
         ttk.Label(card, text="Solver / Submission Commands", style="CardTitle.TLabel").grid(
             row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
         ttk.Label(card, text=(
@@ -2106,7 +2152,7 @@ class OptimizerGui(object):
                 ("cancel", "Scheduler cancel", self.scheduler_command_vars["cancel"])), 2):
             row = 2 + (index - 2) * 2
             ttk.Label(card, text=label, style="Card.TLabel").grid(row=row, column=0, sticky="w", padx=(0, 8), pady=3)
-            entry = ttk.Entry(card, textvariable=variable, style="Crescendo.Input.TEntry")
+            entry = ttk.Entry(card, textvariable=variable, style=_contract_text("Crescendo.Input.TEntry"))
             entry.grid(row=row, column=1, sticky="ew", pady=3)
             button = ttk.Button(card, text="Use Example", command=lambda target=variable, value=examples[name]: target.set(value))
             button.grid(row=row, column=2, padx=(8, 0), pady=3)
@@ -2228,6 +2274,11 @@ class OptimizerGui(object):
         self.environment_test_log_button.pack(side="left")
         ttk.Button(actions, text="复制总日志路径", command=self.copy_environment_test_log_paths).pack(side="left", padx=8)
         ttk.Button(actions, text="查看所选说明", command=self.show_environment_test_details).pack(side="left")
+        for action in self.diagnostic_extensions.actions:
+            button = ttk.Button(actions, text=action.label,
+                                command=lambda action=action: self.diagnostic_extensions.invoke(action))
+            button.pack(side="left", padx=8)
+            self.diagnostic_extensions.bind(action, button)
         size_row = ttk.Frame(card, style="Card.TFrame")
         size_row.pack(fill="x", pady=(6, 0))
         self.diagnostic_generations_var = tk.StringVar(value="2")
@@ -2565,6 +2616,7 @@ class OptimizerGui(object):
             "error": None,
         }
         spec["ui_prepared_state"] = prepared_state
+        spec.update(self._execution_resource_values())
         spec["execution_commands"] = self._execution_command_values()
         try:
             spec["execution_commands"] = self._collect_execution_commands()
@@ -2670,6 +2722,9 @@ class OptimizerGui(object):
         self._activity_begin("diagnostics", "Starting diagnostics…", priority=15)
         self.environment_test_id = None
         self.environment_test_payload = {}
+        extensions = getattr(self, 'diagnostic_extensions', None)
+        if extensions is not None:
+            extensions.progress({'report_ready': False, 'state': 'starting'})
         self._cancel_results_load()
         self.diagnostic_case_var.set("")
         self.diagnostic_case_combo.configure(values=[])
@@ -2756,6 +2811,9 @@ class OptimizerGui(object):
         self.tasks.submit_monitor(lambda: self.service.environment_test_progress(test_id), loaded, failed)
 
     def _render_environment_test_progress(self, payload):
+        extensions = getattr(self, 'diagnostic_extensions', None)
+        if extensions is not None:
+            extensions.progress(payload)
         self.environment_test_payload = dict(payload)
         self.environment_test_state = payload.get("state") or self.environment_test_state
         terminal = self.environment_test_state in ("completed", "failed", "cancelled", "stopped")
@@ -2807,6 +2865,24 @@ class OptimizerGui(object):
             timing_lines.append("{}：总计 {:.1f}s{}{}".format(
                 name, total, " · " + " / ".join(parts) if parts else "",
                 " · 当前 " + str(active) if active else ""))
+        for case in payload.get("case_results") or []:
+            name = case.get("case_id") or "{}.{}".format(case.get("simulator") or "?", case.get("engine") or "?")
+            parallel = ((payload.get("case_contexts") or {}).get(name) or {}).get("execution_parallelism") or {}
+            if parallel:
+                native = parallel.get("native_point_policy") or {}
+                cli = parallel.get("cli_point_policy") or {}
+                timing_lines.append("{}：候选上限 {} · 点任务上限 {} · 测量上限 {}".format(name,
+                    parallel.get("candidate_limit") or "未知",
+                    native.get("effective_global_max_jobs") or cli.get("point_pool_limit") or "未知",
+                    cli.get("measurement_limit") or ("原生" if native else "未知")))
+            generations = case.get("generation_timings") or []
+            if generations:
+                last = generations[-1]
+                phases = last.get("phases_seconds") or {}
+                timing_lines.append("{} 第{}代：墙钟 {} · 评估 {} · 结算 {} · 持久化 {}（结果页查看明细）".format(
+                    name, last.get("generation", "?"), seconds_text(last.get("total_seconds")),
+                    seconds_text(phases.get("evaluate")), seconds_text(phases.get("settlement")),
+                    seconds_text(phases.get("persist"))))
         self.diagnostic_timing_var.set("各模式耗时：\n" + "\n".join(timing_lines) if timing_lines else "各模式耗时：等待数据。")
         runs = payload.get("run_ids") or []
         if isinstance(runs, dict):
@@ -2883,7 +2959,8 @@ class OptimizerGui(object):
             self.display_dataset = {"metadata": {"spec": payload.get("spec") or {}, "display_name": "诊断 " + case},
                                     "candidates": payload.get("candidates") or [],
                                     "objective_presentation": payload.get("objective_presentation") or {},
-                                    "source_path": payload.get("dataset_path")}
+                                    "source_path": payload.get("dataset_path"),
+                                    "generation_timings": (payload.get("status") or {}).get("generation_timings") or []}
             self.selected_candidate_id = None
             self.result_page = 0
             self.export_csv_button.configure(state="normal")
@@ -3103,6 +3180,12 @@ class OptimizerGui(object):
         ttk.Label(parent, textvariable=self.results_failure_var, foreground=DANGER,
                   wraplength=950, justify="left").pack(fill="x", padx=24, pady=(0, 8))
 
+        timing_row = self._card(parent, padding=(12, 6))
+        self.timing_details_button = ttk.Button(timing_row, text="Timing details...", command=self.show_timing_details)
+        self.timing_details_button.pack(side="left")
+        ttk.Label(timing_row, text="Per generation and selected candidate · solver elapsed is separate from queue / setup",
+                  style="Help.TLabel", wraplength=700).pack(side="left", padx=10)
+
         trend_card = self._card(parent, padding=(8, 8))
         ttk.Label(trend_card, text="Objective by generation · dots: samples; line: mean", style="CardTitle.TLabel").pack(anchor="w")
         self.result_trend = tk.Canvas(trend_card, width=780, height=190, background="#fbfdff", highlightbackground="#d5e0e8", highlightthickness=1)
@@ -3159,11 +3242,11 @@ class OptimizerGui(object):
         self.pareto_plots = []
 
     def _build_settings_page(self, parent):
-        self._page_heading(parent, "Settings", "Private Maestro settings, EDA environment and Crescendo diagnostics. Automatic values are retained unless explicitly overridden.")
+        self._page_heading(parent, "Settings", _contract_text("Private Maestro settings, EDA environment and Crescendo diagnostics. Automatic values are retained unless explicitly overridden."))
         tabs = ttk.Notebook(parent)
         tabs.pack(fill="both", expand=True, padx=22, pady=(4, 14))
         self.settings_sections = {}
-        for key, label in (("maestro", "Private Maestro"), ("eda", "EDA"), ("crescendo", "Crescendo / Diagnostics")):
+        for key, label in (("maestro", "Private Maestro"), ("eda", "EDA"), (_contract_text("crescendo"), _contract_text("Crescendo / Diagnostics"))):
             section = ttk.Frame(tabs, style="Page.TFrame")
             tabs.add(section, text=label)
             self.settings_sections[key] = section
@@ -3177,10 +3260,11 @@ class OptimizerGui(object):
         self._build_job_policy_card(private)
         self._build_save_options_card(private)
         self._build_eda_page(self.settings_sections["eda"])
-        self._build_runtime_settings(self.settings_sections["crescendo"])
-        self._build_execution_commands_card(self.settings_sections["crescendo"])
-        self._build_environment_test_card(self.settings_sections["crescendo"])
-        self._build_execution_details_card(self.settings_sections["crescendo"])
+        self._build_runtime_settings(self.settings_sections[_contract_text("crescendo")])
+        self._build_execution_resources_card(self.settings_sections[_contract_text("crescendo")])
+        self._build_execution_commands_card(self.settings_sections[_contract_text("crescendo")])
+        self._build_environment_test_card(self.settings_sections[_contract_text("crescendo")])
+        self._build_execution_details_card(self.settings_sections[_contract_text("crescendo")])
 
     def _build_runtime_settings(self, parent):
         engine = self._card(parent)
@@ -3240,7 +3324,7 @@ class OptimizerGui(object):
             ("alps_result_reader", "ALPS 结果读取接口（留空继承；可选 spectre）"),
             ("cds_lib", "Library Mapping cds.lib"),
             ("license_file", "License File or port@server"), ("pdk_name", "PDK Name"),
-            ("pdk_dir", "PDK Root"), ("pdk_adapter", "Custom Adapter SKILL"),
+            (_contract_text("pdk_dir"), "PDK Root"), ("pdk_adapter", "Custom Adapter SKILL"),
         )
         field_help = {
             "cadence_root": "Cadence installation root. Empty keeps the detected native installation.",
@@ -3259,7 +3343,7 @@ class OptimizerGui(object):
             "cds_lib": "Library mapping for this selected saved Maestro and its private copy.",
             "license_file": "License input inherited by owned EDA processes; empty retains discovery.",
             "pdk_name": "PDK profile name used to select model and parameter adapters.",
-            "pdk_dir": "PDK files used by this design; empty keeps the detected root.",
+            _contract_text("pdk_dir"): "PDK files used by this design; empty keeps the detected root.",
             "pdk_adapter": "Optional SKILL adapter for PDK-specific parameter discovery.",
         }
         for index, (key, label) in enumerate(fields):
@@ -3324,12 +3408,12 @@ class OptimizerGui(object):
         self.job_override_controls = []
         job_command_check = ttk.Label(card, text="Command", style="Card.TLabel")
         job_command_check.grid(row=2, column=0, sticky="w")
-        self.job_command_entry = ttk.Entry(card, textvariable=self.job_command_var, style="Crescendo.Input.TEntry")
+        self.job_command_entry = ttk.Entry(card, textvariable=self.job_command_var, style=_contract_text("Crescendo.Input.TEntry"))
         self.job_command_entry.grid(row=2, column=1, columnspan=3, sticky="ew", pady=4)
         job_max_check = ttk.Label(card, text="Max jobs", style="Card.TLabel")
         job_max_check.grid(row=3, column=0, sticky="w")
         self.job_override_controls.append(self.job_command_entry)
-        self.job_max_entry = ttk.Entry(card, textvariable=self.job_max_var, width=12, style="Crescendo.Input.TEntry")
+        self.job_max_entry = ttk.Entry(card, textvariable=self.job_max_var, width=12, style=_contract_text("Crescendo.Input.TEntry"))
         self.job_max_entry.grid(row=3, column=1, sticky="w", pady=4)
         self.job_override_controls.append(self.job_max_entry)
         self.maestro_candidate_mode_var = tk.StringVar(value="auto")
@@ -3360,7 +3444,7 @@ class OptimizerGui(object):
             self.job_timeout_effective_vars[key] = tk.StringVar(value="Original value unavailable")
             check = ttk.Label(card, text=label, style="Card.TLabel")
             check.grid(row=index, column=0, sticky="w", pady=3)
-            entry = ttk.Entry(card, textvariable=self.job_timeout_vars[key], width=12, style="Crescendo.Input.TEntry")
+            entry = ttk.Entry(card, textvariable=self.job_timeout_vars[key], width=12, style=_contract_text("Crescendo.Input.TEntry"))
             entry.grid(row=index, column=1, sticky="w", pady=3)
             self.job_override_controls.append(entry)
             ttk.Label(card, textvariable=self.job_timeout_effective_vars[key], style="Help.TLabel",
@@ -3376,7 +3460,8 @@ class OptimizerGui(object):
                   style="Help.TLabel", wraplength=950).grid(row=11, column=0, columnspan=4, sticky="w", pady=(5, 0))
         self.command_scheduler_var = tk.StringVar(value=((getattr(getattr(self, "service", None), "config", {}) or {}).get("runtime") or {}).get("command_scheduler", "auto"))
         ttk.Label(card, text="Command scheduler", style="Card.TLabel").grid(row=12, column=0, sticky="w", pady=(6, 0))
-        self.command_scheduler_combo = ttk.Combobox(card, textvariable=self.command_scheduler_var, values=("auto", "batch", "receipt"),
+        from .runtime import scheduler_choices
+        self.command_scheduler_combo = ttk.Combobox(card, textvariable=self.command_scheduler_var, values=scheduler_choices(),
                      state="readonly", width=18)
         self.command_scheduler_combo.grid(row=12, column=1, sticky="w", pady=(6, 0))
         ttk.Label(card, text="Auto uses your query/cancel templates. Batch accepts a submission script returning a unique Job ID, "
@@ -3405,9 +3490,9 @@ class OptimizerGui(object):
         self.data_root_entry = ttk.Entry(card, textvariable=self.data_root_var)
         self.data_root_entry.grid(row=2, column=1, sticky="ew", padx=6)
         ttk.Button(card, text="Browse...", command=self._browse_data_root).grid(row=2, column=2, sticky="w")
-        ttk.Label(card, text=("Unchecked inherits the current Maestro simulation-results location. "
+        ttk.Label(card, text=(_contract_text("Unchecked inherits the current Maestro simulation-results location. "
             "Each run uses crescendo/<TB>/<optimization>/ below this root. The chosen location is frozen at Start; "
-            "source Maestro settings remain unchanged."), style="Help.TLabel", wraplength=950).grid(
+            "source Maestro settings remain unchanged.")), style="Help.TLabel", wraplength=950).grid(
             row=3, column=0, columnspan=3, sticky="w", pady=(5, 0))
         card.columnconfigure(1, weight=1)
         self._render_save_options((self.launch_context or {}).get("save_options"), reset=True)
@@ -3450,8 +3535,8 @@ class OptimizerGui(object):
             self.data_root_var.set(data_root or "")
         def value(item):
             return str(item) if item not in (None, "") else "Unknown / unspecified"
-        self.save_options_status_var.set("Original simulation/netlist root: {}\nOriginal RDB/log root: {}\n"
-            "Saved simulation location: {} | saved RDB location: {}\nCrescendo data root: {} | source: {}".format(
+        self.save_options_status_var.set(_contract_text("Original simulation/netlist root: {}\nOriginal RDB/log root: {}\n"
+            "Saved simulation location: {} | saved RDB location: {}\nCrescendo data root: {} | source: {}").format(
                 value(simulation), value(rdb), value(raw.get("save_res_dir")), value(raw.get("save_dir")),
                 value(data_root), storage_source) + refresh_warning)
         self.original_save_options = options
@@ -3547,14 +3632,15 @@ class OptimizerGui(object):
         result = {"maestro_job_overrides": normalize_job_overrides(overrides), "maestro_candidate_mode": mode}
         if hasattr(self, "command_scheduler_var"):
             scheduler = self.command_scheduler_var.get()
-            if scheduler not in ("auto", "batch", "receipt"):
-                raise ValueError("Command scheduler must be auto, batch, or receipt")
+            from .runtime import scheduler_mode
+            scheduler_mode(scheduler)
             result["command_scheduler"] = scheduler
         return result
 
     def _restore_job_settings(self, run):
         if hasattr(self, "command_scheduler_var"):
             self.command_scheduler_var.set(run.get("command_scheduler") or "auto")
+        self._restore_execution_resources(run)
         self._restore_execution_commands(run.get("execution_commands"))
         if hasattr(self, "simulator_var"):
             if getattr(self, "_baseline_mode_active", False):
@@ -3620,7 +3706,7 @@ class OptimizerGui(object):
         return window
 
     def show_diagnostic_details(self):
-        return self._show_text_details("Crescendo Diagnostic Details", self.last_diagnostic_detail)
+        return self._show_text_details(_contract_text("Crescendo Diagnostic Details"), self.last_diagnostic_detail)
 
     def show_validation_details(self):
         return self._show_text_details("Optional PDK Check Details", self.range_validation_detail)
@@ -3641,7 +3727,7 @@ class OptimizerGui(object):
         source = context.get("source") or {}
         document = copy.deepcopy(getattr(self, "launch_state", {}) or {})
         document.update({
-            "schema_version": "crescendo.maestro_plugin_launch.v1",
+            "schema_version": _contract_text("crescendo.maestro_plugin_launch.v1"),
             "pid": os.getpid(), "updated_at": utc_timestamp(),
             "source": dict((key, source.get(key)) for key in (
                 "library", "cell", "view", "view_dir", "setup_path", "work_dir", "cds_lib", "modified",
@@ -3943,7 +4029,7 @@ class OptimizerGui(object):
             if context else "Manually selected saved setup: {}".format(self.active_setup_path))
         if hasattr(self, "setup_source_var"):
             self.setup_source_var.set(identity)
-        self.root.title("Crescendo · " + identity)
+        self.root.title(_contract_text("Crescendo · ") + identity)
         if selection.get("eda_setup"):
             self._render_eda_setup(selection["eda_setup"])
         if hasattr(self, "launch_history_summary_var"):
@@ -3968,7 +4054,7 @@ class OptimizerGui(object):
         if context:
             source = context.get("source") or {}
             if source.get("modified") is True:
-                raise ValueError("The invoking Maestro has unsaved changes. Save the setup and reopen Crescendo before inspecting or running.")
+                raise ValueError(_contract_text("The invoking Maestro has unsaved changes. Save the setup and reopen Crescendo before inspecting or running."))
             if not self._same_setup_paths(source.get("setup_path"), path):
                 raise ValueError("This configuration references a different Maestro. Select its saved setup with Browse and Load and Inspect first.")
         elif getattr(self, "active_setup_path", None) and not self._same_setup_paths(path, self.active_setup_path):
@@ -4051,6 +4137,7 @@ class OptimizerGui(object):
             initialize_validation = not bool(getattr(self, "launch_context", None))
         if (not callable(getattr(self.service, "inspect_tests", None)) and
                 not switch and (self.prepared or self.cell_inspection) and
+                not getattr(self, "eda_revalidation_required", False) and
                 not getattr(self, "eda_auto_revalidation", None)):
             self._invalidate_prepared("Reloading the saved setup; current edits are retained.", preserve_edits=True)
             self.eda_auto_revalidation = {"path": self.eda_edit_draft_path,
@@ -4288,7 +4375,7 @@ class OptimizerGui(object):
                 config.get("library", "?"), config.get("cell", "?"), config.get("view", "?"), config.get("path", "")))
         lines.append("状态：{}；私有套件可在管理窗口复用。".format(reference.get("status") or "unknown"))
         if reference.get("private_views_read_only"):
-            lines.append("私有视图闲置时只读，Crescendo 操作时临时可写；绑定请用 Open Config 查看。")
+            lines.append(_contract_text("私有视图闲置时只读，Crescendo 操作时临时可写；绑定请用 Open Config 查看。"))
         if reference.get("diagnostic_log"):
             lines.append("Setup 总日志：" + reference["diagnostic_log"])
         self.private_setup_var.set("\n".join(lines))
@@ -5165,6 +5252,8 @@ class OptimizerGui(object):
         self.parameter_selection_epoch = getattr(self, "parameter_selection_epoch", 0) + 1
         identifier = getattr(self, "parameter_selection_job", None)
         if identifier is not None:
+            # Reentry must finish rows whose selection refresh was interrupted.
+            self.parameter_tree_dirty = True
             try:
                 self.root.after_cancel(identifier)
             except tk.TclError:
@@ -6046,6 +6135,7 @@ class OptimizerGui(object):
         if simulator not in ("spectre", "alps"):
             raise ValueError("Select Spectre or ALPS as the simulator.")
         result["simulator"] = simulator
+        result.update(self._collect_execution_resources())
         result.update(self._collect_job_settings())
         panel = getattr(self, "execution_selection_panel", None)
         selected_execution = panel.collect() if panel is not None else None
@@ -6067,7 +6157,7 @@ class OptimizerGui(object):
             self._show_range_issues(report["issues"])
             raise ValueError("Parameter ranges are invalid.")
         return {
-            "schema_version": "crescendo.design_config.v1",
+            "schema_version": _contract_text("crescendo.design_config.v1"),
             "ade_setup": {
                 "path": self.setup_path_var.get().strip(),
                 "backend": (self.prepared.get("setup") or {}).get("backend") or
@@ -6139,6 +6229,7 @@ class OptimizerGui(object):
             "data_root_override_enabled": self.data_root_override_var.get() if hasattr(self, "data_root_override_var") else False,
             "data_root_override": self.data_root_var.get() if hasattr(self, "data_root_var") else "",
         }
+        optimization.update(self._execution_resource_values())
         for key, variable in getattr(self, "job_timeout_vars", {}).items():
             optimization["job_timeout_" + key] = variable.get()
             optimization["job_timeout_override_" + key] = self.job_timeout_override_vars[key].get()
@@ -6657,6 +6748,7 @@ class OptimizerGui(object):
                     getattr(self, name).set(optimization.get(key, default))
         if "command_scheduler" in optimization and hasattr(self, "command_scheduler_var"):
             self.command_scheduler_var.set(optimization["command_scheduler"])
+        self._restore_execution_resources(optimization)
         if "execution_commands" in optimization:
             self._restore_execution_commands(optimization["execution_commands"])
         if "simulator" in optimization and hasattr(self, "simulator_var"):
@@ -6730,8 +6822,8 @@ class OptimizerGui(object):
         return self.load_configuration()
 
     def apply_design_config(self, document):
-        if document.get("schema_version") != "crescendo.design_config.v1":
-            raise ValueError("Unsupported design config; expected crescendo.design_config.v1.")
+        if document.get("schema_version") != _contract_text("crescendo.design_config.v1"):
+            raise ValueError(_contract_text("Unsupported design config; expected crescendo.design_config.v1."))
         reference = document.get("setup_locator") or document.get("ade_setup") or document.get("maestro") or {}
         if reference.get("path"):
             self._require_launch_setup(reference["path"])
@@ -6766,6 +6858,7 @@ class OptimizerGui(object):
         self._restore_job_settings(run)
         if run.get("generations") is not None:
             self.generations_var.set(str(run["generations"]))
+        self._restore_execution_resources(run)
         if "candidate_timeout_seconds" in run:
             value = run["candidate_timeout_seconds"]
             self.timeout_var.set("" if value in (None, "", -1, "-1") else str(value))
@@ -7022,6 +7115,7 @@ class OptimizerGui(object):
             if not release():
                 return
             status = progress.get("status") or {}
+            self._live_timing_snapshot = (run_id, status.get("generation_timings") or [])
             self.live_spec = progress.get("spec") or self.live_spec
             changed = bool("revision" not in progress or progress.get("revision") != getattr(self, "progress_revision", 0))
             if "candidates" in progress:
@@ -7179,14 +7273,14 @@ class OptimizerGui(object):
         run_root = execution.get("run_root") or status.get("run_root")
         path = execution.get("error_file") or error.get("path")
         if not path and run_root:
-            path = os.path.join(run_root, "server_error.json")
+            path = os.path.join(run_root, _contract_text("server_error.json"))
         detail = "Optimization failed: {}".format(reason)
         if path:
             detail += "\nFailure log: {}".format(path)
         diagnostic_path = execution.get("startup_error_file") or error.get("startup_diagnostic_path")
         if diagnostic_path:
             detail += "\nStartup diagnostics: {}".format(diagnostic_path)
-        detail += "\nOpen Settings / Crescendo / Diagnostics for execution details."
+        detail += _contract_text("\nOpen Settings / Crescendo / Diagnostics for execution details.")
         variable = getattr(self, "results_failure_var", None)
         if variable is not None:
             variable.set(detail)
@@ -7245,7 +7339,7 @@ class OptimizerGui(object):
             "path": manifest.get("maestro_path") or "", "backend": "maestro",
         }
         return {
-            "schema_version": "crescendo.design_config.v1", "ade_setup": setup,
+            "schema_version": _contract_text("crescendo.design_config.v1"), "ade_setup": setup,
             "optimization": {
                 "variables": spec.get("variables") or [],
                 "objectives": spec.get("objectives") or [],
@@ -7488,7 +7582,7 @@ class OptimizerGui(object):
         if self.closing:
             return
         path = filedialog.askopenfilename(parent=self.root, title="Load Optimization Results",
-                                         filetypes=(("Crescendo Results", "*.crescendo"), ("All files", "*")))
+                                         filetypes=((_contract_text("Crescendo Results"), _contract_text("*.crescendo")), ("All files", "*")))
         if not path:
             return
         self.dataset_load_epoch += 1
@@ -7530,7 +7624,7 @@ class OptimizerGui(object):
             return
         name = ((dataset or {}).get("metadata") or {}).get("display_name") or run_id or "Optimization"
         path = filedialog.asksaveasfilename(parent=self.root, title="Export Complete Optimization Results",
-            defaultextension=".crescendo", initialfile=str(name) + ".crescendo", filetypes=(("Crescendo Results", "*.crescendo"),))
+            defaultextension=_result_extension(), initialfile=str(name) + _result_extension(), filetypes=((_contract_text("Crescendo Results"), _contract_text("*.crescendo")),))
         if not path:
             return
         source = dataset.get("source_path") if dataset is not None else None
@@ -7712,6 +7806,8 @@ class OptimizerGui(object):
                     _compact_diagnostic(row.get("error"), 1200)
                 ))
             lines.append("")
+            lines.extend(candidate_timing_lines(row))
+            lines.append("")
             requested_values = row.get("values") or {}
             display_values = dict(requested_values)
             completion = row.get("completion_evidence") or row.get("completion") or {}
@@ -7746,6 +7842,43 @@ class OptimizerGui(object):
         self.candidate_detail.delete("1.0", "end")
         self.candidate_detail.insert("end", "\n".join(lines))
         self.candidate_detail.configure(state="disabled")
+
+    def show_timing_details(self):
+        dataset = getattr(self, "display_dataset", None)
+        if dataset is not None:
+            generations = dataset.get("generation_timings") or []
+            label = (dataset.get("metadata") or {}).get("display_name") or "Loaded results"
+        else:
+            run_id, generations = getattr(self, "_live_timing_snapshot", (None, []))
+            generations = generations if run_id == self.run_ui.run_id else []
+            label = self.run_ui.run_id or "Current run"
+        lines = [str(label), "Wall time and parallel accumulated time are different.",
+                 "Solver: native elapsed evidence; unknown is not zero.",
+                 "While running: latest 20 generations; final results include all recorded generations.", ""]
+        lines.extend(generation_timing_lines(generations))
+        row = next((item for item in self._display_candidates()
+                    if item.get("candidate_id") == self.selected_candidate_id), None)
+        if row:
+            lines.extend(["", "Candidate: " + str(row.get("candidate_id"))])
+            lines.extend(candidate_timing_lines(row, task_details=True))
+        else:
+            lines.extend(["", "Select a candidate in the results table for its detailed phase timings."])
+        window = tk.Toplevel(self.root)
+        window.title("Execution timing")
+        window.geometry("900x650")
+        window.minsize(560, 320)
+        body = ttk.Frame(window, padding=10)
+        body.pack(fill="both", expand=True)
+        text = tk.Text(body, wrap="word", undo=False)
+        scroll = ttk.Scrollbar(body, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        text.pack(fill="both", expand=True)
+        text.insert("1.0", "\n".join(lines))
+        text.configure(state="disabled")
+        ttk.Button(window, text="Close", command=window.destroy).pack(pady=(0, 8))
+        self.timing_details_window = window
+        self.timing_details_text = text
 
     def generate_optimized_schematic(self):
         if getattr(self, "display_dataset", None) is not None:
@@ -7939,7 +8072,7 @@ class OptimizerGui(object):
                 sources[key] = profile.get("model_dir_origin") or "selected setup model discovery"
         pdk = ((getattr(self, "prepared", None) or {}).get("eda_context") or {}).get("pdk") or {}
         for key, value in (("pdk_name", pdk.get("pdk_name") or pdk.get("name")),
-                           ("pdk_dir", pdk.get("pdk_dir") or pdk.get("root"))):
+                           (_contract_text("pdk_dir"), pdk.get(_contract_text("pdk_dir")) or pdk.get("root"))):
             if value and not effective.get(key):
                 effective[key] = value
                 sources[key] = "selected setup / PDK discovery"
@@ -8173,7 +8306,7 @@ class OptimizerGui(object):
         source = context.get("source") or {}
         document = copy.deepcopy(getattr(self, "launch_state", {}) or {})
         document.update({
-            "schema_version": "crescendo.maestro_plugin_launch.v1", "pid": os.getpid(),
+            "schema_version": _contract_text("crescendo.maestro_plugin_launch.v1"), "pid": os.getpid(),
             "updated_at": utc_timestamp(),
             "source": dict((key, source.get(key)) for key in (
                 "library", "cell", "view", "view_dir", "setup_path", "work_dir", "cds_lib", "modified")),
@@ -8212,7 +8345,7 @@ class OptimizerGui(object):
 
     def _write_exit_launch_async(self, snapshot):
         threading.Thread(target=self._write_exit_launch_snapshot, args=(snapshot,),
-                         name="crescendo-ui-exit-state", daemon=True).start()
+                         name=_contract_text("crescendo-ui-exit-state"), daemon=True).start()
 
     def _cancel_exit_dialog_timer(self):
         timer = getattr(self, "exit_dialog_timer", None)
@@ -8286,7 +8419,7 @@ class OptimizerGui(object):
                 self.force_exit_result = {"cleanup_confirmed": False, "error": str(error)}
             finally:
                 done.set()
-        threading.Thread(target=isolate, name="crescendo-ui-force-exit", daemon=True).start()
+        threading.Thread(target=isolate, name=_contract_text("crescendo-ui-force-exit"), daemon=True).start()
         deadline = time.monotonic() + 1.5
         def finish():
             if not done.is_set() and time.monotonic() < deadline:
@@ -8320,6 +8453,9 @@ class OptimizerGui(object):
             except Exception as error:
                 exit_snapshot_warning = "退出前套件配置快照未保存：{}".format(error)
         self.closing = True
+        extensions = getattr(self, 'diagnostic_extensions', None)
+        if extensions is not None:
+            extensions.close()
         self.shutdown_failed = False
         existing_dialog = getattr(self, "exit_dialog", None)
         if existing_dialog is not None and existing_dialog.winfo_exists():
@@ -8404,10 +8540,18 @@ class OptimizerGui(object):
             return result
         self.tasks.shutting_down = True
         threading.Thread(target=lambda: self.tasks.begin_shutdown(save_and_exit, closed, failed),
-                         name="crescendo-ui-begin-shutdown", daemon=True).start()
+                         name=_contract_text("crescendo-ui-begin-shutdown"), daemon=True).start()
 
 
-def launch_gui(config, service=None, launch_context=None, force_exit_process=False):
+NativeOptimizerGui = OptimizerGui
+
+
+def native_gui_factory(root, service, **kwargs):
+    return NativeOptimizerGui(root, service, **kwargs)
+
+
+def launch_gui(config, service=None, launch_context=None, force_exit_process=False,
+               gui_factory=None, diagnostic_actions=()):
     if service is None:
         from .server import OptimizerService
         service = OptimizerService(config)
@@ -8418,10 +8562,13 @@ def launch_gui(config, service=None, launch_context=None, force_exit_process=Fal
             "native GUI could not connect to a display; verify DISPLAY/X11 forwarding: {}".format(error)
         )
     try:
-        if launch_context is None:
-            app = OptimizerGui(root, service)
-        else:
-            app = OptimizerGui(root, service, launch_context=launch_context)
+        factory = gui_factory or OptimizerGui
+        options = {}
+        if launch_context is not None:
+            options['launch_context'] = launch_context
+        if diagnostic_actions:
+            options['diagnostic_actions'] = tuple(diagnostic_actions)
+        app = factory(root, service, **options)
         from .launcher import record_application_initialized
         record_application_initialized()
     except BaseException as initialization_error:
@@ -8463,6 +8610,9 @@ def launch_gui(config, service=None, launch_context=None, force_exit_process=Fal
     except BaseException as error:
         mainloop_error = error
     finally:
+        extensions = getattr(app, 'diagnostic_extensions', None)
+        if extensions is not None:
+            extensions.close()
         if not getattr(app, "cleanup_confirmed", False) and not getattr(app, "force_exit_requested", False):
             try:
                 service.exit_optimizer()

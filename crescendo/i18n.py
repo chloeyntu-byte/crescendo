@@ -48,14 +48,17 @@ def _load():
                     continue  # e.g. "{}：{}" would capture unrelated text
                 regex = "^" + "(.*?)".join(re.escape(piece) for piece in pieces) + "$"
                 try:
-                    PATTERNS.append((re.compile(regex, re.S), value))
+                    PATTERNS.append((len("".join(pieces)), re.compile(regex, re.S), value))
                 except re.error:
                     continue
             else:
                 EXACT.setdefault(key, value)
                 if _CJK.search(key) and len(key) > 1:
                     FRAGMENTS.append((key, value))
-    PATTERNS.sort(key=lambda row: -len(row[0].pattern))
+    # Literal specificity must not depend on re.escape's version-specific
+    # escaping (Python 3.6 escapes Chinese characters; newer versions do not).
+    PATTERNS.sort(key=lambda row: -row[0])
+    PATTERNS[:] = [(pattern, english) for _specificity, pattern, english in PATTERNS]
     FRAGMENTS.sort(key=lambda row: -len(row[0]))
 
 

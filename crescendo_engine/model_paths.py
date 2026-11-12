@@ -7,10 +7,13 @@ import os
 import re
 import xml.etree.ElementTree as ET
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .utils import atomic_write_text, require_under, sha256_file
 
 
-MODEL_PATH_SCHEMA_VERSION = "crescendo.workspace_model_paths.v1"
+MODEL_PATH_SCHEMA_VERSION = _contract_text("crescendo.workspace_model_paths.v1")
 MODEL_SUFFIXES = (
     ".scs", ".sp", ".spi", ".spice", ".cir", ".lib", ".mdl",
     ".model", ".va", ".vams", ".inc",
@@ -100,8 +103,8 @@ def _profile_matches(profile, pdk_context):
             profile_names.add(str(profile[key]))
     if context_names & profile_names:
         return True
-    context_root = pdk_context.get("package_root") or pdk_context.get("pdk_dir")
-    profile_root = profile.get("package_root") or profile.get("pdk_dir")
+    context_root = pdk_context.get("package_root") or pdk_context.get(_contract_text("pdk_dir"))
+    profile_root = profile.get("package_root") or profile.get(_contract_text("pdk_dir"))
     return bool(
         context_root and profile_root
         and (
@@ -138,7 +141,7 @@ def _root_values(container):
     if not isinstance(container, dict):
         return []
     values = []
-    for key in ("package_root", "pdk_dir"):
+    for key in ("package_root", _contract_text("pdk_dir")):
         if container.get(key):
             values.append(container[key])
     values.extend(_as_list(container.get("model_roots")))
@@ -405,7 +408,7 @@ def resolve_relocated_reference(reference, roots, remaps=None, directory=False):
         )
     hint = (
         "configure cadence.pdk_profiles[].model_roots or model_path_remaps"
-        if roots else "configure cadence.pdk_dir/model_roots or a PDK profile"
+        if roots else _contract_text("configure cadence.pdk_dir/model_roots or a PDK profile")
     )
     raise AutomaticModelPathResolutionError(
         "missing",

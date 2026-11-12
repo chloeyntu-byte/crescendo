@@ -64,10 +64,17 @@ class SharedMaestroTests(unittest.TestCase):
 
     def test_a_b_a_reuses_one_suite_config_once_and_keeps_independent_manifests(self):
         producer,workspace,capture = self.suite()
-        manifests = []
+        manifests, timings = [], []
         for index,value in enumerate((2e-6,4e-6,2e-6)):
             root,identifier = self.candidate(index)
-            manifests.append(producer.generate({'p':value},root,identifier))
+            phases = {}
+            timings.append(phases)
+            manifests.append(producer.generate({'p':value},root,identifier,phase_timings=phases))
+        self.assertEqual(sum('workspace_build' in phases for phases in timings),1)
+        for phases in timings:
+            self.assertGreaterEqual(phases['native_generation_lock_wait']['elapsed_seconds'],0)
+            self.assertGreaterEqual(phases['native_generation_lock_held']['elapsed_seconds'],
+                                    phases['native_capture']['elapsed_seconds'])
         self.assertEqual(workspace.call_count,1)
         self.assertEqual(capture.call_count,3)
         self.assertEqual([row['emit_clones'] for row in self.options],[True,False,False])
@@ -175,7 +182,7 @@ class SharedMaestroTests(unittest.TestCase):
             'native_job_state':{'native_completion_proven':True},'task_results':[]}
         context.close.return_value = {'cleanup_proven':True}
         producer.close.return_value = {'cleanup_proven':True}
-        def generated(values,root,identifier):
+        def generated(values,root,identifier,**kwargs):
             os.makedirs(root)
             return {'root':root,'candidate_id':identifier,'values':values,'workspace':{},'source_identity':{},
                 'netlist_generation':{'parameter_application':{}},'tasks':[optimizer_fixtures.model_task()]}

@@ -2,8 +2,12 @@ from __future__ import print_function
 
 import os
 import hashlib
+import math
 import re
 import stat
+
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
 
 from .rdb import normalize_corner_name
 from .utils import atomic_write_json, is_under, utc_timestamp
@@ -68,7 +72,29 @@ def _tail_text(path, byte_limit=65536):
     return data.decode("utf-8", "replace")
 
 
-def _spectre_log_evidence(path, workspace_root):
+_SPECTRE_WALL_CLOCK = re.compile(
+    r"^\s*Simulation started at:[^\r\n]+, ended at:[^\r\n]+,"
+    r" with elapsed time \(wall clock\): ([0-9]+(?:\.[0-9]+)?) ([numk]?s)(?=[.\s(]|$)",
+    re.MULTILINE,
+)
+_SPECTRE_WALL_UNITS = {"ns": 1e-9, "us": 1e-6, "ms": 1e-3, "s": 1.0, "ks": 1e3}
+
+
+def _spectre_wall_seconds(text):
+    try:
+        # Scope the result to this invocation and require a unique native wall
+        # summary. Per-analysis CPU times and cumulative rows can overlap.
+        matches = _SPECTRE_WALL_CLOCK.findall(text)
+        if len(matches) == 1:
+            value, unit = matches[0]
+            seconds = float(value) * _SPECTRE_WALL_UNITS[unit]
+            return seconds if math.isfinite(seconds) else None
+    except Exception:
+        pass
+    return None
+
+
+def _spectre_log_evidence(path, workspace_root, include_timing=False):
     if not os.path.isfile(path):
         raise UnsupportedCompletionEvidence("Spectre completion log is missing: %s" % path)
     text = _tail_text(path)
@@ -81,12 +107,16 @@ def _spectre_log_evidence(path, workspace_root):
     error_count = int(match.group(1))
     if error_count != 0:
         raise CompletionEvidenceError("Spectre reported %d error(s): %s" % (error_count, path))
-    return {
+    evidence = {
         "path": _relative_artifact(path, workspace_root, "Spectre log"),
         "size_bytes": os.path.getsize(path),
         "completion": match.group(0).strip()[:512],
         "error_count": error_count,
     }
+    if include_timing and not os.path.islink(path):
+        start = matches[-2].end() if len(matches) > 1 else 0
+        evidence["solver_wall_seconds"] = _spectre_wall_seconds(text[start:match.start()])
+    return evidence
 
 
 def _alps_log_evidence(task, owned_root, launch_epoch):
@@ -195,7 +225,7 @@ def _validate_command(command):
         raise CompletionEvidenceError("ADE startup timed out")
     if command.get("timed_out"):
         raise CompletionEvidenceError("ADE command timed out")
-    if command.get('schema_version') == 'crescendo.maestro_baseline.v1':
+    if command.get('schema_version') == _contract_text('crescendo.maestro_baseline.v1'):
         if command.get('guardian_returncode') != 0 or command.get('cleanup_pending') is not False:
             raise CompletionEvidenceError('Native Maestro guardian termination is unproven')
     elif command.get("returncode") != 0:
@@ -211,7 +241,7 @@ def _validate_rdb_identity(workspace, command, parsed, history_name):
     path = parsed.get("path")
     if not path or not os.path.isfile(path):
         raise CompletionEvidenceError("the bound ADE RDB is missing")
-    if (command.get('schema_version') == 'crescendo.maestro_baseline.v1' and
+    if (command.get('schema_version') == _contract_text('crescendo.maestro_baseline.v1') and
             (not command.get('rdb_path') or os.path.abspath(path) != os.path.abspath(command['rdb_path']))):
         raise CompletionEvidenceError('Native Maestro baseline RDB differs from the bound history path')
     relative = _artifact_reference(path, workspace, "ADE RDB")
@@ -381,7 +411,7 @@ def _validate_native_effective_scope(setup, statuses, parsed, snapshot):
         all_sweeps.extend(dict(item, test=test_name) for item in
                           sweep_coverage(setup, test, corners, rows, mapping, used_names=used_names,
                                          strict_multiplicity=True))
-    proof = {'schema_version': 'crescendo.native_effective_scope.v1',
+    proof = {'schema_version': _contract_text('crescendo.native_effective_scope.v1'),
              'ok': not all_differences and not all_sweeps,
              'point_checks': all_checks, 'sweep_differences': all_sweeps,
              'variable_differences': all_differences, 'unused_saved_variables': unused,
@@ -507,7 +537,7 @@ def _completed_model_resolution(workspace, setup, command, status, config, snaps
         result = resolve_task_model_identity(task, config, command.get('execution_simulator') or 'spectre',
                                              setup, snapshot, path_cache)
     except (OSError, ValueError, CompletionEvidenceError) as error:
-        result = {'schema_version': 'crescendo.native_model_identity.v1', 'native_cwd': status['native_cwd'],
+        result = {'schema_version': _contract_text('crescendo.native_model_identity.v1'), 'native_cwd': status['native_cwd'],
                   'include_dirs': [], 'references': [], 'source_references': [], 'errors': [str(error)]}
     result['argv_evidence'] = evidence
     return result
@@ -537,7 +567,7 @@ def _prepare_native_point_identity(workspace, setup, command, history_name, stat
         if not history_root:
             raise UnsupportedCompletionEvidence("native corner netlist history is unavailable")
         directory = os.path.join(history_root, str(status["point_id"]), artifact_test, "netlist")
-        path = os.path.join(directory, "input.scs")
+        path = os.path.join(directory, _contract_text("input.scs"))
         _artifact_reference(path, workspace, "native corner netlist")
         info = os.lstat(path)
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > MAX_NETLIST_BYTES:
@@ -606,7 +636,7 @@ def _prepare_native_point_identity(workspace, setup, command, history_name, stat
         if not os.path.isdir(psf_dir):
             raise UnsupportedCompletionEvidence('Exact point PSF directory is unavailable')
         requests.append({'point_id': status['point_id'], 'test': status['test'], 'psf_dir': psf_dir, 'names': names})
-    document = {"schema_version": "crescendo.native_point_identity.v1", "points": points,
+    document = {"schema_version": _contract_text("crescendo.native_point_identity.v1"), "points": points,
                 "history_name": history_name, "source": "exact_owned_native_point_netlists"}
     scope_path = workspace.get("native_scope_path")
     if scope_path:
@@ -634,7 +664,7 @@ def prepare_native_point_parameter_requests(workspace, setup, command, parsed, c
     statuses = _completed_point_statuses(setup, parsed, _point_map(parsed),
                                          command.get('native_corner_identity', workspace.get('native_corner_identity')))
     unused, requests = _prepare_native_point_identity(
-        workspace, setup, command, history, statuses, os.path.join(candidate_root, 'point_identity.json'),
+        workspace, setup, command, history, statuses, os.path.join(candidate_root, _contract_text('point_identity.json')),
         config=config, parsed=parsed)
     return requests
 
@@ -721,9 +751,9 @@ def _baseline_history_protocol(command, candidate_root, history_name):
     """Qualify an actual owned Maestro Run/Wait/Close transcript, not a CLI receipt."""
     import math
     record = command.get('native_baseline')
-    if command.get('schema_version') != 'crescendo.maestro_baseline.v1' or not isinstance(record, dict):
+    if command.get('schema_version') != _contract_text('crescendo.maestro_baseline.v1') or not isinstance(record, dict):
         raise UnsupportedCompletionEvidence('Native Maestro baseline protocol evidence is unavailable')
-    if (record.get('schema_version') != 'crescendo.maestro_baseline.v1' or
+    if (record.get('schema_version') != _contract_text('crescendo.maestro_baseline.v1') or
             not isinstance(record.get('candidate_id'), str) or not record.get('candidate_id') or
             record.get('candidate_id') != command.get('candidate_id') or
             record.get('request_root') != os.path.abspath(candidate_root) or
@@ -770,7 +800,7 @@ def _baseline_history_protocol(command, candidate_root, history_name):
             any(row['state'] in ('ERROR', 'STOP_ERROR', 'STOP_BEGIN', 'STOP_DONE') for row in observed) or
             selected[1]['value'] != record['run_id'] or selected[4]['value'] != history_name):
         raise CompletionEvidenceError('Native Maestro baseline Run/Wait/Close protocol is incomplete or ambiguous')
-    return {'kind': 'native_maestro_history_point', 'schema_version': 'crescendo.maestro_baseline.v1',
+    return {'kind': 'native_maestro_history_point', 'schema_version': _contract_text('crescendo.maestro_baseline.v1'),
             'candidate_id': record['candidate_id'], 'run_id': record['run_id'], 'history_name': history_name,
             'protocol_sha256': record['protocol_sha256'], 'started_epoch': started, 'finished_epoch': finished}
 
@@ -792,7 +822,7 @@ def _validate_psf(workspace, setup, command, history_name, status_rows, candidat
             )
     artifacts = []
     baseline = (command.get('execution_simulator') == 'alps' and
-                command.get('schema_version') == 'crescendo.maestro_baseline.v1')
+                command.get('schema_version') == _contract_text('crescendo.maestro_baseline.v1'))
     baseline_receipt = _baseline_history_protocol(command, candidate_root, history_name) if baseline else None
     for status in status_rows:
         test = tests[status["test"]]
@@ -850,7 +880,7 @@ def _validate_psf(workspace, setup, command, history_name, status_rows, candidat
         shared_binding = _shared_spectre_log_binding(
             log, psf_dir, history_root, artifact_test,
         )
-        log_evidence = _spectre_log_evidence(log, workspace_root)
+        log_evidence = _spectre_log_evidence(log, workspace_root, include_timing=shared_binding is None)
         if shared_binding is not None:
             log_evidence["point_binding"] = shared_binding
         artifact = {
@@ -880,18 +910,18 @@ def validate_candidate_completion(workspace, candidate_root, command, parsed, se
         raise CompletionEvidenceError("Native command simulator differs from selected simulator")
     command = dict(command, execution_simulator=simulator, result_reader=(config or {}).get("cadence", {}).get("simulator_result_reader") or "spectre")
     history_name = _validate_command(command)
-    if command.get('schema_version') == 'crescendo.maestro_baseline.v1':
+    if command.get('schema_version') == _contract_text('crescendo.maestro_baseline.v1'):
         _baseline_history_protocol(command, candidate_root, history_name)
     point_map = _point_map(parsed)
     rdb = _validate_rdb_identity(workspace, command, parsed, history_name)
     native_identity = command.get("native_corner_identity", workspace.get("native_corner_identity"))
-    if (simulator == 'alps' and command.get('schema_version') == 'crescendo.maestro_baseline.v1' and
+    if (simulator == 'alps' and command.get('schema_version') == _contract_text('crescendo.maestro_baseline.v1') and
             (not isinstance(native_identity, dict) or native_identity.get('point_parameters_required') is not True)):
         raise UnsupportedCompletionEvidence('Native Maestro baseline requires exact corner identity and point parameter readback')
     parsed.pop('native_effective_scope', None)
     def point_identity_loader(statuses):
         _load_native_point_identity(workspace, setup, command, history_name, statuses,
-                                    os.path.join(candidate_root, "point_identity.json"), config=config,
+                                    os.path.join(candidate_root, _contract_text("point_identity.json")), config=config,
                                     parameter_reader=native_parameter_reader, parsed=parsed, reader_deadline=reader_deadline,
                                     reader_cancel_check=reader_cancel_check)
     try:
@@ -899,7 +929,7 @@ def validate_candidate_completion(workspace, candidate_root, command, parsed, se
                                      point_identity_loader=point_identity_loader if native_identity is not None else None)
     finally:
         if parsed.get('native_effective_scope'):
-            atomic_write_json(os.path.join(candidate_root, 'portability_settings.json'),
+            atomic_write_json(os.path.join(candidate_root, _contract_text('portability_settings.json')),
                               parsed['native_effective_scope'])
     if simulator == "alps" and native_identity is None:
         point_identity_loader(statuses)
@@ -907,7 +937,7 @@ def validate_candidate_completion(workspace, candidate_root, command, parsed, se
     psf = _validate_psf(workspace, setup, command, history_name, statuses, candidate_root=candidate_root)
     backend = command.get("backend") or workspace.get("setup_backend") or "maestro"
     evidence = {
-        "schema_version": "crescendo.completion_evidence.v1",
+        "schema_version": _contract_text("crescendo.completion_evidence.v1"),
         "ok": True,
         "adapter": "%s-rdb-psf-v1" % backend,
         "backend": backend,
@@ -931,7 +961,7 @@ def validate_candidate_completion(workspace, candidate_root, command, parsed, se
         evidence['native_effective_scope'] = parsed['native_effective_scope']
     if parsed.get("candidate_test_name_map"):
         evidence["candidate_test_name_map"] = dict(parsed["candidate_test_name_map"])
-    path = output_path or os.path.join(candidate_root, "completion_evidence.json")
+    path = output_path or os.path.join(candidate_root, _contract_text("completion_evidence.json"))
     if is_under(path, workspace["root"]):
         raise CompletionEvidenceError("completion evidence must survive outside the disposable workspace")
     atomic_write_json(path, evidence)

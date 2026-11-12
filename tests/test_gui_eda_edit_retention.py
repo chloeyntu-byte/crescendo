@@ -72,6 +72,7 @@ class GuiEdaEditRetentionTkTests(unittest.TestCase):
         self.service.inspection_calls[:] = []
         self.service.apply_calls[:] = []
         self.app.load_setup_button.invoke()
+        self.assertIsNone(self.app.eda_auto_revalidation)
         self._wait(lambda: self.app.cell_inspection_id == "fixture-inspection" and
                    self.app.selected_cell_scope_ids == {"cell-B"})
         self.assertIsNone(self.app.prepared_id)

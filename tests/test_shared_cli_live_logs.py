@@ -205,12 +205,17 @@ class SharedCliLiveLogTests(unittest.TestCase):
             optimizer.spec = {"simulator": "alps"}
             optimizer.lock = threading.RLock()
             optimizer.candidate_progress = {}
+            optimizer.progress_flush_interval = 0.5
+            optimizer.progress_flush_times = {}
             optimizer.progress = {"schema_version": PROTOCOL, "sequence": 0, "commands": [], "tasks": []}
-            with mock.patch("crescendo_engine.run_log.append_run_event"):
+            with mock.patch("crescendo_engine.run_log.append_run_event") as log, mock.patch(
+                    "crescendo_engine.netlist_optimizer.time.monotonic", return_value=0) as clock:
                 for index in range(35):
                     optimizer._progress({"candidate_id": "g000_c0000", "task_id": "task_" + str(index),
                         "point_id": index, "test": "AC", "stage": "submit", "scheduler_state": "PENDING"})
+                clock.return_value = 1
                 optimizer._progress({"candidate_id": "g000_c0000", "task_id": "task_0", "stage": "solve", "scheduler_state": "RUNNING"})
+            self.assertEqual(log.call_count, 36)
             with open(os.path.join(candidate, "cli_progress.json"), encoding="utf-8") as stream:
                 progress = json.load(stream)
             self.assertEqual(len(progress["tasks"]), 35)

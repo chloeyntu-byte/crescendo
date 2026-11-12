@@ -5773,7 +5773,14 @@ class RunnerTest(unittest.TestCase):
             self.assertEqual(result["state"], "completed")
             self.assertEqual(len(result["candidates"]), 12)
             self.assertTrue(result["pareto_front"])
-            self.assertTrue(os.path.isfile(os.path.join(root, "run", "result.json")))
+            timings = result["generation_timings"]
+            self.assertEqual([row["generation"] for row in timings], [1, 2, 3])
+            for timing in timings:
+                self.assertEqual(timing["timed_candidate_count"], 4)
+                self.assertTrue({"ask", "evaluate", "tell", "settlement", "persist"} <= set(timing["phases_seconds"]))
+                self.assertAlmostEqual(sum(timing["phases_seconds"].values()), timing["total_seconds"])
+            self.assertEqual(load_json(os.path.join(root, "run", "status.json"))["generation_timings"], timings)
+            self.assertEqual(load_json(os.path.join(root, "run", "result.json"))["generation_timings"], timings)
             self.assertTrue(os.path.isfile(os.path.join(root, "run", "best_assignment.json")))
             self.assertEqual(result["algorithm"], "nsga2")
             self.assertEqual(result["algorithm_policy"], "explicit_user_selection")

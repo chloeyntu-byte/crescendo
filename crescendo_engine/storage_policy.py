@@ -12,10 +12,13 @@ import os
 import re
 import stat
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .runtime_layout import design_storage_root, legacy_design_storage_root, project_directory
 
-SAVE_SCHEMA = 'crescendo.maestro_save_options.v1'
-POLICY_SCHEMA = 'crescendo.storage_policy.v1'
+SAVE_SCHEMA = _contract_text('crescendo.maestro_save_options.v1')
+POLICY_SCHEMA = _contract_text('crescendo.storage_policy.v1')
 SAVE_FIELDS = {
     'save_res_dir': ('adexl.results', 'saveResDir'),
     'save_dir': ('adexl.results', 'saveDir'),
@@ -145,11 +148,11 @@ def resolve_storage_policy(config=None, setup=None, source=None, libraries=None)
                   'view_dir': locator.get('view_dir'), 'work_dir': project_directory(config)}
     work = project_directory(config, source)
     runtime = config.get('runtime') or {}
-    metadata_override = os.environ.get('CRESCENDO_RUN_ROOT') or runtime.get('storage_base_override') or context.get('storage_base_override')
+    metadata_override = os.environ.get(_contract_text('CRESCENDO_RUN_ROOT')) or runtime.get('storage_base_override') or context.get('storage_base_override')
     design_root = runtime.get('design_root') or context.get('design_root') or design_storage_root(source, libraries or context.get('libraries') or {}, base_root=metadata_override)
     original = copy.deepcopy(setup.get('save_options') or context.get('save_options') or unavailable_save_options())
     override = runtime.get('data_root_override')
-    explicit_run = (os.environ.get('CRESCENDO_RUN_ROOT') or runtime.get('run_root_override') or runtime.get('storage_base_override') or
+    explicit_run = (os.environ.get(_contract_text('CRESCENDO_RUN_ROOT')) or runtime.get('run_root_override') or runtime.get('storage_base_override') or
                     (runtime.get('run_root') if runtime.get('run_root_origin') not in ('derived', 'native_save_options') else None))
     effective = original.get('effective') or {}
     source_home = original.get('source_home') or (context.get('source') or {}).get('source_home') or os.environ.get('HOME')
@@ -176,10 +179,10 @@ def resolve_storage_policy(config=None, setup=None, source=None, libraries=None)
         if hint:
             warnings.append("Previous simulation root is for comparison only: " + str(hint))
     module = os.path.basename(design_root)
-    run_root = (run_root if origin == 'explicit_run_root' else os.path.join(data_root, 'crescendo', module)) if data_root else os.path.join(design_root, 'runs')
+    run_root = (run_root if origin == 'explicit_run_root' else os.path.join(data_root, _contract_text('crescendo'), module)) if data_root else os.path.join(design_root, 'runs')
     return {'schema_version': POLICY_SCHEMA, 'design_root': design_root,
             'states_root': os.path.join(design_root, 'states'), 'state_dir': os.path.join(design_root, 'states'),
-            'cache_root': os.path.join(design_root, 'cache'), 'index_path': os.path.join(design_root, 'index.json'),
+            'cache_root': os.path.join(design_root, 'cache'), 'index_path': os.path.join(design_root, _contract_text('index.json')),
             'legacy_design_root': legacy_design_storage_root(source, libraries or context.get('libraries') or {}, base_root=metadata_override),
             'legacy_settings_root': os.path.join(legacy_design_storage_root(source, libraries or context.get('libraries') or {}, base_root=metadata_override), 'settings'),
             'current_legacy_settings_root': os.path.join(design_root, 'settings'),
@@ -219,7 +222,7 @@ def require_data_root(policy):
 def native_workspace_storage(root, save_options=None):
     root = os.path.realpath(os.path.abspath(root))
     base = os.path.join(root, 'simulation')
-    return {'schema_version': 'crescendo.native_storage.v1', 'project_dir': base,
+    return {'schema_version': _contract_text('crescendo.native_storage.v1'), 'project_dir': base,
             'save_res_dir': base, 'save_dir': base, 'scratch_root': os.path.join(root, '_scratch'),
             'readback_path': os.path.join(root, 'native_storage.records'), 'verified': False,
             'local_psf_dir': os.path.join(root, '_scratch', 'local_psf'),
@@ -254,7 +257,7 @@ def native_storage_init_lines(storage):
 
 
 def native_storage_capture_definitions():
-    return r'''
+    return _contract_text(r'''
 procedure(crescWriteStorageReadback(port hsdb)
   let((result)
     result = nil
@@ -304,7 +307,7 @@ procedure(crescWriteNativeHistoryPaths(path history)
     close(port)
   )
 )
-'''
+''')
 
 
 def native_storage_readback_lines(workspace, setup_expr='mainSDB'):
@@ -312,11 +315,11 @@ def native_storage_readback_lines(workspace, setup_expr='mainSDB'):
     if not storage:
         return []
     quote = lambda value: json.dumps(value, ensure_ascii=False)
-    return ['crescStoragePort = outfile(%s)' % quote(storage['readback_path']),
-            'unless(crescStoragePort error("Crescendo native storage readback cannot be created.\\n"))',
-            'fprintf(crescStoragePort "CRESCENDO_NATIVE_STORAGE_1\\n")',
-            'crescWriteSaveOptionsRecords(crescStoragePort %s)' % setup_expr,
-            'close(crescStoragePort)', 'crescStoragePort = nil']
+    return [_contract_text('crescStoragePort = outfile(%s)') % quote(storage['readback_path']),
+            _contract_text('unless(crescStoragePort error("Crescendo native storage readback cannot be created.\\n"))'),
+            _contract_text('fprintf(crescStoragePort "CRESCENDO_NATIVE_STORAGE_1\\n")'),
+            _contract_text('crescWriteSaveOptionsRecords(crescStoragePort %s)') % setup_expr,
+            _contract_text('close(crescStoragePort)'), _contract_text('crescStoragePort = nil')]
 
 
 def load_native_storage_readback(workspace, required=False):
@@ -330,7 +333,7 @@ def load_native_storage_readback(workspace, required=False):
         if len(raw) > 256*1024:
             raise ValueError('Native storage readback exceeds size limit')
         lines = raw.decode('utf-8').splitlines()
-        if not lines or lines[0] != 'CRESCENDO_NATIVE_STORAGE_1':
+        if not lines or lines[0] != _contract_text('CRESCENDO_NATIVE_STORAGE_1'):
             raise ValueError('Native storage readback schema mismatch')
         rows = []
         for line in lines[1:]:
@@ -393,7 +396,7 @@ def native_history_readback_path(workspace, artifact_root):
 
 def native_history_readback_line(workspace, artifact_root, history_expr='runData'):
     path = native_history_readback_path(workspace, artifact_root)
-    return 'crescWriteNativeHistoryPaths(%s %s)' % (json.dumps(path, ensure_ascii=False), history_expr) if path else None
+    return _contract_text('crescWriteNativeHistoryPaths(%s %s)') % (json.dumps(path, ensure_ascii=False), history_expr) if path else None
 
 
 def qualify_native_history_paths(workspace, artifact_root, history_name, started_epoch=None, required=True):
@@ -418,7 +421,7 @@ def qualify_native_history_paths(workspace, artifact_root, history_name, started
         if started_epoch is not None and info.st_mtime + 2 < started_epoch:
             raise ValueError('Native history storage readback is stale')
         rows = stream.read(65537).decode('utf-8').splitlines()
-    if len(rows) != 2 or rows[0] != 'CRESCENDO_NATIVE_HISTORY_STORAGE_1' or not rows[1].startswith('H\t'):
+    if len(rows) != 2 or rows[0] != _contract_text('CRESCENDO_NATIVE_HISTORY_STORAGE_1') or not rows[1].startswith('H\t'):
         raise ValueError('Invalid native history storage readback')
     fields = _fields(rows[1].partition('\t')[2])
     if len(fields) != 3 or fields[0] != history_name:

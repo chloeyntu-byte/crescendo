@@ -1,4 +1,7 @@
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 
 import contextlib
 import os
@@ -43,7 +46,7 @@ def owned_headless_display(environment, root, startup_timeout_seconds=5, max_att
     check_command_cancellation()
     environment = dict(environment)
     root = ensure_dir(root)
-    manifest_path = os.path.join(root, "headless_display.json")
+    manifest_path = os.path.join(root, _contract_text("headless_display.json"))
     if environment.get("CDS_NOGRAPH_DISPLAY"):
         manifest = {"owned": False, "display": environment["CDS_NOGRAPH_DISPLAY"],
                     "status": "provided", "manifest_path": manifest_path}

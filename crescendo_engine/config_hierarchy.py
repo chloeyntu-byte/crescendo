@@ -3,6 +3,9 @@
 The returned SKILL is loaded into the same owned process as the normal OA
 probe. It caches immutable PCDB master flags, never occurrence bindings.
 """
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 
 
 def is_schematic_implementation(view_name, view_type):
@@ -16,7 +19,7 @@ def is_schematic_implementation(view_name, view_type):
 
 
 def config_probe_skill():
-    return r'''
+    return _contract_text(r'''
 crescConfigStack = nil
 crescConfigPcdbSeen = makeTable('crescConfigPcdbSeen 'crescNotSeen)
 crescConfigViewTypes = makeTable('crescConfigViewTypes 'crescNotSeen)
@@ -231,4 +234,4 @@ procedure(crescConfigBind(context pcdb inst ownerLib ownerCell ownerView parentP
     return(list(boundLib boundCell boundView resolvedLib resolvedCell resolvedView stop nth(3 binding) ignored traversable symbolMasked viewType))
   )
 )
-'''
+''')

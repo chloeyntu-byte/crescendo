@@ -5,6 +5,9 @@ import hashlib
 import os
 import re
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .utils import atomic_write_json, utc_timestamp
 
 
@@ -24,15 +27,16 @@ def reconcile_baseline_run(run_root, request_cancel=False, inspect_only=False):
             raise ValueError('Baseline recovery found an unrelated worker namespace; retained')
     candidates = os.path.join(root, 'candidates')
     rows = []
+    shared_consumers = []
     expected_roots = set()
-    index_path = os.path.join(root, 'baseline_shutdown_roots.json')
+    index_path = os.path.join(root, _contract_text('baseline_shutdown_roots.json'))
     if os.path.lexists(index_path):
         index = _load(index_path)
-        if index.get('schema_version') != 'crescendo.maestro_baseline_shutdown_roots.v1' or not isinstance(index.get('roots'), list):
+        if index.get('schema_version') != _contract_text('crescendo.maestro_baseline_shutdown_roots.v1') or not isinstance(index.get('roots'), list):
             raise ValueError('Baseline shutdown root index is invalid')
         for item in index['roots']:
             relative = item.get('candidate_root')
-            if not isinstance(relative, str) or not re.fullmatch(r'candidates/g[0-9]+_c[0-9]+', relative):
+            if not isinstance(relative, str) or not re.fullmatch(r'candidates/(?:g[0-9]+_c[0-9]+|batch_[a-f0-9]{32})', relative):
                 raise ValueError('Baseline shutdown root index escapes its candidate namespace')
             expected_roots.add(os.path.basename(relative))
     if os.path.lexists(candidates):
@@ -43,12 +47,27 @@ def reconcile_baseline_run(run_root, request_cancel=False, inspect_only=False):
             row = {'candidate_id': name, 'ok': False, 'raw_deleted': False,
                    'process_termination_proven': False, 'remote_stop_proven': False}
             try:
-                if not re.fullmatch(r'g[0-9]+_c[0-9]+', name) or os.path.realpath(path) != path or not os.path.isdir(path):
+                if not re.fullmatch(r'(?:g[0-9]+_c[0-9]+|batch_[a-f0-9]{32})', name) or os.path.realpath(path) != path or not os.path.isdir(path):
                     raise ValueError('Baseline candidate identity/path is invalid')
-                candidate = _load(os.path.join(path, 'candidate.json'))
+                candidate = _load(os.path.join(path, _contract_text('candidate.json')))
                 if candidate.get('candidate_id') != name or candidate.get('execution_backend') != 'maestro_baseline':
                     raise ValueError('Baseline candidate record has a different identity/backend')
-                state_path = os.path.join(path, 'native_baseline', 'native_baseline_state.json')
+                reference = candidate.get('batch_reference')
+                if reference is not None:
+                    batch_root = reference.get('root')
+                    if (not isinstance(batch_root, str) or os.path.dirname(batch_root) != candidates
+                            or os.path.basename(batch_root) != 'batch_' + str(reference.get('batch_epoch'))
+                            or os.path.realpath(batch_root) != batch_root):
+                        raise ValueError('Logical candidate shared batch reference is unsafe')
+                    manifest = _load(os.path.join(batch_root, _contract_text('batch_manifest.json')))
+                    members = {c['candidate_id']: c for c in manifest.get('candidates') or []}
+                    if (manifest.get('batch_epoch') != reference.get('batch_epoch') or name not in members
+                            or manifest.get('candidate_to_physical', {}).get(name) != reference.get('physical_ids')):
+                        raise ValueError('Logical candidate is absent from its batch manifest')
+                    shared_consumers.append((row, os.path.basename(batch_root)))
+                    rows.append(row)
+                    continue
+                state_path = os.path.join(path, 'native_baseline', _contract_text('native_baseline_state.json'))
                 native = _load(state_path)
                 observed_native = native
                 if (native.get('schema_version') != SCHEMA_VERSION or native.get('candidate_id') != name
@@ -57,7 +76,7 @@ def reconcile_baseline_run(run_root, request_cancel=False, inspect_only=False):
                 no_launch = native.get('launch_attempted') is False
                 owner = preparation_session_reference(path)
                 if owner is None:
-                    if not no_launch or os.path.lexists(os.path.join(path, 'native_baseline', 'legacy_guardian_launch.json')):
+                    if not no_launch or os.path.lexists(os.path.join(path, 'native_baseline', _contract_text('legacy_guardian_launch.json'))):
                         raise ValueError('Baseline native launch has no durable suite binding')
                     row.update(ok=True, process_termination_proven=True, remote_stop_proven=True,
                                native_terminal_state='not_launched', source_state='not_exposed_to_native')
@@ -107,7 +126,7 @@ def reconcile_baseline_run(run_root, request_cancel=False, inspect_only=False):
                                  and 'CLOSED' not in states and 'STOP_ERROR' not in states
                                  and stop.get('requested') is True and stop.get('remote_stop_proven') is True)
                     terminal = bool(native.get('cleanup_proven') is True and (no_launch or complete or cancelled))
-                    workspace = _load(os.path.join(owner['workspace_root'], 'workspace.json'),
+                    workspace = _load(os.path.join(owner['workspace_root'], _contract_text('workspace.json')),
                                       max_bytes=128 * 1024 * 1024)
                     if workspace.get('setup_private_session') != owner:
                         raise ValueError('Baseline workspace owner metadata differs')
@@ -143,6 +162,13 @@ def reconcile_baseline_run(run_root, request_cancel=False, inspect_only=False):
                 row.update(ok=False, process_termination_proven=False, remote_stop_proven=False)
                 row['reason'] = '%s: %s' % (type(error).__name__, error)
             rows.append(row)
+    by_id = {r['candidate_id']: r for r in rows}
+    for consumer, batch_id in shared_consumers:
+        batch = by_id.get(batch_id) or {}
+        for key in ('ok', 'process_termination_proven', 'remote_stop_proven', 'native_terminal_state', 'reason'):
+            if key in batch:
+                consumer[key] = batch[key]
+        consumer['shared_batch'] = batch_id
     for missing in sorted(expected_roots.difference(row['candidate_id'] for row in rows)):
         rows.append({'candidate_id': missing, 'ok': False, 'raw_deleted': False,
                      'process_termination_proven': False, 'remote_stop_proven': False,
@@ -151,7 +177,7 @@ def reconcile_baseline_run(run_root, request_cancel=False, inspect_only=False):
         rows.append({'candidate_id': None, 'ok': False, 'raw_deleted': False,
                      'process_termination_proven': False, 'remote_stop_proven': False,
                      'reason': 'No durable native candidate evidence; absence does not prove no launch'})
-    result = {'schema_version': 'crescendo.baseline_recovery.v1',
+    result = {'schema_version': _contract_text('crescendo.baseline_recovery.v1'),
               'state': 'inspected' if inspect_only else 'completed',
               'artifact_policy': 'retain_owned_suite_and_candidate_evidence', 'raw_deleted': False,
               'candidates': rows, 'retained_candidates': [row['candidate_id'] for row in rows],
@@ -161,7 +187,7 @@ def reconcile_baseline_run(run_root, request_cancel=False, inspect_only=False):
     if not result['artifact_cleanup_complete']:
         result['state'] = 'blocked'
     if not inspect_only:
-        atomic_write_json(os.path.join(root, 'baseline_recovery.json'), result)
+        atomic_write_json(os.path.join(root, _contract_text('baseline_recovery.json')), result)
     if result['state'] == 'blocked':
         error = RuntimeError('Baseline recovery retained unresolved resources: ' + '; '.join(
             '%s: %s' % (row['candidate_id'], row.get('reason', 'unproven')) for row in rows if not row['ok']))

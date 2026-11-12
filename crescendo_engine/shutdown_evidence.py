@@ -1,4 +1,7 @@
 """Bounded shutdown proof reader, including pre-split legacy documents."""
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 import io
 import json
 import os
@@ -178,7 +181,7 @@ def read_shutdown(descriptor, description):
 
 
 def shutdown_proven(value):
-    if not isinstance(value, dict) or value.get('schema_version') != 'crescendo.worker_shutdown.v1':
+    if not isinstance(value, dict) or value.get('schema_version') != _contract_text('crescendo.worker_shutdown.v1'):
         return False
     workers = value.get('workers')
     if not isinstance(workers, list) or not workers:

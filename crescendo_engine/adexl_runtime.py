@@ -5,13 +5,16 @@ import os
 import re
 import uuid
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .utils import atomic_write_json, atomic_write_text, ensure_dir, is_under
 
 
-SESSION_SCHEMA_VERSION = "crescendo.adexl_session.v1"
-CANDIDATE_SCHEMA_VERSION = "crescendo.adexl_candidate.v1"
-PROTOCOL_SCHEMA_VERSION = "crescendo.adexl_protocol.v1"
-RESULT_SCHEMA_VERSION = "crescendo.adexl_result.v2"
+SESSION_SCHEMA_VERSION = _contract_text("crescendo.adexl_session.v1")
+CANDIDATE_SCHEMA_VERSION = _contract_text("crescendo.adexl_candidate.v1")
+PROTOCOL_SCHEMA_VERSION = _contract_text("crescendo.adexl_protocol.v1")
+RESULT_SCHEMA_VERSION = _contract_text("crescendo.adexl_result.v2")
 
 REQUIRED_AXL_APIS = (
     "axlCreateSession",
@@ -181,7 +184,7 @@ def normalize_adexl_runtime_options(options=None):
 
 
 def _status_call(path, identity, state, message='""'):
-    return 'crescAxlWriteStatus("%s" "%s" %d "%s" "%s" "%s" %s)' % (
+    return _contract_text('crescAxlWriteStatus("%s" "%s" %d "%s" "%s" "%s" %s)') % (
         _skill_quote(path),
         _skill_quote(identity["epoch"]),
         int(identity["sequence"]),
@@ -194,16 +197,16 @@ def _status_call(path, identity, state, message='""'):
 
 def _status_procedure_lines():
     return [
-        "procedure(crescAxlSafeString(value)",
+        _contract_text("procedure(crescAxlSafeString(value)"),
         "  if(stringp(value) then value else sprintf(nil \"%L\" value))",
         ")",
-        "procedure(crescAxlFieldString(value)",
-        "  if(value then crescAxlSafeString(value) else \"\"))",
-        "procedure(crescAxlWriteStatus(path epoch sequence nonce candidate state message)",
+        _contract_text("procedure(crescAxlFieldString(value)"),
+        _contract_text("  if(value then crescAxlSafeString(value) else \"\"))"),
+        _contract_text("procedure(crescAxlWriteStatus(path epoch sequence nonce candidate state message)"),
         "  let((port)",
         "    port = outfile(path \"a\")",
         "    when(port",
-        '      fprintf(port "%s\\t%L\\t%s\\t%s\\t%s\\t%s\\t%s\\n" epoch sequence nonce candidate state getCurrentTime() crescAxlSafeString(message))',
+        _contract_text('      fprintf(port "%s\\t%L\\t%s\\t%s\\t%s\\t%s\\t%s\\n" epoch sequence nonce candidate state getCurrentTime() crescAxlSafeString(message))'),
         "      close(port)",
         "    )",
         "  )",
@@ -213,16 +216,16 @@ def _status_procedure_lines():
 
 def _safe_close_procedure_lines():
     return [
-        "procedure(crescAxlSafeClose()",
+        _contract_text("procedure(crescAxlSafeClose()"),
         "  let((stopResult closeResult)",
-        "    when(crescAxlSession",
+        _contract_text("    when(crescAxlSession"),
         "      when(isCallable('axlStopAll)",
-        "        stopResult = errset(axlStopAll(crescAxlSession) t)",
+        _contract_text("        stopResult = errset(axlStopAll(crescAxlSession) t)"),
         "      )",
         "      when(isCallable('axlCloseSession)",
-        "        closeResult = errset(axlCloseSession(crescAxlSession) t)",
+        _contract_text("        closeResult = errset(axlCloseSession(crescAxlSession) t)"),
         "      )",
-        "      crescAxlSession = nil",
+        _contract_text("      crescAxlSession = nil"),
         "    )",
         "    t",
         "  )",
@@ -240,20 +243,20 @@ def _reset_runtime_output(path):
 def render_adexl_capability_probe(output_path, exit_when_done=True):
     output_path = os.path.abspath(output_path)
     lines = [
-        'crescAxlCapabilityPort = outfile("%s" "w")' % _skill_quote(output_path),
-        'unless(crescAxlCapabilityPort error("Crescendo cannot open ADE XL capability report\\n"))',
+        _contract_text('crescAxlCapabilityPort = outfile("%s" "w")') % _skill_quote(output_path),
+        _contract_text('unless(crescAxlCapabilityPort error("Crescendo cannot open ADE XL capability report\\n"))'),
     ]
     for api_name in REQUIRED_AXL_APIS:
         lines.append(
-            'fprintf(crescAxlCapabilityPort "API\\t%s\\t%%L\\trequired\\n" isCallable(\'%s))'
+            _contract_text('fprintf(crescAxlCapabilityPort "API\\t%s\\t%%L\\trequired\\n" isCallable(\'%s))')
             % (_skill_quote(api_name), api_name)
         )
     for api_name in OPTIONAL_AXL_APIS:
         lines.append(
-            'fprintf(crescAxlCapabilityPort "API\\t%s\\t%%L\\toptional\\n" isCallable(\'%s))'
+            _contract_text('fprintf(crescAxlCapabilityPort "API\\t%s\\t%%L\\toptional\\n" isCallable(\'%s))')
             % (_skill_quote(api_name), api_name)
         )
-    lines.append("close(crescAxlCapabilityPort)")
+    lines.append(_contract_text("close(crescAxlCapabilityPort)"))
     if exit_when_done:
         lines.append("exit()")
     return "\n".join(lines) + "\n"
@@ -426,13 +429,13 @@ def locate_adexl_point_result(result, point_id, test_name, require_complete=Fals
     point_root = os.path.join(results_dir, point_token, test_token)
     psf_dir = os.path.join(point_root, "psf")
     paths = {
-        "schema_version": "crescendo.adexl_point_result.v1",
+        "schema_version": _contract_text("crescendo.adexl_point_result.v1"),
         "backend": "adexl",
         "history_name": result.get("history_name"),
         "point_id": point_token,
         "test_name": test_token,
         "point_root": point_root,
-        "netlist_path": os.path.join(point_root, "netlist", "input.scs"),
+        "netlist_path": os.path.join(point_root, "netlist", _contract_text("input.scs")),
         "psf_dir": psf_dir,
         "spectre_out_path": os.path.join(psf_dir, "spectre.out"),
         "sim_done_path": os.path.join(psf_dir, ".simDone"),
@@ -602,8 +605,8 @@ class AdeXLRuntimeBuilder(object):
         self.epoch = _protocol_value(epoch or uuid.uuid4().hex, "worker epoch")
         self.options = normalize_adexl_runtime_options(options)
         self.session_id = _safe_token(
-            "CRESCENDO_adexl_w%d_%s" % (self.worker_index, self.epoch[:12]),
-            default="CRESCENDO_adexl",
+            _contract_text("CRESCENDO_adexl_w%d_%s") % (self.worker_index, self.epoch[:12]),
+            default=_contract_text("CRESCENDO_adexl"),
             maximum=63,
         )
         self.sequence = 0
@@ -621,15 +624,15 @@ class AdeXLRuntimeBuilder(object):
 
     def _history_identity(self, candidate_id, candidate_root, sequence, requested=None):
         requested_name = _safe_token(
-            requested or "CRESCENDO_adexl_%s_%d" % (
+            requested or _contract_text("CRESCENDO_adexl_%s_%d") % (
                 _safe_token(candidate_id, default="candidate", maximum=32),
                 int(sequence),
             ),
-            default="CRESCENDO_adexl_history",
+            default=_contract_text("CRESCENDO_adexl_history"),
             maximum=63,
         )
         return {
-            "schema_version": "crescendo.history_identity.v1",
+            "schema_version": _contract_text("crescendo.history_identity.v1"),
             "backend": "adexl",
             "session_id": self.session_id,
             "history_name": None,
@@ -650,41 +653,41 @@ class AdeXLRuntimeBuilder(object):
         startup_marker = os.path.join(self.runtime_root, "adexl_startup.tsv")
         capabilities_path = os.path.join(self.runtime_root, "adexl_capabilities.tsv")
         startup_script = os.path.join(self.runtime_root, "adexl_startup.il")
-        manifest_path = os.path.join(self.runtime_root, "adexl_session.json")
+        manifest_path = os.path.join(self.runtime_root, _contract_text("adexl_session.json"))
         _reset_runtime_output(startup_marker)
         _reset_runtime_output(capabilities_path)
 
         lines = _status_procedure_lines() + [
-            'crescAxlWorkerEpoch = "%s"' % _skill_quote(self.epoch),
-            'crescAxlSessionId = "%s"' % _skill_quote(self.session_id),
-            "crescAxlSession = nil",
-            "crescAxlMainSetupDB = nil",
-            "crescAxlSequence = 0",
-            "crescAxlBusy = nil",
-            "crescAxlTainted = nil",
-            "crescAxlLastRunId = nil",
-            "crescAxlLastHistoryName = nil",
+            _contract_text('crescAxlWorkerEpoch = "%s"') % _skill_quote(self.epoch),
+            _contract_text('crescAxlSessionId = "%s"') % _skill_quote(self.session_id),
+            _contract_text("crescAxlSession = nil"),
+            _contract_text("crescAxlMainSetupDB = nil"),
+            _contract_text("crescAxlSequence = 0"),
+            _contract_text("crescAxlBusy = nil"),
+            _contract_text("crescAxlTainted = nil"),
+            _contract_text("crescAxlLastRunId = nil"),
+            _contract_text("crescAxlLastHistoryName = nil"),
         ] + _safe_close_procedure_lines() + [
             _status_call(startup_marker, identity, "PROBE_BEGIN"),
-            "crescAxlStartupResult = errset(progn(",
-            '  crescAxlCapabilityPort = outfile("%s" "w")' % _skill_quote(capabilities_path),
-            '  unless(crescAxlCapabilityPort error("Crescendo cannot open ADE XL capability report\\n"))',
-            "  crescAxlMissingRequired = 0",
+            _contract_text("crescAxlStartupResult = errset(progn("),
+            _contract_text('  crescAxlCapabilityPort = outfile("%s" "w")') % _skill_quote(capabilities_path),
+            _contract_text('  unless(crescAxlCapabilityPort error("Crescendo cannot open ADE XL capability report\\n"))'),
+            _contract_text("  crescAxlMissingRequired = 0"),
         ]
         for api_name in REQUIRED_AXL_APIS:
             lines.extend([
-                "  crescAxlApiAvailable = isCallable('%s)" % api_name,
-                '  fprintf(crescAxlCapabilityPort "API\\t%s\\t%%L\\trequired\\n" crescAxlApiAvailable)' % _skill_quote(api_name),
-                "  unless(crescAxlApiAvailable crescAxlMissingRequired = crescAxlMissingRequired + 1)",
+                _contract_text("  crescAxlApiAvailable = isCallable('%s)") % api_name,
+                _contract_text('  fprintf(crescAxlCapabilityPort "API\\t%s\\t%%L\\trequired\\n" crescAxlApiAvailable)') % _skill_quote(api_name),
+                _contract_text("  unless(crescAxlApiAvailable crescAxlMissingRequired = crescAxlMissingRequired + 1)"),
             ])
         for api_name in OPTIONAL_AXL_APIS:
             lines.extend([
-                "  crescAxlApiAvailable = isCallable('%s)" % api_name,
-                '  fprintf(crescAxlCapabilityPort "API\\t%s\\t%%L\\toptional\\n" crescAxlApiAvailable)' % _skill_quote(api_name),
+                _contract_text("  crescAxlApiAvailable = isCallable('%s)") % api_name,
+                _contract_text('  fprintf(crescAxlCapabilityPort "API\\t%s\\t%%L\\toptional\\n" crescAxlApiAvailable)') % _skill_quote(api_name),
             ])
         lines.extend([
-            "  close(crescAxlCapabilityPort)",
-            '  unless(crescAxlMissingRequired == 0 error("Crescendo required ADE XL public APIs are unavailable\\n"))',
+            _contract_text("  close(crescAxlCapabilityPort)"),
+            _contract_text('  unless(crescAxlMissingRequired == 0 error("Crescendo required ADE XL public APIs are unavailable\\n"))'),
             "  " + _status_call(startup_marker, identity, "PROBE_OK"),
         ])
         if self.workspace_binding.get("simulation_root"):
@@ -693,24 +696,24 @@ class AdeXLRuntimeBuilder(object):
                 % _skill_quote(self.workspace_binding["simulation_root"])
             )
         lines.extend([
-            '  crescAxlSession = axlCreateSession("%s")' % _skill_quote(self.session_id),
-            '  unless(crescAxlSession error("Crescendo cannot create ADE XL session\\n"))',
-            '  crescAxlBindResult = errset(axlSetMainSetupDBLCV(crescAxlSession "%s" "%s" "%s" ?mode "a") t)' % (
+            _contract_text('  crescAxlSession = axlCreateSession("%s")') % _skill_quote(self.session_id),
+            _contract_text('  unless(crescAxlSession error("Crescendo cannot create ADE XL session\\n"))'),
+            _contract_text('  crescAxlBindResult = errset(axlSetMainSetupDBLCV(crescAxlSession "%s" "%s" "%s" ?mode "a") t)') % (
                 _skill_quote(self.locator["library_name"]),
                 _skill_quote(self.locator["cell_name"]),
                 _skill_quote(self.locator["view_name"]),
             ),
-            '  unless(crescAxlBindResult && car(crescAxlBindResult) error("Crescendo cannot bind ADE XL SetupDB LCV\\n"))',
-            "  crescAxlMainSetupDB = car(crescAxlBindResult)",
-            '  unless(axlSDBHp(crescAxlMainSetupDB) error("Crescendo cannot obtain a valid ADE XL SetupDB handle\\n"))',
-            "  crescAxlResolvedSetupDB = axlGetMainSetupDB(crescAxlSession)",
-            '  unless(equal(crescAxlResolvedSetupDB crescAxlMainSetupDB) error("Crescendo ADE XL main SetupDB identity mismatch\\n"))',
-            "  " + _status_call(startup_marker, identity, "SESSION_READY", 'crescAxlSessionId'),
+            _contract_text('  unless(crescAxlBindResult && car(crescAxlBindResult) error("Crescendo cannot bind ADE XL SetupDB LCV\\n"))'),
+            _contract_text("  crescAxlMainSetupDB = car(crescAxlBindResult)"),
+            _contract_text('  unless(axlSDBHp(crescAxlMainSetupDB) error("Crescendo cannot obtain a valid ADE XL SetupDB handle\\n"))'),
+            _contract_text("  crescAxlResolvedSetupDB = axlGetMainSetupDB(crescAxlSession)"),
+            _contract_text('  unless(equal(crescAxlResolvedSetupDB crescAxlMainSetupDB) error("Crescendo ADE XL main SetupDB identity mismatch\\n"))'),
+            "  " + _status_call(startup_marker, identity, "SESSION_READY", _contract_text('crescAxlSessionId')),
             "  t",
             ") t)",
-            "unless(crescAxlStartupResult",
-            "  crescAxlTainted = t",
-            "  crescAxlSafeClose()",
+            _contract_text("unless(crescAxlStartupResult"),
+            _contract_text("  crescAxlTainted = t"),
+            _contract_text("  crescAxlSafeClose()"),
             "  " + _status_call(startup_marker, identity, "ERROR", '"startup failed"'),
             ")",
         ])
@@ -761,14 +764,14 @@ class AdeXLRuntimeBuilder(object):
             r"[^A-Za-z0-9_]", "_",
             "%s_%d_%s" % (self.epoch, identity["sequence"], identity["nonce"][:12]),
         )
-        callback_name = "crescAxlCandidateDone_%s" % callback_token
-        callback_flag = "crescAxlCandidateDoneFlag_%s" % callback_token
-        callback_result = "crescAxlCandidateDoneResult_%s" % callback_token
+        callback_name = _contract_text("crescAxlCandidateDone_%s") % callback_token
+        callback_flag = _contract_text("crescAxlCandidateDoneFlag_%s") % callback_token
+        callback_result = _contract_text("crescAxlCandidateDoneResult_%s") % callback_token
         marker_path = os.path.join(candidate_root, "adexl_status.tsv")
         progress_path = os.path.join(candidate_root, "adexl_progress.tsv")
         script_path = os.path.join(candidate_root, "adexl_candidate.il")
         result_manifest_path = os.path.join(candidate_root, "adexl_result.tsv")
-        artifact_path = os.path.join(candidate_root, "adexl_candidate.json")
+        artifact_path = os.path.join(candidate_root, _contract_text("adexl_candidate.json"))
         _reset_runtime_output(marker_path)
         _reset_runtime_output(progress_path)
         _reset_runtime_output(result_manifest_path)
@@ -785,60 +788,60 @@ class AdeXLRuntimeBuilder(object):
             "    %s = t" % callback_flag,
             "    " + _status_call(progress_path, identity, "CALLBACK_BEGIN", '"run finished"'),
             "    %s = errset(progn(" % callback_result,
-            '      unless(equal(crescAxlWorkerEpoch "%s") error("Crescendo ADE XL callback epoch mismatch\\n"))' % _skill_quote(self.epoch),
-            '      unless(equal(crescAxlSessionId "%s") error("Crescendo ADE XL callback session mismatch\\n"))' % _skill_quote(self.session_id),
-            '      unless(crescAxlSession error("Crescendo ADE XL callback session is closed\\n"))',
-            '      unless(crescAxlBusy error("Crescendo ADE XL callback has no active candidate\\n"))',
+            _contract_text('      unless(equal(crescAxlWorkerEpoch "%s") error("Crescendo ADE XL callback epoch mismatch\\n"))') % _skill_quote(self.epoch),
+            _contract_text('      unless(equal(crescAxlSessionId "%s") error("Crescendo ADE XL callback session mismatch\\n"))') % _skill_quote(self.session_id),
+            _contract_text('      unless(crescAxlSession error("Crescendo ADE XL callback session is closed\\n"))'),
+            _contract_text('      unless(crescAxlBusy error("Crescendo ADE XL callback has no active candidate\\n"))'),
             "      when(isCallable('axlGetAllFinishedRuns)",
-            "        crescAxlFinishedRuns = axlGetAllFinishedRuns(crescAxlSession)",
-            '        unless(member(crescAxlRunId crescAxlFinishedRuns) error("Crescendo ADE XL callback run identity mismatch\\n"))',
+            _contract_text("        crescAxlFinishedRuns = axlGetAllFinishedRuns(crescAxlSession)"),
+            _contract_text('        unless(member(crescAxlRunId crescAxlFinishedRuns) error("Crescendo ADE XL callback run identity mismatch\\n"))'),
             "      )",
             "      " + status("SIM_DONE"),
-            "      crescAxlRunData = axlGetRunData(crescAxlSession crescAxlRunId)",
-            '      unless(crescAxlRunData error("Crescendo cannot obtain ADE XL run data\\n"))',
-            "      crescAxlActualHistoryName = axlGetHistoryName(crescAxlRunData)",
-            '      unless(stringp(crescAxlActualHistoryName) error("Crescendo cannot obtain ADE XL history identity\\n"))',
-            '      when(crescAxlActualHistoryName == "" error("Crescendo obtained an empty ADE XL history identity\\n"))',
-            "      crescAxlHistoryEntry = axlGetHistoryEntry(crescAxlMainSetupDB crescAxlActualHistoryName)",
-            '      unless(crescAxlHistoryEntry error("Crescendo cannot obtain ADE XL history entry\\n"))',
-            "      crescAxlRDBPath = axlGetHistoryResults(crescAxlRunData)",
-            '      unless(stringp(crescAxlRDBPath) error("Crescendo cannot obtain ADE XL history RDB path\\n"))',
-            "      crescAxlResDBResult = errset(axlReadHistoryResDB(crescAxlActualHistoryName ?session crescAxlSession) t)",
-            '      unless(crescAxlResDBResult && car(crescAxlResDBResult) error("Crescendo cannot read ADE XL history result DB\\n"))',
-            "      crescAxlResultsDir = axlGetHistoryResultsDir(crescAxlRunData)",
-            "      crescAxlEntryResultsDir = axlGetHistoryResultsDir(crescAxlHistoryEntry)",
-            '      unless(equal(crescAxlResultsDir crescAxlEntryResultsDir) error("Crescendo ADE XL history results directory mismatch\\n"))',
-            "      crescAxlResultsLocation = if(isCallable('axlGetResultsLocation) then axlGetResultsLocation(crescAxlHistoryEntry) else nil)",
-            "      crescAxlRunStatus = if(isCallable('axlGetRunStatus) then axlGetRunStatus(crescAxlSession ?optionName \"all\" ?historyName crescAxlActualHistoryName) else nil)",
-            '      crescAxlResultPort = outfile("%s" "w")' % _skill_quote(result_manifest_path),
-            '      unless(crescAxlResultPort error("Crescendo cannot open ADE XL result manifest\\n"))',
-            '      fprintf(crescAxlResultPort "RESULT\\t%s\\t%d\\t%s\\t%s\\t%%s\\t%%s\\t%%s\\t%%s\\t%%s\\t%%s\\n"' % (
+            _contract_text("      crescAxlRunData = axlGetRunData(crescAxlSession crescAxlRunId)"),
+            _contract_text('      unless(crescAxlRunData error("Crescendo cannot obtain ADE XL run data\\n"))'),
+            _contract_text("      crescAxlActualHistoryName = axlGetHistoryName(crescAxlRunData)"),
+            _contract_text('      unless(stringp(crescAxlActualHistoryName) error("Crescendo cannot obtain ADE XL history identity\\n"))'),
+            _contract_text('      when(crescAxlActualHistoryName == "" error("Crescendo obtained an empty ADE XL history identity\\n"))'),
+            _contract_text("      crescAxlHistoryEntry = axlGetHistoryEntry(crescAxlMainSetupDB crescAxlActualHistoryName)"),
+            _contract_text('      unless(crescAxlHistoryEntry error("Crescendo cannot obtain ADE XL history entry\\n"))'),
+            _contract_text("      crescAxlRDBPath = axlGetHistoryResults(crescAxlRunData)"),
+            _contract_text('      unless(stringp(crescAxlRDBPath) error("Crescendo cannot obtain ADE XL history RDB path\\n"))'),
+            _contract_text("      crescAxlResDBResult = errset(axlReadHistoryResDB(crescAxlActualHistoryName ?session crescAxlSession) t)"),
+            _contract_text('      unless(crescAxlResDBResult && car(crescAxlResDBResult) error("Crescendo cannot read ADE XL history result DB\\n"))'),
+            _contract_text("      crescAxlResultsDir = axlGetHistoryResultsDir(crescAxlRunData)"),
+            _contract_text("      crescAxlEntryResultsDir = axlGetHistoryResultsDir(crescAxlHistoryEntry)"),
+            _contract_text('      unless(equal(crescAxlResultsDir crescAxlEntryResultsDir) error("Crescendo ADE XL history results directory mismatch\\n"))'),
+            _contract_text("      crescAxlResultsLocation = if(isCallable('axlGetResultsLocation) then axlGetResultsLocation(crescAxlHistoryEntry) else nil)"),
+            _contract_text("      crescAxlRunStatus = if(isCallable('axlGetRunStatus) then axlGetRunStatus(crescAxlSession ?optionName \"all\" ?historyName crescAxlActualHistoryName) else nil)"),
+            _contract_text('      crescAxlResultPort = outfile("%s" "w")') % _skill_quote(result_manifest_path),
+            _contract_text('      unless(crescAxlResultPort error("Crescendo cannot open ADE XL result manifest\\n"))'),
+            _contract_text('      fprintf(crescAxlResultPort "RESULT\\t%s\\t%d\\t%s\\t%s\\t%%s\\t%%s\\t%%s\\t%%s\\t%%s\\t%%s\\n"') % (
                 _skill_quote(identity["epoch"]), identity["sequence"],
                 _skill_quote(identity["nonce"]), _skill_quote(identity["candidate_id"]),
             ),
-            "        crescAxlFieldString(crescAxlActualHistoryName) crescAxlFieldString(crescAxlResultsDir)",
-            "        crescAxlFieldString(crescAxlResultsLocation) crescAxlFieldString(crescAxlRDBPath)",
-            "        crescAxlFieldString(crescAxlRunId) crescAxlFieldString(crescAxlRunStatus))",
-            "      close(crescAxlResultPort)",
-            "      " + status("RESULTS_READY", "crescAxlActualHistoryName"),
-            "      crescAxlLastRunId = crescAxlRunId",
-            "      crescAxlLastHistoryName = crescAxlActualHistoryName",
-            "      crescAxlBusy = nil",
-            "      " + status("DONE", "crescAxlActualHistoryName"),
+            _contract_text("        crescAxlFieldString(crescAxlActualHistoryName) crescAxlFieldString(crescAxlResultsDir)"),
+            _contract_text("        crescAxlFieldString(crescAxlResultsLocation) crescAxlFieldString(crescAxlRDBPath)"),
+            _contract_text("        crescAxlFieldString(crescAxlRunId) crescAxlFieldString(crescAxlRunStatus))"),
+            _contract_text("      close(crescAxlResultPort)"),
+            "      " + status("RESULTS_READY", _contract_text("crescAxlActualHistoryName")),
+            _contract_text("      crescAxlLastRunId = crescAxlRunId"),
+            _contract_text("      crescAxlLastHistoryName = crescAxlActualHistoryName"),
+            _contract_text("      crescAxlBusy = nil"),
+            "      " + status("DONE", _contract_text("crescAxlActualHistoryName")),
         ]
         if self.options["close_after_candidate"]:
             lines.extend([
-                "      crescAxlSafeClose()",
+                _contract_text("      crescAxlSafeClose()"),
                 "      exit()",
             ])
         lines.extend([
             "      t",
             "    ) t)",
             "    unless(%s" % callback_result,
-            "      crescAxlBusy = nil",
-            "      crescAxlTainted = t",
+            _contract_text("      crescAxlBusy = nil"),
+            _contract_text("      crescAxlTainted = t"),
             "      " + status("ERROR", '"candidate callback failed"'),
-            "      crescAxlSafeClose()",
+            _contract_text("      crescAxlSafeClose()"),
         ])
         if self.options["close_after_candidate"]:
             lines.append("      exit()")
@@ -847,30 +850,30 @@ class AdeXLRuntimeBuilder(object):
             "  )",
             ")",
             status("ACCEPTED"),
-            "crescAxlCandidateResult = errset(progn(",
-            '  unless(equal(crescAxlWorkerEpoch "%s") error("Crescendo ADE XL worker epoch mismatch\\n"))' % _skill_quote(self.epoch),
-            '  unless(equal(crescAxlSessionId "%s") error("Crescendo ADE XL session identity mismatch\\n"))' % _skill_quote(self.session_id),
-            '  unless(crescAxlSession error("Crescendo ADE XL session is closed\\n"))',
-            '  when(crescAxlTainted error("Crescendo ADE XL session is tainted\\n"))',
-            '  when(crescAxlBusy error("Crescendo ADE XL session only supports serial candidates\\n"))',
-            '  unless(crescAxlSequence == %d error("Crescendo ADE XL candidate sequence mismatch\\n"))' % (identity["sequence"] - 1),
-            "  crescAxlBusy = t",
-            "  crescAxlSequence = %d" % identity["sequence"],
+            _contract_text("crescAxlCandidateResult = errset(progn("),
+            _contract_text('  unless(equal(crescAxlWorkerEpoch "%s") error("Crescendo ADE XL worker epoch mismatch\\n"))') % _skill_quote(self.epoch),
+            _contract_text('  unless(equal(crescAxlSessionId "%s") error("Crescendo ADE XL session identity mismatch\\n"))') % _skill_quote(self.session_id),
+            _contract_text('  unless(crescAxlSession error("Crescendo ADE XL session is closed\\n"))'),
+            _contract_text('  when(crescAxlTainted error("Crescendo ADE XL session is tainted\\n"))'),
+            _contract_text('  when(crescAxlBusy error("Crescendo ADE XL session only supports serial candidates\\n"))'),
+            _contract_text('  unless(crescAxlSequence == %d error("Crescendo ADE XL candidate sequence mismatch\\n"))') % (identity["sequence"] - 1),
+            _contract_text("  crescAxlBusy = t"),
+            _contract_text("  crescAxlSequence = %d") % identity["sequence"],
             "  " + status("BEGIN"),
         ])
         lines.extend("  " + str(line) for line in pre_run_skill_lines)
         lines.extend([
-            '  crescAxlRunId = axlRunSimulation(?session crescAxlSession ?callback "%s()")' % callback_name,
-            '  unless(crescAxlRunId error("Crescendo ADE XL run submission failed\\n"))',
-            "  " + status("RUN_SUBMITTED", "crescAxlSafeString(crescAxlRunId)"),
+            _contract_text('  crescAxlRunId = axlRunSimulation(?session crescAxlSession ?callback "%s()")') % callback_name,
+            _contract_text('  unless(crescAxlRunId error("Crescendo ADE XL run submission failed\\n"))'),
+            "  " + status("RUN_SUBMITTED", _contract_text("crescAxlSafeString(crescAxlRunId)")),
             "  " + _status_call(progress_path, identity, "ASYNC_WAIT", '"callback pending"'),
             "  t",
             ") t)",
-            "unless(crescAxlCandidateResult",
-            "  crescAxlBusy = nil",
-            "  crescAxlTainted = t",
+            _contract_text("unless(crescAxlCandidateResult"),
+            _contract_text("  crescAxlBusy = nil"),
+            _contract_text("  crescAxlTainted = t"),
             "  " + status("ERROR", '"candidate submission failed"'),
-            "  crescAxlSafeClose()",
+            _contract_text("  crescAxlSafeClose()"),
         ])
         if self.options["close_after_candidate"]:
             lines.append("  exit()")
@@ -922,17 +925,17 @@ class AdeXLRuntimeBuilder(object):
         _reset_runtime_output(marker_path)
         lines = [
             _status_call(marker_path, identity, "CLOSE_BEGIN"),
-            "crescAxlCloseResult = errset(progn(",
-            '  unless(equal(crescAxlWorkerEpoch "%s") error("Crescendo ADE XL shutdown epoch mismatch\\n"))' % _skill_quote(self.epoch),
-            '  unless(equal(crescAxlSessionId "%s") error("Crescendo ADE XL shutdown session mismatch\\n"))' % _skill_quote(self.session_id),
-            '  when(crescAxlBusy error("Crescendo cannot close a busy ADE XL session\\n"))',
-            "  crescAxlSafeClose()",
+            _contract_text("crescAxlCloseResult = errset(progn("),
+            _contract_text('  unless(equal(crescAxlWorkerEpoch "%s") error("Crescendo ADE XL shutdown epoch mismatch\\n"))') % _skill_quote(self.epoch),
+            _contract_text('  unless(equal(crescAxlSessionId "%s") error("Crescendo ADE XL shutdown session mismatch\\n"))') % _skill_quote(self.session_id),
+            _contract_text('  when(crescAxlBusy error("Crescendo cannot close a busy ADE XL session\\n"))'),
+            _contract_text("  crescAxlSafeClose()"),
             "  " + _status_call(marker_path, identity, "CLOSE_DONE"),
             "  t",
             ") t)",
-            "unless(crescAxlCloseResult",
-            "  crescAxlTainted = t",
-            "  crescAxlSafeClose()",
+            _contract_text("unless(crescAxlCloseResult"),
+            _contract_text("  crescAxlTainted = t"),
+            _contract_text("  crescAxlSafeClose()"),
             "  " + _status_call(marker_path, identity, "ERROR", '"shutdown failed"'),
             ")",
         ]

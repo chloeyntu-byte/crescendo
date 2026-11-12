@@ -5,6 +5,9 @@ an explicit producer-stop proof, or a previously sealed receipt. Registered
 scratch is expendable; source designs, states and run proofs are never accepted.
 """
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 
 import errno
 import json
@@ -15,11 +18,11 @@ import stat
 import time
 import uuid
 
-SCHEMA = 'crescendo.scratch_owner.v1'
-OWNER_FILE = '.cr_scratch_owner.json'
+SCHEMA = _contract_text('crescendo.scratch_owner.v1')
+OWNER_FILE = _contract_text('.cr_scratch_owner.json')
 DEFAULT_BUDGET_BYTES = 128 * 1024 * 1024
 DEFAULT_MAX_FILES = 4096
-_PREFIX = re.compile(r'^(?:launch_|browse_|job_policy_|probe_|crescendo-launch\.|cr_tmp_)')
+_PREFIX = re.compile(_contract_text(r'^(?:launch_|browse_|job_policy_|probe_|crescendo-launch\.|cr_tmp_)'))
 
 
 class ScratchSafetyError(ValueError):
@@ -42,7 +45,7 @@ def _process_start(pid):
 def _root_info(path):
     path = os.path.abspath(path)
     if (os.path.realpath(path) != path or not _PREFIX.match(os.path.basename(path))):
-        raise ScratchSafetyError('scratch path must be an explicit private Crescendo temporary directory')
+        raise ScratchSafetyError(_contract_text('scratch path must be an explicit private Crescendo temporary directory'))
     info = os.lstat(path)
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise ScratchSafetyError('scratch directory must be private and owned by this user')
@@ -207,13 +210,13 @@ def enforce_scratch_budget(parent, budget_bytes=DEFAULT_BUDGET_BYTES,
             continue
         checked += 1
         if checked > 128:
-            raise ScratchSafetyError('too many Crescendo scratch directories; close owned UIs and clean their proven scratch')
+            raise ScratchSafetyError(_contract_text('too many Crescendo scratch directories; close owned UIs and clean their proven scratch'))
         _read_owner(path)
         usage = _tree_usage(path, max_files=max_files)
         total += usage['bytes']
         files += usage['files']
         if total + extra_bytes > int(budget_bytes) or files > max_files:
-            raise ScratchSafetyError('Crescendo temporary cache budget exceeded; simulation data belongs in the configured data directory')
+            raise ScratchSafetyError(_contract_text('Crescendo temporary cache budget exceeded; simulation data belongs in the configured data directory'))
     return {'bytes': total, 'files': files, 'directories': checked, 'budget_bytes': int(budget_bytes)}
 
 

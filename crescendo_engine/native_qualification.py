@@ -1,11 +1,14 @@
 """Semantic identity of native point qualification, independent of Run/SCS ABI.
 
 Old results remain readable. Only reuse as new execution or optimizer evidence
-requires current corner selection, string handling, exact-Test Local/RDB
-and Spectre-header qualification.
+requires current corner selection, string handling, exact-Test Local/RDB,
+Spectre-header qualification and bounded lexical alias resolution.
 """
+from crescendo_engine.runtime import schema_family as _schema_family, bind_text
+_contract_text = bind_text()
 
-NATIVE_QUALIFICATION_REVISION = "crescendo.native_point_qualification.v4"
+
+NATIVE_QUALIFICATION_REVISION = _contract_text("crescendo.native_point_qualification.v5")
 
 _NATIVE_SCOPES = frozenset((
     "native_expression_mapping_and_recorded_reference_points",
@@ -22,7 +25,7 @@ def is_native_qualification(document):
     protocol = generation.get("generation_protocol") if isinstance(generation, dict) else None
     scope = qualification.get("scope") if isinstance(qualification, dict) else None
     return ((isinstance(protocol, str) and
-             protocol.startswith("crescendo.native_run_device_parameters.")) or
+             _schema_family(protocol, "crescendo.native_run_device_parameters.")) or
             (isinstance(scope, str) and scope in _NATIVE_SCOPES))
 
 
@@ -39,7 +42,7 @@ def require_current_native_qualification(document):
     qualification_revision = (qualification.get("revision")
                               if isinstance(qualification, dict) else None)
     native_generation = (isinstance(protocol, str) and
-                         protocol.startswith("crescendo.native_run_device_parameters."))
+                         _schema_family(protocol, "crescendo.native_run_device_parameters."))
     native_scope = isinstance(scope, str) and scope in _NATIVE_SCOPES
     if ((native_generation and generation_revision != NATIVE_QUALIFICATION_REVISION) or
             (native_scope and qualification_revision != NATIVE_QUALIFICATION_REVISION)):

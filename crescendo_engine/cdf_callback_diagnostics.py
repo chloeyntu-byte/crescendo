@@ -6,6 +6,9 @@ These helpers never evaluate design variables or initialize a vendor form.
 Related strings are possible expressions, not dependency proof.
 """
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 
 
 MAX_SCAN_FIELDS = 256
@@ -22,20 +25,20 @@ MAX_FORM_PROC_CHARS = 256
 
 def _bounded_scalar(expression, limit):
     """Read only scalar metadata; never format arbitrary CDF/OA objects."""
-    return ('let((crescDiagScalar) crescDiagScalar = {0} '
+    return (_contract_text('let((crescDiagScalar) crescDiagScalar = {0} '
             'when(symbolp(crescDiagScalar) && crescDiagScalar && crescDiagScalar != t '
             'crescDiagScalar = symbolToString(crescDiagScalar)) '
             'if(stringp(crescDiagScalar) then '
             'if(strlen(crescDiagScalar) > {1} then substring(crescDiagScalar 1 {1}) else crescDiagScalar) '
-            'else if(crescDiagScalar == nil || crescDiagScalar == t then crescDiagScalar else "<non-scalar>")))').format(
+            'else if(crescDiagScalar == nil || crescDiagScalar == t then crescDiagScalar else "<non-scalar>")))')).format(
                 expression, limit)
 
 
 def _scalar_truncated(expression, limit):
-    return ('let((crescDiagScalar) crescDiagScalar = {0} '
+    return (_contract_text('let((crescDiagScalar) crescDiagScalar = {0} '
             'when(symbolp(crescDiagScalar) && crescDiagScalar && crescDiagScalar != t '
             'crescDiagScalar = symbolToString(crescDiagScalar)) '
-            'stringp(crescDiagScalar) && strlen(crescDiagScalar) > {1})').format(expression, limit)
+            'stringp(crescDiagScalar) && strlen(crescDiagScalar) > {1})')).format(expression, limit)
 
 
 def selected_property_assignment_lines(row, literal, quote, generic=True):
@@ -61,12 +64,12 @@ def callback_value_proof_lines(row, quote):
     name = quote(row['property'])
     return [
         'when(callbackExpr && callbackExpr != ""',
-        '  crescCallbackFreshCdf = cdfGetInstCDF(inst)',
-        '  unless(crescCallbackFreshCdf error("Crescendo callback value proof cannot refresh CDF for %s\\n"))' % name,
-        '  crescCallbackFreshParam = get(crescCallbackFreshCdf stringToSymbol("%s"))' % name,
-        '  unless(crescCallbackFreshParam error("Crescendo callback value proof parameter missing: %s\\n"))' % name,
-        '  crescCallbackOaProp = dbFindProp(inst "%s")' % name,
-        '  fprintf(crescVerify "CDF_CALLBACK_EFFECTIVE\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" crescCallbackEffectiveValue crescCallbackFreshParam~>value if(crescCallbackOaProp then t else nil) if(crescCallbackOaProp then crescCallbackOaProp~>value else nil) crescCallbackDefaultPresent if(crescCallbackDefaultPresent then crescCallbackDefaultValue else nil))' % quote(row['parameter_id']),
+        _contract_text('  crescCallbackFreshCdf = cdfGetInstCDF(inst)'),
+        _contract_text('  unless(crescCallbackFreshCdf error("Crescendo callback value proof cannot refresh CDF for %s\\n"))') % name,
+        _contract_text('  crescCallbackFreshParam = get(crescCallbackFreshCdf stringToSymbol("%s"))') % name,
+        _contract_text('  unless(crescCallbackFreshParam error("Crescendo callback value proof parameter missing: %s\\n"))') % name,
+        _contract_text('  crescCallbackOaProp = dbFindProp(inst "%s")') % name,
+        _contract_text('  fprintf(crescVerify "CDF_CALLBACK_EFFECTIVE\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" crescCallbackEffectiveValue crescCallbackFreshParam~>value if(crescCallbackOaProp then t else nil) if(crescCallbackOaProp then crescCallbackOaProp~>value else nil) crescCallbackDefaultPresent if(crescCallbackDefaultPresent then crescCallbackDefaultValue else nil))') % quote(row['parameter_id']),
         ')',
     ]
 
@@ -86,7 +89,7 @@ def callback_failure_lines(row, literal, library, cell, view, instance,
     identity = [quote(str(value or '')) for value in
                 (row['property'], row['parameter_id'], library, cell, view, instance,
                  row.get('hierarchy_path') or '', row['property'], row['prop_type'])]
-    entry = ('crescCallbackInput = errset(progn(crescCallbackInput = dbFindProp(inst "%s") '
+    entry = (_contract_text('crescCallbackInput = errset(progn(crescCallbackInput = dbFindProp(inst "%s") '
              'list(list("schema_version" "crescendo.cdf_callback_input.v1") '
              'list("parameter_id" "%s") list("instance_lcv" list("%s" "%s" "%s" "%s")) '
              'list("hierarchy_path" "%s") list("property" "%s") list("property_type" "%s") '
@@ -96,7 +99,7 @@ def callback_failure_lines(row, literal, library, cell, view, instance,
              'list("callback_truncated" %s) '
              'list("selected_parameter_names" %s) list("selected_parameter_names_truncated" %s) '
              'list("cdf_parse_as_cel" %s) list("cdf_parse_as_number" %s) '
-             'list("selected_cdf_metadata_truncated" %s || %s))) nil)') % tuple(
+             'list("selected_cdf_metadata_truncated" %s || %s))) nil)')) % tuple(
                  identity + [literal, _bounded_scalar('callbackExpr', MAX_CALLBACK_CHARS),
                              _scalar_truncated('callbackExpr', MAX_CALLBACK_CHARS),
                              reported_names, 't' if (len(names) > MAX_SELECTED_NAMES or
@@ -105,77 +108,77 @@ def callback_failure_lines(row, literal, library, cell, view, instance,
                              _bounded_scalar("get(cdfParam 'parseAsNumber)", MAX_FLAG_CHARS),
                              _scalar_truncated("get(cdfParam 'parseAsCEL)", MAX_FLAG_CHARS),
                              _scalar_truncated("get(cdfParam 'parseAsNumber)", MAX_FLAG_CHARS)])
-    fallback = ('list(list("schema_version" "crescendo.cdf_callback_input.v1") '
+    fallback = (_contract_text('list(list("schema_version" "crescendo.cdf_callback_input.v1") '
                 'list("parameter_id" "%s") list("requested_value" %s) '
-                'list("diagnostic_status" "unavailable"))') % (quote(row['parameter_id']), literal)
+                'list("diagnostic_status" "unavailable"))')) % (quote(row['parameter_id']), literal)
     lines = [
-        '  let((crescCallbackInput crescCallbackExtra)',
+        _contract_text('  let((crescCallbackInput crescCallbackExtra)'),
         '    ' + entry,
         '    callbackResult = errset(evalstring(callbackExpr) t)',
         '    unless(callbackResult',
-        '      crescCallbackExtra = errset(',
-        '        let((crescDiagRemaining crescDiagParam crescDiagName crescDiagValue crescDiagType',
-        '             crescDiagCel crescDiagNumber crescDiagFields crescDiagScanned crescDiagCount',
-        '             crescDiagChars crescDiagCost crescDiagSelected crescDiagNameTruncated crescDiagMetadataTruncated)',
-        '          crescDiagRemaining = cdfgData~>parameters',
-        '          crescDiagSelected = ' + names_literal,
-        '          crescDiagScanned = 0',
-        '          crescDiagCount = 0',
-        '          crescDiagChars = 0',
-        '          while(crescDiagRemaining && crescDiagScanned < %d && crescDiagCount < %d && crescDiagChars < %d' % (
+        _contract_text('      crescCallbackExtra = errset('),
+        _contract_text('        let((crescDiagRemaining crescDiagParam crescDiagName crescDiagValue crescDiagType'),
+        _contract_text('             crescDiagCel crescDiagNumber crescDiagFields crescDiagScanned crescDiagCount'),
+        _contract_text('             crescDiagChars crescDiagCost crescDiagSelected crescDiagNameTruncated crescDiagMetadataTruncated)'),
+        _contract_text('          crescDiagRemaining = cdfgData~>parameters'),
+        _contract_text('          crescDiagSelected = ') + names_literal,
+        _contract_text('          crescDiagScanned = 0'),
+        _contract_text('          crescDiagCount = 0'),
+        _contract_text('          crescDiagChars = 0'),
+        _contract_text('          while(crescDiagRemaining && crescDiagScanned < %d && crescDiagCount < %d && crescDiagChars < %d') % (
             MAX_SCAN_FIELDS, MAX_EXPRESSION_FIELDS, MAX_EXPRESSION_CHARS),
-        '            crescDiagParam = car(crescDiagRemaining)',
-        '            crescDiagRemaining = cdr(crescDiagRemaining)',
-        '            crescDiagScanned = crescDiagScanned + 1',
-        '            crescDiagName = crescDiagParam~>name',
-        '            crescDiagValue = crescDiagParam~>value',
-        '            when(stringp(crescDiagName) && !member(crescDiagName crescDiagSelected) &&',
-        '                 stringp(crescDiagValue) && rexMatchp("[A-Za-z_]" if(strlen(crescDiagValue) > %d then substring(crescDiagValue 1 %d) else crescDiagValue))' % (
+        _contract_text('            crescDiagParam = car(crescDiagRemaining)'),
+        _contract_text('            crescDiagRemaining = cdr(crescDiagRemaining)'),
+        _contract_text('            crescDiagScanned = crescDiagScanned + 1'),
+        _contract_text('            crescDiagName = crescDiagParam~>name'),
+        _contract_text('            crescDiagValue = crescDiagParam~>value'),
+        _contract_text('            when(stringp(crescDiagName) && !member(crescDiagName crescDiagSelected) &&'),
+        _contract_text('                 stringp(crescDiagValue) && rexMatchp("[A-Za-z_]" if(strlen(crescDiagValue) > %d then substring(crescDiagValue 1 %d) else crescDiagValue))') % (
             MAX_VALUE_CHARS, MAX_VALUE_CHARS),
-        '              crescDiagNameTruncated = strlen(crescDiagName) > %d' % MAX_NAME_CHARS,
-        '              crescDiagMetadataTruncated = %s || %s || %s' % (
-            _scalar_truncated("get(crescDiagParam 'type)", MAX_TYPE_CHARS),
-            _scalar_truncated("get(crescDiagParam 'parseAsCEL)", MAX_FLAG_CHARS),
-            _scalar_truncated("get(crescDiagParam 'parseAsNumber)", MAX_FLAG_CHARS)),
-        '              crescDiagName = ' + _bounded_scalar('crescDiagName', MAX_NAME_CHARS),
-        '              crescDiagType = ' + _bounded_scalar("get(crescDiagParam 'type)", MAX_TYPE_CHARS),
-        '              crescDiagCel = ' + _bounded_scalar("get(crescDiagParam 'parseAsCEL)", MAX_FLAG_CHARS),
-        '              crescDiagNumber = ' + _bounded_scalar("get(crescDiagParam 'parseAsNumber)", MAX_FLAG_CHARS),
-        '              crescDiagCost = strlen(crescDiagName) + min(strlen(crescDiagValue) %d) + %d' % (
+        _contract_text('              crescDiagNameTruncated = strlen(crescDiagName) > %d') % MAX_NAME_CHARS,
+        _contract_text('              crescDiagMetadataTruncated = %s || %s || %s') % (
+            _scalar_truncated(_contract_text("get(crescDiagParam 'type)"), MAX_TYPE_CHARS),
+            _scalar_truncated(_contract_text("get(crescDiagParam 'parseAsCEL)"), MAX_FLAG_CHARS),
+            _scalar_truncated(_contract_text("get(crescDiagParam 'parseAsNumber)"), MAX_FLAG_CHARS)),
+        _contract_text('              crescDiagName = ') + _bounded_scalar(_contract_text('crescDiagName'), MAX_NAME_CHARS),
+        _contract_text('              crescDiagType = ') + _bounded_scalar(_contract_text("get(crescDiagParam 'type)"), MAX_TYPE_CHARS),
+        _contract_text('              crescDiagCel = ') + _bounded_scalar(_contract_text("get(crescDiagParam 'parseAsCEL)"), MAX_FLAG_CHARS),
+        _contract_text('              crescDiagNumber = ') + _bounded_scalar(_contract_text("get(crescDiagParam 'parseAsNumber)"), MAX_FLAG_CHARS),
+        _contract_text('              crescDiagCost = strlen(crescDiagName) + min(strlen(crescDiagValue) %d) + %d') % (
             MAX_VALUE_CHARS, MAX_TYPE_CHARS + 2 * MAX_FLAG_CHARS),
-        '              if(crescDiagChars + crescDiagCost <= %d then' % MAX_EXPRESSION_CHARS,
-        '                crescDiagFields = cons(list(list("name" crescDiagName)',
-        '                  list("name_truncated" crescDiagNameTruncated)',
-        '                  list("value" %s)' % _bounded_scalar('crescDiagValue', MAX_VALUE_CHARS),
-        '                  list("type" crescDiagType) list("parse_as_cel" crescDiagCel)',
-        '                  list("parse_as_number" crescDiagNumber)',
-        '                  list("metadata_truncated" crescDiagMetadataTruncated)',
-        '                  list("value_truncated" strlen(crescDiagValue) > %d)) crescDiagFields)' % MAX_VALUE_CHARS,
-        '                crescDiagCount = crescDiagCount + 1',
-        '                crescDiagChars = crescDiagChars + crescDiagCost',
+        _contract_text('              if(crescDiagChars + crescDiagCost <= %d then') % MAX_EXPRESSION_CHARS,
+        _contract_text('                crescDiagFields = cons(list(list("name" crescDiagName)'),
+        _contract_text('                  list("name_truncated" crescDiagNameTruncated)'),
+        '                  list("value" %s)' % _bounded_scalar(_contract_text('crescDiagValue'), MAX_VALUE_CHARS),
+        _contract_text('                  list("type" crescDiagType) list("parse_as_cel" crescDiagCel)'),
+        _contract_text('                  list("parse_as_number" crescDiagNumber)'),
+        _contract_text('                  list("metadata_truncated" crescDiagMetadataTruncated)'),
+        _contract_text('                  list("value_truncated" strlen(crescDiagValue) > %d)) crescDiagFields)') % MAX_VALUE_CHARS,
+        _contract_text('                crescDiagCount = crescDiagCount + 1'),
+        _contract_text('                crescDiagChars = crescDiagChars + crescDiagCost'),
         '              else',
-        '                crescDiagRemaining = cons(crescDiagParam crescDiagRemaining)',
-        '                crescDiagChars = %d' % MAX_EXPRESSION_CHARS,
+        _contract_text('                crescDiagRemaining = cons(crescDiagParam crescDiagRemaining)'),
+        _contract_text('                crescDiagChars = %d') % MAX_EXPRESSION_CHARS,
         '              )',
         '            )',
         '          )',
         '          list(list("capture_stage" "callback_failure")',
         '            list("expression_fields_status" "bounded_candidate_strings")',
-        '            list("expression_fields" reverse(crescDiagFields))',
-        '            list("expression_fields_scanned" crescDiagScanned)',
-        '            list("expression_fields_truncated" if(crescDiagRemaining then t else nil))',
-        '            list("remaining_cdf_fields_uninspected" if(crescDiagRemaining then t else nil))',
+        _contract_text('            list("expression_fields" reverse(crescDiagFields))'),
+        _contract_text('            list("expression_fields_scanned" crescDiagScanned)'),
+        _contract_text('            list("expression_fields_truncated" if(crescDiagRemaining then t else nil))'),
+        _contract_text('            list("remaining_cdf_fields_uninspected" if(crescDiagRemaining then t else nil))'),
         '            list("expression_fields_character_budget" %d)' % MAX_EXPRESSION_CHARS,
         '            list("form_init_proc" %s)' % _bounded_scalar("get(cdfgData 'formInitProc)", MAX_FORM_PROC_CHARS),
         '            list("form_init_proc_truncated" %s)' % _scalar_truncated("get(cdfgData 'formInitProc)", MAX_FORM_PROC_CHARS),
         '            list("done_proc" %s)' % _bounded_scalar("get(cdfgData 'doneProc)", MAX_FORM_PROC_CHARS),
         '            list("done_proc_truncated" %s))' % _scalar_truncated("get(cdfgData 'doneProc)", MAX_FORM_PROC_CHARS),
         '        ) nil)',
-        '      errset(printf("CRESCENDO_CDF_CALLBACK_INPUT\\t%L\\n" append(',
-        '        if(crescCallbackInput then car(crescCallbackInput) else ' + fallback + ')',
-        '        if(crescCallbackExtra then car(crescCallbackExtra) else list(',
+        _contract_text('      errset(printf("CRESCENDO_CDF_CALLBACK_INPUT\\t%L\\n" append('),
+        _contract_text('        if(crescCallbackInput then car(crescCallbackInput) else ') + fallback + ')',
+        _contract_text('        if(crescCallbackExtra then car(crescCallbackExtra) else list('),
         '          list("capture_stage" "callback_failure") list("expression_fields_status" "unavailable"))))) nil)',
-        '      error("CRESCENDO_ADAPTER_ERROR:cdf_callback_incompatible CDF callback failed for %s: %%L\\n" callbackExpr)' % quote(row['property']),
+        _contract_text('      error("CRESCENDO_ADAPTER_ERROR:cdf_callback_incompatible CDF callback failed for %s: %%L\\n" callbackExpr)') % quote(row['property']),
         '    )',
         '  )',
     ]

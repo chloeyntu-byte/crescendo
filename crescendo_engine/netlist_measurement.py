@@ -10,7 +10,11 @@ import math
 import json
 import os
 import re
+import shutil
 import uuid
+
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
 
 from .cadence import build_guardian_command, child_environment, run_command
 from .legacy_guardian import (
@@ -21,11 +25,12 @@ from .resources import guardian_script_path
 from .utils import atomic_write_json, atomic_write_text, ensure_dir, is_under
 
 
-SCHEMA = "crescendo.netlist_measurement.v1"
-PROTOCOL = "CRESCENDO_NETLIST_MEASURE_1"
-_EVALUATOR_LOCALS = set(("crescPort", "crescOpened", "crescValue", "crescPrinted", "crescFailed", "crescParam", "crescVarFailed",
-                         "crescAnalyses", "crescAnalysis", "crescAnalysisIndex", "crescMissingVars", "crescVariable", "crescBlockedVars"))
-CAPABILITY_SCHEMA = "crescendo.result_reader_capability.v1"
+SCHEMA = _contract_text("crescendo.netlist_measurement.v1")
+PROTOCOL = _contract_text("CRESCENDO_NETLIST_MEASURE_1")
+_EVALUATOR_LOCALS = set((_contract_text("crescPort"), _contract_text("crescOpened"), _contract_text("crescValue"), _contract_text("crescPrinted"), _contract_text("crescFailed"), _contract_text("crescParam"), _contract_text("crescVarFailed"),
+                         _contract_text("crescAnalyses"), _contract_text("crescAnalysis"), _contract_text("crescAnalysisIndex"), _contract_text("crescMissingVars"), _contract_text("crescVariable"), _contract_text("crescBlockedVars")))
+CAPABILITY_SCHEMA = _contract_text("crescendo.result_reader_capability.v1")
+MAX_BATCH_TIMEOUT_SECONDS = 3600
 
 
 class NetlistMeasurementError(RuntimeError):
@@ -39,7 +44,7 @@ def run_owned_command(argv, cwd, env, timeout_seconds, control_root, token,
                       cancel_check=None, command_runner=None, before_launch=None):
     """Reuse the existing durable guardian launch and cleanup contract."""
     ensure_dir(control_root)
-    state_path = os.path.join(control_root, "guardian_state.json")
+    state_path = os.path.join(control_root, _contract_text("guardian_state.json"))
     stdout_path = os.path.join(control_root, "ocean.stdout")
     stderr_path = os.path.join(control_root, "ocean.stderr")
     descriptor, lock_path = acquire_legacy_guardian_launch_lock(control_root)
@@ -88,7 +93,7 @@ def _startup_lines(config):
         if path in seen:
             continue
         seen.add(path)
-        lines.append('unless(errset(load(%s) t) error("Crescendo native result-reader startup failed\\n"))' % _quote(path))
+        lines.append(_contract_text('unless(errset(load(%s) t) error("Crescendo native result-reader startup failed\\n"))') % _quote(path))
     return lines
 
 
@@ -182,7 +187,7 @@ def required_variables(task, required_output_keys=None):
         # Calculator constants must not stand in for actual candidate sizing.
         # Read the selected symbols and qualified top-level values from PSF.
         for row in task.get("variables") or []:
-            if isinstance(row, dict) and str(row.get("name", "")).startswith("CRESCENDO_NL_"):
+            if isinstance(row, dict) and str(row.get("name", "")).startswith(_contract_text("CRESCENDO_NL_")):
                 names.add(row["name"])
         for row in task.get("native_parameters") or []:
             if row.get("name") and isinstance(row.get("value"), (int, float)) and not isinstance(row.get("value"), bool):
@@ -248,89 +253,94 @@ def _requested_outputs(task, required_output_keys=None):
     return outputs
 
 
-def render_measurement_script(task, records_path, token, required_output_keys=None):
+def render_measurement_script(task, records_path, token, required_output_keys=None, isolated=False):
     """Return an Ocean program with a bounded, identity-fenced scalar protocol."""
     outputs = _requested_outputs(task, required_output_keys)
     ordered, unused = evaluation_plan(task, required_output_keys)
     variables_required = required_variables(task, required_output_keys)
     variable_dependencies = output_variable_dependencies(task, required_output_keys)
     output_indexes = dict((row["key"], index) for index, row in enumerate(outputs))
+    function_name = _contract_text("cr_read_point") if isolated else _contract_text("crescEvaluatePrivateNetlist")
+    terminate = "return" if isolated else "exit"
+    aliases = [row.get("name") for row in ordered
+               if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", row.get("name") or "")] if isolated else []
+    binding_form = "prog" if isolated else "let"
     lines = ["; Original ADE expressions; no simulation or source writes.",
-             "procedure(crescEvaluatePrivateNetlist()",
-             "  let((crescPort crescOpened crescValue crescPrinted crescFailed crescParam crescVarFailed crescAnalyses crescAnalysis crescAnalysisIndex crescMissingVars crescVariable crescBlockedVars)",
-             "    crescFailed = nil", "    crescVarFailed = nil", "    crescMissingVars = nil"]
+             "procedure(%s()" % function_name,
+             _contract_text("  %s((crescPort crescOpened crescValue crescPrinted crescFailed crescParam crescVarFailed crescAnalyses crescAnalysis crescAnalysisIndex crescMissingVars crescVariable crescBlockedVars %s)") % (binding_form, " ".join(aliases)),
+             _contract_text("    crescFailed = nil"), _contract_text("    crescVarFailed = nil"), _contract_text("    crescMissingVars = nil")]
     reader = (task.get("simulator_contract") or {}).get("result_reader", "spectre")
     if reader not in ("spectre", "alps"):
         raise NetlistMeasurementError("Unqualified simulator result reader")
     for path in task.get("ocean_loads") or []:
         lines.append("    load(%s)" % _quote(path))
-    lines.extend(["    unless(errset(simulator('%s) t) error(\"Crescendo requested Ocean simulator reader is unavailable\\n\"))" % reader])
+    lines.extend([_contract_text("    unless(errset(simulator('%s) t) error(\"Crescendo requested Ocean simulator reader is unavailable\\n\"))") % reader])
     # Expected/input values must never seed Calculator VAR. Only successful
     # current-result pv reads below may define a design variable in this Ocean.
     lines.extend([
-        "    crescPort = outfile(%s)" % _quote(records_path),
-        '    unless(crescPort error("Crescendo measurement records cannot open\\n"))',
-        '    fprintf(crescPort "%s\\t%s\\n")' % (PROTOCOL, token),
-        "    crescOpened = errset(openResults(%s) t)" % _quote(task["psf_dir"]),
-        '    unless(crescOpened && car(crescOpened)',
-        '      fprintf(crescPort "O\\t0\\tunavailable\\n")',
-        '      fprintf(crescPort "END\\t%d\\n")' % len(outputs),
-        '      close(crescPort)',
-        '      printf("Crescendo candidate PSF cannot open\\n")',
-        '      exit(4)', "    )",
-        '    fprintf(crescPort "O\\t0\\topened\\n")',
-        "    crescAnalyses = errset(results() t)",
-        "    if(crescAnalyses && listp(car(crescAnalyses)) then",
-        "      crescAnalysisIndex = 0",
-        "      foreach(crescAnalysis car(crescAnalyses)",
-        "        when(crescAnalysisIndex < 256",
-        '          fprintf(crescPort "A\\t%d\\t%L\\n" crescAnalysisIndex crescAnalysis)',
+        _contract_text("    crescPort = outfile(%s)") % _quote(records_path),
+        _contract_text('    unless(crescPort error("Crescendo measurement records cannot open\\n"))'),
+        _contract_text('    fprintf(crescPort "%s\\t%s\\n")') % (PROTOCOL, token),
+        _contract_text("    crescOpened = errset(openResults(%s) t)") % _quote(task["psf_dir"]),
+        _contract_text('    unless(crescOpened && car(crescOpened)'),
+        _contract_text('      fprintf(crescPort "O\\t0\\tunavailable\\n")'),
+        _contract_text('      fprintf(crescPort "END\\t%d\\n")') % len(outputs),
+        _contract_text('      close(crescPort)'),
+        _contract_text('      printf("Crescendo candidate PSF cannot open\\n")'),
+        '      %s(4)' % terminate, "    )",
+        _contract_text('    fprintf(crescPort "O\\t0\\topened\\n")'),
+        _contract_text("    crescAnalyses = errset(results() t)"),
+        _contract_text("    if(crescAnalyses && listp(car(crescAnalyses)) then"),
+        _contract_text("      crescAnalysisIndex = 0"),
+        _contract_text("      foreach(crescAnalysis car(crescAnalyses)"),
+        _contract_text("        when(crescAnalysisIndex < 256"),
+        _contract_text('          fprintf(crescPort "A\\t%d\\t%L\\n" crescAnalysisIndex crescAnalysis)'),
         "        )",
-        "        crescAnalysisIndex = crescAnalysisIndex + 1",
+        _contract_text("        crescAnalysisIndex = crescAnalysisIndex + 1"),
         "      )",
-        "      if(crescAnalysisIndex <= 256 then",
-        '        fprintf(crescPort "I\\t0\\tavailable\\n")',
-        "      else", '        fprintf(crescPort "I\\t0\\ttruncated\\n")', "      )",
-        "    else", '      fprintf(crescPort "I\\t0\\tunavailable\\n")', "    )",
+        _contract_text("      if(crescAnalysisIndex <= 256 then"),
+        _contract_text('        fprintf(crescPort "I\\t0\\tavailable\\n")'),
+        "      else", _contract_text('        fprintf(crescPort "I\\t0\\ttruncated\\n")'), "      )",
+        "    else", _contract_text('      fprintf(crescPort "I\\t0\\tunavailable\\n")'), "    )",
     ])
     if task.get("analysis"):
         lines.append("    selectResult(%s)" % _quote(task["analysis"]))
     for index, name in enumerate(variables_required):
         lines.extend([
-            "    crescParam = errset(pv(\"top-level\" %s ?result 'designParamVals) t)" % _quote(name),
-            "    if(crescParam && numberp(car(crescParam)) then",
-            "      desVar(%s car(crescParam))" % _quote(name),
-            '      fprintf(crescPort "P\\t%d\\t%%.17g\\n" car(crescParam))' % index,
-            "    else", '      fprintf(crescPort "X\\t%d\\tunavailable_design_parameter\\n")' % index,
-            "      crescMissingVars = cons(%s crescMissingVars)" % _quote(name),
-            "      crescVarFailed = t", "    )",
+            _contract_text("    crescParam = errset(pv(\"top-level\" %s ?result 'designParamVals) t)") % _quote(name),
+            _contract_text("    if(crescParam && numberp(car(crescParam)) then"),
+            _contract_text("      desVar(%s car(crescParam))") % _quote(name),
+            _contract_text('      fprintf(crescPort "P\\t%d\\t%%.17g\\n" car(crescParam))') % index,
+            "    else", _contract_text('      fprintf(crescPort "X\\t%d\\tunavailable_design_parameter\\n")') % index,
+            _contract_text("      crescMissingVars = cons(%s crescMissingVars)") % _quote(name),
+            _contract_text("      crescVarFailed = t"), "    )",
         ])
     for output in ordered:
         if variable_dependencies[output["key"]]:
-            lines.extend(["    crescBlockedVars = setof(crescVariable list(%s) member(crescVariable crescMissingVars))" %
+            lines.extend([_contract_text("    crescBlockedVars = setof(crescVariable list(%s) member(crescVariable crescMissingVars))") %
                           " ".join(_quote(name) for name in sorted(variable_dependencies[output["key"]])),
-                          "    if(crescBlockedVars then"])
+                          _contract_text("    if(crescBlockedVars then")])
             if output["key"] in output_indexes:
-                lines.append('      fprintf(crescPort "E\\t%d\\tparameter_metadata_unavailable\\n")' % output_indexes[output["key"]])
+                lines.append(_contract_text('      fprintf(crescPort "E\\t%d\\tparameter_metadata_unavailable\\n")') % output_indexes[output["key"]])
             lines.append("    else")
-        lines.append("    crescValue = errset(evalstring(%s) t)" % _quote(output.get("expression") or output.get("expr")))
+        lines.append(_contract_text("    crescValue = errset(evalstring(%s) t)") % _quote(output.get("expression") or output.get("expr")))
         name = output.get("name") or ""
         if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
-            lines.append("    when(crescValue set('%s car(crescValue)))" % name)
+            lines.append(_contract_text("    when(crescValue set('%s car(crescValue)))") % name)
         if output["key"] in output_indexes:
             index = output_indexes[output["key"]]
             lines.extend([
-                "    if(crescValue && numberp(car(crescValue)) then",
-                '      crescPrinted = errset(fprintf(crescPort "V\\t%d\\t%%.17g\\n" car(crescValue)) t)' % index,
-                "      unless(crescPrinted crescFailed = t)",
-                "    else", '      fprintf(crescPort "E\\t%d\\tnon_scalar_or_expression_error\\n")' % index,
-                "      crescFailed = t", "    )",
+                _contract_text("    if(crescValue && numberp(car(crescValue)) then"),
+                _contract_text('      crescPrinted = errset(fprintf(crescPort "V\\t%d\\t%%.17g\\n" car(crescValue)) t)') % index,
+                _contract_text("      unless(crescPrinted crescFailed = t)"),
+                "    else", _contract_text('      fprintf(crescPort "E\\t%d\\tnon_scalar_or_expression_error\\n")') % index,
+                _contract_text("      crescFailed = t"), "    )",
             ])
         if variable_dependencies[output["key"]]:
             lines.append("    )")
-    lines.extend(['    fprintf(crescPort "END\\t%d\\n")' % len(outputs),
-                  "    close(crescPort)", "    if(crescVarFailed then exit(3) else if(crescFailed then exit(2) else exit(0)))",
-                  "  )", ")", "crescEvaluatePrivateNetlist()", ""])
+    lines.extend([_contract_text('    fprintf(crescPort "END\\t%d\\n")') % len(outputs),
+                  _contract_text("    close(crescPort)"), _contract_text("    if(crescVarFailed then %s(3) else if(crescFailed then %s(2) else %s(0)))") % (terminate, terminate, terminate),
+                  "  )", ")", "errset(%s() t)" % function_name if isolated else function_name + "()", ""])
     return "\n".join(lines), outputs
 
 
@@ -472,7 +482,7 @@ def verify_actual_parameters(task, effective_variables):
         if row.get("name") and isinstance(row.get("value"), (int, float)) and not isinstance(row.get("value"), bool):
             expected[row["name"]] = row["value"]
     for row in task.get("variables") or []:
-        if str(row.get("name", "")).startswith("CRESCENDO_NL_"):
+        if str(row.get("name", "")).startswith(_contract_text("CRESCENDO_NL_")):
             expected[row["name"]] = row.get("value")
     if not expected:
         raise NetlistMeasurementError("ALPS current results have no qualified parameter identity")
@@ -486,10 +496,10 @@ def verify_actual_parameters(task, effective_variables):
             "expected": expected, "simulator": "alps"}
 
 
-def evaluate_task_outputs(task, config, candidate_root, timeout_seconds,
+def _prepare_task_outputs(task, config, candidate_root, timeout_seconds,
                           required_output_keys=None, cancel_check=None,
-                          progress_callback=None, command_runner=None, ownership_callback=None):
-    """Run one owned, headless Ocean evaluator, without opening an ADE setup."""
+                          progress_callback=None, command_runner=None, ownership_callback=None, render_single=True):
+    """Freeze one point's native expressions, paths and reader identity."""
     candidate_root = os.path.realpath(os.path.abspath(candidate_root))
     if task.get("simulator_contract"):
         from .simulators import validate_execution_contract
@@ -509,9 +519,11 @@ def evaluate_task_outputs(task, config, candidate_root, timeout_seconds,
     token = uuid.uuid4().hex
     records = os.path.join(root, "values_%s.tsv" % token)
     script_path = os.path.join(root, "evaluate_%s.il" % token)
-    script, outputs = render_measurement_script(task, records, token, required)
-    script = "\n".join(_startup_lines(config)) + "\n" + script
-    atomic_write_text(script_path, script)
+    outputs = _requested_outputs(task, required)
+    if render_single:
+        script, outputs = render_measurement_script(task, records, token, required)
+        script = "\n".join(_startup_lines(config)) + "\n" + script
+        atomic_write_text(script_path, script)
     binary = config.get("cadence", {}).get("ocean_bin")
     if not binary or not os.path.isfile(binary) or not os.access(binary, os.X_OK):
         raise NetlistMeasurementError("Ocean executable is not available for Calculator evaluation")
@@ -526,14 +538,29 @@ def evaluate_task_outputs(task, config, candidate_root, timeout_seconds,
     if progress_callback:
         progress_callback({"stage": "measurement", "argv": argv, "cwd": cwd,
                            "test": task["test"], "corner": task["corner"]})
-    command = run_owned_command(argv, cwd=cwd, env=environment, timeout_seconds=timeout_seconds,
-                                control_root=root, token="cr_netlist_measure_%s" % token,
-                                cancel_check=cancel_check, command_runner=command_runner,
-                                before_launch=ownership_callback)
+    return {"task": task, "root": root, "psf": psf, "token": token, "records": records,
+            "outputs": outputs, "required": required, "script_path": script_path,
+            "argv": argv, "cwd": cwd, "environment": environment}
+
+
+def evaluate_task_outputs(task, config, candidate_root, timeout_seconds,
+                          required_output_keys=None, cancel_check=None,
+                          progress_callback=None, command_runner=None, ownership_callback=None):
+    prepared = _prepare_task_outputs(task, config, candidate_root, timeout_seconds,
+        required_output_keys, cancel_check, progress_callback, command_runner, ownership_callback)
+    command = run_owned_command(prepared["argv"], cwd=prepared["cwd"], env=prepared["environment"],
+        timeout_seconds=timeout_seconds, control_root=prepared["root"], token=_contract_text("cr_netlist_measure_%s") % prepared["token"],
+        cancel_check=cancel_check, command_runner=command_runner, before_launch=ownership_callback)
+    return _finish_task_outputs(prepared, command)
+
+
+def _finish_task_outputs(prepared, command):
+    task, root, psf = prepared["task"], prepared["root"], prepared["psf"]
+    token, records, outputs, required = (prepared[key] for key in ("token", "records", "outputs", "required"))
     if command.get("timed_out") or command.get("cancelled") or command.get("termination_failed"):
         raise NetlistMeasurementError("Calculator evaluation was interrupted", {"command": command, "path": root})
     effective_variables, capability = {}, {}
-    capability_path = os.path.join(root, "result_reader_capability.json")
+    capability_path = os.path.join(root, _contract_text("result_reader_capability.json"))
     try:
         measured = parse_measurement_records(records, token, outputs, task,
             required_variables(task, required), effective_variables, capability)
@@ -576,8 +603,100 @@ def evaluate_task_outputs(task, config, candidate_root, timeout_seconds,
               "result_reader": (task.get("simulator_contract") or {}).get("result_reader", "spectre"),
               "native_parameter_readback_verified": parameter_proof,
               "result_reader_capability": capability, "capability_path": capability_path}
-    atomic_write_json(os.path.join(root, "measurement.json"), result)
+    atomic_write_json(os.path.join(root, _contract_text("measurement.json")), result)
     return result
+
+
+def evaluate_task_outputs_batch(tasks, config, candidate_root, timeout_seconds,
+                                required_output_keys=None, cancel_check=None,
+                                progress_callback=None, command_runner=None, ownership_callback=None):
+    """One owned reader for at most four points, with per-point identity fences.
+
+    Every batch exits before any point ACK permits raw-result deletion. Errors
+    are returned per task so the existing retirement path cleans every owner.
+    """
+    if not 1 <= len(tasks) <= 4 or len({task["task_id"] for task in tasks}) != len(tasks):
+        raise NetlistMeasurementError("Reader batch must contain one to four unique owned points")
+    # Each point retains its full budget. Split long-budget groups before
+    # launch so a multi-point reader stays within the one-hour batch ceiling.
+    # A single point with a larger explicit budget keeps that budget.
+    point_budget = float(timeout_seconds or 0)
+    batch_size = 4
+    if point_budget > MAX_BATCH_TIMEOUT_SECONDS / 4:
+        batch_size = max(1, int(MAX_BATCH_TIMEOUT_SECONDS / point_budget))
+    if len(tasks) > batch_size:
+        results = {}
+        for offset in range(0, len(tasks), batch_size):
+            results.update(evaluate_task_outputs_batch(
+                tasks[offset:offset + batch_size], config, candidate_root, timeout_seconds,
+                required_output_keys=required_output_keys, cancel_check=cancel_check,
+                progress_callback=progress_callback, command_runner=command_runner,
+                ownership_callback=ownership_callback))
+        return results
+    batch_budget = point_budget * len(tasks) if point_budget > 0 else timeout_seconds
+    prepared = [_prepare_task_outputs(task, config, candidate_root, timeout_seconds,
+                required_output_keys, render_single=False) for task in tasks]
+    if (len({item["root"] for item in prepared}) != len(prepared) or
+            len({item["psf"] for item in prepared}) != len(prepared)):
+        raise NetlistMeasurementError("Reader points must have distinct result and measurement directories")
+    first = prepared[0]
+    batch_root = os.path.join(os.path.realpath(candidate_root), "reader_batches", first["token"])
+    if not is_under(os.path.realpath(batch_root), os.path.realpath(candidate_root)):
+        raise NetlistMeasurementError("Reader control directory escapes the owned candidate")
+    lines = ["unless(changeWorkingDir(%s) error(\"Reader working directory unavailable\\n\"))" % _quote(first["cwd"])]
+    lines.extend(_startup_lines(config))
+    for item in prepared:
+        script, unused = render_measurement_script(item["task"], item["records"], item["token"],
+                                                   required_output_keys, isolated=True)
+        lines.extend(["unless(changeWorkingDir(%s) error(\"Reader point working directory unavailable\\n\"))" % _quote(item["cwd"]),
+                      script, "errset(closeResults(%s) t)" % _quote(item["psf"])])
+    lines.append("exit(0)")
+    script_path = os.path.join(batch_root, "batch_%s.il" % first["token"])
+    argv = [first["argv"][0], "-nograph", "-restore", script_path]
+    manifest = {"schema_version": _contract_text("crescendo.batch_reader.v2"),
+        "point_timeout_seconds": timeout_seconds, "batch_timeout_seconds": batch_budget, "points": [
+        {"task_id": item["task"]["task_id"], "token": item["token"], "records": item["records"]}
+        for item in prepared]}
+    ownership_transferred = False
+
+    def before_launch(dependency):
+        nonlocal ownership_transferred
+        # From this point onward, ownership persistence may have partially
+        # succeeded or a reader may start. Keep its guardian evidence intact.
+        ownership_transferred = True
+        if ownership_callback:
+            ownership_callback(dependency)
+
+    try:
+        ensure_dir(batch_root)
+        atomic_write_text(script_path, "\n".join(lines))
+        atomic_write_json(os.path.join(batch_root, "batch_%s.json" % first["token"]), manifest)
+        if progress_callback:
+            progress_callback({"stage": "measurement", "argv": argv, "cwd": first["cwd"],
+                               "task_ids": [task["task_id"] for task in tasks]})
+        command = run_owned_command(argv, cwd=batch_root, env=first["environment"],
+            timeout_seconds=batch_budget, control_root=batch_root, token=_contract_text("cr_netlist_measure_%s") % first["token"],
+            cancel_check=cancel_check, command_runner=command_runner, before_launch=before_launch)
+    except Exception as error:
+        if ownership_transferred:
+            raise
+        # Include guardian lock/manifest preparation in the pre-launch boundary.
+        # run_owned_command has closed any acquired launch descriptor on failure.
+        try:
+            if os.path.lexists(batch_root):
+                shutil.rmtree(batch_root)
+        except Exception as cleanup_error:
+            detail = {"reader_control_cleanup_pending": batch_root,
+                      "cleanup_error": str(cleanup_error), "failure_stage": "measurement"}
+            raise NetlistMeasurementError(str(error), detail)
+        raise
+    results = {}
+    for item in prepared:
+        try:
+            results[item["task"]["task_id"]] = _finish_task_outputs(item, command)
+        except NetlistMeasurementError as error:
+            results[item["task"]["task_id"]] = error
+    return results
 
 
 def parsed_results(task_results, path=None):
@@ -611,7 +730,7 @@ def parsed_results(task_results, path=None):
                              "max": max(values) if values else None,
                              "mean": sum(values) / float(len(values)) if values else None,
                              "first": values[0] if values else None, "last": values[-1] if values else None}
-    return {"schema_version": "crescendo.rdb.v1", "path": path, "provenance": "private_netlist_cli",
+    return {"schema_version": _contract_text("crescendo.rdb.v1"), "path": path, "provenance": "private_netlist_cli",
             "native_rdb": False, "outputs": [output_map[key] for key in sorted(output_map)],
             "output_map": output_map, "points": [points[key] for key in sorted(points)],
             "test_statuses": statuses, "parameters": parameters}

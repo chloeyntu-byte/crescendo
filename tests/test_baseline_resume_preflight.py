@@ -1,4 +1,4 @@
-"""Unsupported Baseline Resume rejects before touching the origin or native tools."""
+"""Baseline Resume reaches the common preflight without bypassing integrity."""
 import os
 import tempfile
 import unittest
@@ -19,19 +19,20 @@ class BaselineResumePreflightTests(unittest.TestCase):
         validate_checkpoint_integrity(checkpoint)
         return checkpoint
 
-    def test_valid_baseline_rejected_before_config_lease_cleanup_or_launch(self):
+    def test_valid_baseline_reaches_config_before_lease_cleanup_or_launch(self):
         with tempfile.TemporaryDirectory() as root:
             checkpoint = self.checkpoint(root)
             service = OptimizerService({'runtime': {'run_root': root}})
             before = os.listdir(root)
-            with mock.patch.object(service, '_freeze_run_config') as config, \
+            with mock.patch.object(service, '_freeze_run_config', side_effect=ValueError('preflight sentinel')) as config, \
                     mock.patch.object(service, '_cleanup_checkpoint_origin') as cleanup, \
                     mock.patch.object(service, '_launch') as launch, \
                     mock.patch('crescendo_engine.server.ContinuationLease') as lease, \
                     mock.patch('subprocess.Popen') as spawn:
-                with self.assertRaisesRegex(ValueError, 'Maestro baseline checkpoint resume is unavailable'):
+                with self.assertRaisesRegex(ValueError, 'preflight sentinel'):
                     service.resume(checkpoint)
-            for boundary in (config, cleanup, launch, lease, spawn):
+            config.assert_called_once()
+            for boundary in (cleanup, launch, lease, spawn):
                 boundary.assert_not_called()
             self.assertEqual(os.listdir(root), before)
             self.assertFalse(service.threads)

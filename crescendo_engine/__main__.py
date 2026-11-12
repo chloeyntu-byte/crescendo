@@ -40,7 +40,7 @@ def _read_bound_test(path, backend, config, requested):
     return _choose_test(load_bound_setup(path, config, backend=backend), requested)
 
 
-def main(argv=None):
+def main(argv=None, gui_factory=None):
     parser = argparse.ArgumentParser(description="Standalone Cadence ADE circuit optimizer")
     parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("--config", default=None)
@@ -203,14 +203,18 @@ def main(argv=None):
         return 0
     if args.command == "gui":
         from .gui import launch_gui
+        def selected_gui(config, **kwargs):
+            if gui_factory is not None:
+                kwargs['gui_factory'] = gui_factory
+            return launch_gui(config, **kwargs)
         if args.maestro_context_file:
             from .maestro_context import bind_launch_config, load_launch_context
             config = load_config(args.config, persist_discovery=False, validate_discovery=False)
             context = load_launch_context(args.maestro_context_file,
                                           storage_base_root=config["runtime"].get("storage_base_override"))
             config = bind_launch_config(config, context)
-            return launch_gui(config, launch_context=context, force_exit_process=True)
-        return launch_gui(load_config(args.config), force_exit_process=True)
+            return selected_gui(config, launch_context=context, force_exit_process=True)
+        return selected_gui(load_config(args.config), force_exit_process=True)
     parser.print_help()
     return 2
 

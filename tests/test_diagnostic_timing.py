@@ -1,6 +1,6 @@
 import unittest
 
-from crescendo_engine.diagnostic_timing import DiagnosticTiming
+from crescendo_engine.diagnostic_timing import DiagnosticTiming, generation_timing_summary
 
 
 class FakeClock(object):
@@ -118,6 +118,33 @@ class DiagnosticTimingTests(unittest.TestCase):
         result = timing.snapshot()
         self.assertEqual(result['total_seconds'], 4)
         self.assertEqual(result['phases_seconds'], {'one': 4, 'two': 0})
+
+
+    def test_generation_sums_preserve_shared_batch_and_partial_solver_coverage(self):
+        clock = FakeClock()
+        timing = DiagnosticTiming(clock)
+        timing.start('ask')
+        clock.value = 1
+        timing.transition('evaluate')
+        clock.value = 5
+        timing.transition('settlement')
+        clock.value = 6
+        timing.transition('persist')
+        clock.value = 8
+        timing.finish()
+        rows = [{'timing': {'elapsed_seconds': 7, 'elapsed_scope': 'candidate_in_batch',
+                           'phases': {'execution': {'scope': 'batch', 'batch_id': 'b1',
+                                                     'elapsed_seconds': 5},
+                                      'solver': {'scope': 'task_sum', 'elapsed_seconds': seconds,
+                                                 'count': int(seconds is not None), 'total_count': 2}}}}
+                for seconds in (11, None)]
+        result = generation_timing_summary(0, timing, rows)
+        self.assertEqual(result['total_seconds'], 8)
+        self.assertEqual(result['phases_seconds']['persist'], 2)
+        self.assertEqual(result['candidate_phase_sums'], [
+            {'phase': 'execution', 'scope': 'batch_sum', 'elapsed_seconds': 5, 'count': 1, 'total_count': 1},
+            {'phase': 'solver', 'scope': 'task_sum', 'elapsed_seconds': 11, 'count': 1, 'total_count': 4},
+        ])
 
 
 if __name__ == '__main__':

@@ -18,10 +18,13 @@ import re
 import stat
 import uuid
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .gui_state import ALGORITHM_FIELDS, PHYSICAL_SCALES
 
 
-SCHEMA = "crescendo.ui_settings.v1"
+SCHEMA = _contract_text("crescendo.ui_settings.v1")
 MAX_FILE_BYTES = 64 * 1024 * 1024
 MAX_RECORDS = 100000
 MAX_TEXT = 4096
@@ -40,6 +43,7 @@ OPTIMIZATION_FIELDS = (
     "advanced_visible", "last_single_algorithm", "job_command_override", "job_command",
     "job_max_override", "job_max_jobs", "maestro_candidate_mode", "execution_backend", "simulator",
     "data_root_override_enabled", "data_root_override",
+    "native_candidate_batching", "local_solver_max_jobs", "measurement_jobs", "progress_flush_interval_seconds",
     "command_scheduler",
 ) + tuple("job_timeout_" + key for key in ("start_seconds", "configure_seconds", "run_seconds", "linger_seconds")) + tuple(
     "job_timeout_override_" + key for key in ("start_seconds", "configure_seconds", "run_seconds", "linger_seconds"))
@@ -150,7 +154,7 @@ def settings_state_directory(config=None, launch_context=None, setup_path=None, 
             source.get("work_dir") or cwd or os.getcwd())
     if not isinstance(root, str) or not root or "\x00" in root:
         raise ValueError("Project working directory is unavailable.")
-    return os.path.join(os.path.realpath(os.path.abspath(root)), ".crescendo", "settings")
+    return os.path.join(os.path.realpath(os.path.abspath(root)), _contract_text(".crescendo"), "settings")
 
 
 def _parameter_evidence(row):
@@ -328,11 +332,13 @@ def match_settings_state(document, current_context):
         optimization["data_root_override_enabled"] = False
         storage_warning = "Saved absolute data-root override disabled after TB relocation; re-enable it to reuse this path."
         warn(storage_warning)
+    from .runtime import scheduler_choices
     for key, choices in (("algorithm", ALGORITHM_FIELDS), ("last_single_algorithm", ALGORITHM_FIELDS),
                          ("maestro_candidate_mode", ("auto", "serial", "batch")),
                          ("execution_backend", ("auto", "maestro_netlist", "persistent_maestro", "legacy", "adexl", "private_netlist", "maestro_baseline")),
                          ("simulator", ("spectre", "alps")),
-                         ("command_scheduler", ("auto", "batch", "receipt"))):
+                         ("native_candidate_batching", ("serial", "generation")),
+                         ("command_scheduler", scheduler_choices())):
         if key in optimization and (not isinstance(optimization[key], str) or optimization[key] not in choices):
             optimization.pop(key)
             warn("Skipped unknown optimization setting: {}.".format(key))
@@ -343,6 +349,7 @@ def match_settings_state(document, current_context):
             warn("Skipped invalid checkbox setting: {}.".format(key))
     bad_entry = lambda key: warn("Skipped invalid optimization entry: {}.".format(key))
     _entry_fields(optimization, ("generations", "candidate_timeout_seconds", "job_max_jobs",
+                                 "local_solver_max_jobs", "measurement_jobs", "progress_flush_interval_seconds",
                                  "diagnostic_generations", "diagnostic_total_candidates"),
                   numeric=True, skipped=bad_entry)
     _entry_fields(optimization, tuple("job_timeout_" + name for name in
@@ -527,7 +534,7 @@ def _revision(raw):
 @contextlib.contextmanager
 def _write_lock(parent_fd, name):
     # Stable sidecar is never removed: unlinking a lock permits split locks.
-    lock_name = '.crescendo-config-lock-' + hashlib.sha256(name.encode('utf-8')).hexdigest()
+    lock_name = _contract_text('.crescendo-config-lock-') + hashlib.sha256(name.encode('utf-8')).hexdigest()
     descriptor = os.open(lock_name, os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600, dir_fd=parent_fd)
     try:
         info = os.fstat(descriptor)
@@ -665,7 +672,7 @@ def save_settings_state(path, document, retain_backups=3):
 
 
 def last_settings_path(config=None, launch_context=None):
-    return os.path.join(settings_state_directory(config, launch_context), "last.json")
+    return os.path.join(settings_state_directory(config, launch_context), _contract_text("last.json"))
 
 
 def save_last_settings_state(document, config=None, launch_context=None):
@@ -681,7 +688,7 @@ def _last_settings_candidates(config=None, launch_context=None):
     source = config.get("_selected_setup_source") or context.get("source") or {}
     if not _identity(source):
         return []
-    base = os.path.join(project_directory(config, source), ".crescendo")
+    base = os.path.join(project_directory(config, source), _contract_text(".crescendo"))
     prefix = "%s__%s_%s_" % (path_component(source.get("cell")),
                               path_component(source.get("library"), "lib", 36),
                               path_component(source.get("view"), "maestro", 24))
@@ -706,7 +713,7 @@ def _last_settings_candidates(config=None, launch_context=None):
             if not stat.S_ISDIR(info.st_mode):
                 continue
             for folder in ("states", "settings"):
-                path = os.path.join(base, name, folder, "last.json")
+                path = os.path.join(base, name, folder, _contract_text("last.json"))
                 try:
                     info = os.lstat(path)
                     if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:

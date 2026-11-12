@@ -58,8 +58,18 @@ class NetlistExecutionTests(unittest.TestCase):
 
     def test_local_owned_wrapper_completion_and_scalar_identity(self):
         context = self.context()
-        result = context.evaluate(self.manifest)
+        timing = {"phases": {}}
+        result = context.evaluate(self.manifest, timing=timing)
         self.assertEqual(result["candidate_id"], "g000_c0000")
+        self.assertEqual(timing["phases"]["solver"]["count"], 0)
+        self.assertIsNone(timing["phases"]["solver"]["elapsed_seconds"])
+        self.assertIsNone(timing["phases"]["scheduler_queue"]["elapsed_seconds"])
+        task = timing["tasks"][0]
+        self.assertEqual(task["status"], "completed")
+        self.assertEqual(task["phases"]["scheduler_queue"]["source"], "not_applicable")
+        for phase in ("worker_queue", "capacity_wait", "execution_preparation", "local_command",
+                      "solver_artifact_collection", "measurement_queue", "result_collection"):
+            self.assertGreaterEqual(task["phases"][phase]["elapsed_seconds"], 0)
         self.assertEqual(result["parsed"]["output_map"]["rc::gain"]["summary"]["mean"], 0.5)
         self.assertFalse(result["parsed"]["native_rdb"])
         self.assertTrue(result["task_results"][0]["receipt"]["cleanup_proven"])
@@ -743,8 +753,11 @@ class NetlistExecutionTests(unittest.TestCase):
         def bad_output(*args, **kwargs):
             raise execution.NetlistMeasurementError("expression returned nil", infrastructure=False)
         context = self.context(measurement_evaluator=bad_output)
+        timing = {"phases": {}}
         with self.assertRaises(execution.NetlistExecutionError) as caught:
-            context.evaluate(self.manifest)
+            context.evaluate(self.manifest, timing=timing)
+        self.assertEqual(timing["tasks"][0]["status"], "failed")
+        self.assertIsNotNone(timing["phases"]["result_collection"]["elapsed_seconds"])
         self.assertFalse(caught.exception.infrastructure)
         self.assertFalse(context.unsafe.is_set())
         self.assertTrue(context.close()["cleanup_proven"])

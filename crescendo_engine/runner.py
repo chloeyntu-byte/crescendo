@@ -16,6 +16,13 @@ import threading
 import queue
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
+from .diagnostic_timing import (
+    DiagnosticTiming, elapsed_seconds, generation_timing_summary, observer_phases,
+    phase_seconds, timing_seconds, timing_tick,
+)
 from .cadence import check_command_cancellation, detect_pdk_context
 from .continuation import (
     ContinuationLease, RuntimeOptimizationLease, build_continuation_pending,
@@ -373,7 +380,7 @@ def prepare_setup(path, config, max_depth=32, backend="auto", selected_cell_path
     check_command_cancellation()
     setup_reference = build_setup_reference(setup)
     prepared = {
-        "schema_version": "crescendo.prepared.v1",
+        "schema_version": _contract_text("crescendo.prepared.v1"),
         "setup_locator": setup_reference,
         "setup_path": setup_reference["path"],
         "setup": setup,
@@ -383,7 +390,7 @@ def prepare_setup(path, config, max_depth=32, backend="auto", selected_cell_path
         "source_identity": source_design_identity(setup, hierarchy, config=config),
         "eda_context": {
             "cadence": {
-                "schema_version": "crescendo.eda_setup.v1",
+                "schema_version": _contract_text("crescendo.eda_setup.v1"),
                 "version_checks": discovery.get("version_checks") or [],
             },
             "pdk": pdk_context,
@@ -428,7 +435,7 @@ def prepared_setup_reference(prepared=None, spec=None, path_override=None):
             reference = prepared["setup"]
     if reference is None and path_override is None:
         return {
-            "schema_version": "crescendo.ade_setup_reference.v1",
+            "schema_version": _contract_text("crescendo.ade_setup_reference.v1"),
             "backend": (prepared.get("setup") or {}).get("backend") or "maestro",
             "path": None,
             "sha256": ((prepared.get("setup") or {}).get("source") or {}).get("sha256"),
@@ -521,7 +528,7 @@ def _select_candidate_pdk_fallback(prepared, error):
         if policy is not None:
             context = {
                 "id": "legacy", "name": pdk.get("pdk_name"),
-                "package_root": pdk.get("pdk_dir"),
+                "package_root": pdk.get(_contract_text("pdk_dir")),
                 "reference_libraries": pdk.get("candidate_libraries") or [],
                 "technology_libraries": [], "adapter_policy": policy,
             }
@@ -556,26 +563,75 @@ def _select_candidate_pdk_fallback(prepared, error):
     return result
 
 
-def _evaluate_native_baseline_candidate(run_root, index, generation, values, spec, prepared, selected, config, cancel_check, owned_roots=None):
+def _write_candidate_timing(path, timing):
+    try:
+        atomic_write_json(path, timing)
+    except Exception:
+        # Optional timing telemetry must never control candidate completion.
+        pass
+
+
+def _read_candidate_timing(path, fallback):
+    if os.path.isfile(path) and not os.path.islink(path):
+        try:
+            timing = load_json(path)
+            if isinstance(timing, dict) and (fallback is None or (
+                    timing.get("candidate_id") == fallback.get("candidate_id")
+                    and timing.get("finished_epoch") == fallback.get("finished_epoch"))):
+                return timing
+        except Exception:
+            pass
+    return fallback
+
+
+def _finish_candidate_timing(row, timing, started, path, elapsed_scope="candidate"):
+    timing.update(status=row["status"], finished_epoch=time.time(),
+                  elapsed_seconds=elapsed_seconds(started), elapsed_scope=elapsed_scope)
+    completion = row.get("completion_evidence") or {}
+    simulations = completion.get("simulator_runs") or completion.get("spectre_runs") or []
+    solver_samples = [timing_seconds((run.get("spectre") or {}).get("solver_wall_seconds"))
+                      for run in simulations]
+    known_solver_samples = [seconds for seconds in solver_samples if seconds is not None]
+    timing["phases"].setdefault("solver", phase_seconds(
+        None if timing.get('shared_batch') else sum(known_solver_samples) if known_solver_samples else None, scope="task_sum",
+        count=len(known_solver_samples), total_count=len(solver_samples),
+        source="candidate_psf_simulator_log" if known_solver_samples else None,
+    ))
+    timing["phases"].setdefault("scheduler_queue", phase_seconds(None, scope="task_sum"))
+    row["timing"] = timing
+    _write_candidate_timing(path, timing)
+
+
+def _evaluate_native_baseline_candidate(run_root, index, generation, values, spec, prepared, selected, config, cancel_check, owned_roots=None, _native_result=None, _native_error=None):
     """Run one owned Maestro candidate; preserve raw evidence on every outcome."""
     candidate_id = "g%03d_c%04d" % (generation, index)
     candidate_root = ensure_dir(os.path.join(run_root, "candidates", candidate_id))
     if owned_roots is not None:
         owned_roots.add(os.path.abspath(candidate_root))
     started = time.time()
+    timing_started = timing_tick()
+    phases = {}
     row = {"candidate_id": candidate_id, "generation": generation, "index": index,
            "values": values, "status": "running", "started_at": utc_timestamp(),
            "execution_backend": "maestro_baseline", "cleanup_pending": True}
-    atomic_write_json(os.path.join(candidate_root, "candidate.json"), row)
+    atomic_write_json(os.path.join(candidate_root, _contract_text("candidate.json")), row)
     try:
-        from .native_baseline import evaluate_native_baseline
-        result = evaluate_native_baseline(candidate_id, values, selected, spec, prepared, config,
-                                          candidate_root, cancel_check=cancel_check)
+        if _native_error is not None:
+            raise _native_error
+        if _native_result is not None:
+            result = _native_result
+        else:
+            from .native_baseline import evaluate_native_baseline
+            result = evaluate_native_baseline(candidate_id, values, selected, spec, prepared, config,
+                                              candidate_root, cancel_check=cancel_check)
+        if result.get('batch_reference'):
+            row['batch_reference'] = copy.deepcopy(result['batch_reference'])
+        phases.update((result.get("timing") or {}).get("phases") or {})
         command = result.get("command") or {}
         completion = result.get("completion_evidence") or {}
         guard = result.get("source_guard") or {}
         application = result.get("parameter_application") or {}
-        if (completion.get("schema_version") != "crescendo.completion_evidence.v1" or
+        if (completion.get("schema_version") != _contract_text("crescendo.completion_evidence.v1") or
                 completion.get("ok") is not True or guard.get("ok") is not True or
                 application.get("ok") is not True or command.get("cleanup_pending") is not False):
             raise RuntimeError("Maestro baseline parameter, completion, source or cleanup evidence is incomplete")
@@ -584,14 +640,21 @@ def _evaluate_native_baseline_candidate(run_root, index, generation, values, spe
         # A later metric failure does not revoke the native cleanup already
         # proved by this completed evaluator.
         row["cleanup_pending"] = False
-        row["metrics"] = evaluate_metrics(result["parsed"], spec["objectives"], spec.get("constraints", []))
+        metrics_started = timing_tick()
+        try:
+            row["metrics"] = evaluate_metrics(result["parsed"], spec["objectives"], spec.get("constraints", []))
+        finally:
+            phases["metric_evaluation"] = phase_seconds(elapsed_seconds(metrics_started))
         row["status"] = "completed"
-        atomic_write_json(os.path.join(candidate_root, "completion_evidence.json"), completion)
+        atomic_write_json(os.path.join(candidate_root, _contract_text("completion_evidence.json")), completion)
     except Exception as error:
+        if getattr(error, 'batch_reference', None):
+            row['batch_reference'] = copy.deepcopy(error.batch_reference)
         row.update(status="infrastructure_failed", failure_class="native_baseline",
                    error="%s: %s" % (error.__class__.__name__, error), traceback=traceback.format_exc())
         detail = getattr(error, "detail", None)
         if isinstance(detail, dict):
+            phases.update((detail.get("timing") or {}).get("phases") or {})
             row["native_failure_detail"] = copy.deepcopy(detail)
             # Keep the producer stage in lightweight progress/checkpoint rows.
             # The full native detail stays in the candidate evidence file.
@@ -603,29 +666,34 @@ def _evaluate_native_baseline_candidate(run_root, index, generation, values, spe
                     (detail.get("native_baseline") or {}).get("cleanup_proven") is True):
                 row["cleanup_pending"] = False
             if (cancel_check() and row.get("cleanup_pending") is False and
-                    (detail.get("native_stop") or {}).get("remote_stop_proven") is True):
+                    ((detail.get("native_stop") or {}).get("remote_stop_proven") is True or
+                     ((detail.get('native_baseline') or {}).get('native_session_closed') is True and
+                      (detail.get('native_stop') or {}).get('requested') is False))):
                 row.update(status="cancelled", failure_class="user_stop", cleanup_pending=False)
     row["finished_at"] = utc_timestamp()
-    row["timing"] = {"schema_version": "crescendo.candidate_timing.v1", "candidate_id": candidate_id,
-                     "started_epoch": started, "finished_epoch": time.time(),
-                     "elapsed_seconds": max(0.0, time.time() - started), "status": row["status"]}
-    atomic_write_json(os.path.join(candidate_root, "native_baseline_evidence.json"), {
+    timing = {"schema_version": _contract_text("crescendo.candidate_timing.v1"), "candidate_id": candidate_id,
+              "started_epoch": started, "phases": phases}
+    if row.get('batch_reference'):
+        timing['shared_batch'] = row['batch_reference']
+    _finish_candidate_timing(row, timing, timing_started, os.path.join(candidate_root, _contract_text("timing.json")))
+    atomic_write_json(os.path.join(candidate_root, _contract_text("native_baseline_evidence.json")), {
         "candidate_id": candidate_id, "status": row["status"],
         "command": row.get("native_command"), "failure_detail": row.get("native_failure_detail"),
         "parameter_application": row.get("parameter_application"),
         "source_guard": row.get("source_guard"), "cleanup_pending": row["cleanup_pending"]})
-    atomic_write_json(os.path.join(candidate_root, "timing.json"), row["timing"])
-    atomic_write_json(os.path.join(candidate_root, "candidate.json"), row)
+    atomic_write_json(os.path.join(candidate_root, _contract_text("candidate.json")), row)
     return row
 
 
 def _evaluate_candidate(run_root, index, generation, values, spec, prepared, selected, config):
     candidate_id = "g%03d_c%04d" % (generation, index)
     candidate_root = ensure_dir(os.path.join(run_root, "candidates", candidate_id))
-    timing_path = os.path.join(candidate_root, "timing.json")
+    timing_path = os.path.join(candidate_root, _contract_text("timing.json"))
     timing_started_epoch = time.time()
+    timing_started = timing_tick()
+    phase_timing = DiagnosticTiming()
     timing = {
-        "schema_version": "crescendo.candidate_timing.v1", "candidate_id": candidate_id,
+        "schema_version": _contract_text("crescendo.candidate_timing.v1"), "candidate_id": candidate_id,
         "started_epoch": timing_started_epoch,
         "phases": {
             "lock": {"virtuoso_seconds": 0.0, "maestro_seconds": 0.0, "total_seconds": 0.0},
@@ -633,7 +701,7 @@ def _evaluate_candidate(run_root, index, generation, values, spec, prepared, sel
             "spectre": {"run_count": 0, "completed_run_count": 0, "total_seconds": 0.0, "runs": []},
         },
     }
-    atomic_write_json(timing_path, timing)
+    _write_candidate_timing(timing_path, timing)
     row = {
         "candidate_id": candidate_id, "generation": generation, "index": index,
         "values": values, "status": "running", "started_at": utc_timestamp(),
@@ -642,13 +710,15 @@ def _evaluate_candidate(run_root, index, generation, values, spec, prepared, sel
             else "legacy"
         ),
     }
-    atomic_write_json(os.path.join(candidate_root, "candidate.json"), row)
+    atomic_write_json(os.path.join(candidate_root, _contract_text("candidate.json")), row)
     workspace = None
     try:
         if spec.get("evaluator", "real") == "mock":
+            phase_timing.start("collection")
             parsed = _mock_parsed(values, spec["objectives"], spec.get("constraints", []))
             row["source_guard"] = {"ok": True, "libraries": []}
         else:
+            phase_timing.start("build")
             active_config = copy.deepcopy(config)
             row["simulation_submission"] = _simulation_submission_metadata(
                 active_config,
@@ -671,7 +741,7 @@ def _evaluate_candidate(run_root, index, generation, values, spec, prepared, sel
                 "rewrite_seconds": float(build_timing.get("rewrite_seconds", 0.0)),
                 "library_count": int(build_timing.get("library_count", 0)),
             }
-            atomic_write_json(timing_path, timing)
+            _write_candidate_timing(timing_path, timing)
             remaining = max(1, int(deadline - time.monotonic()))
             try:
                 patch_result = apply_candidate(
@@ -706,7 +776,8 @@ def _evaluate_candidate(run_root, index, generation, values, spec, prepared, sel
             timing["phases"]["lock"]["virtuoso_seconds"] = float(cadence_timing.get("lock_wait_seconds", 0.0))
             timing["phases"]["active"]["virtuoso_seconds"] = float(cadence_timing.get("active_seconds", 0.0))
             timing["phases"]["cadence"] = cadence_timing
-            atomic_write_json(timing_path, timing)
+            _write_candidate_timing(timing_path, timing)
+            phase_timing.transition("execution")
             retries = int(active_config["runtime"].get("infrastructure_retries", 1))
             setup_backend = (prepared.get("setup") or {}).get("backend") or "maestro"
             attempt_key = "adexl_attempts" if setup_backend == "adexl" else "maestro_attempts"
@@ -749,7 +820,7 @@ def _evaluate_candidate(run_root, index, generation, values, spec, prepared, sel
                 timing["phases"]["spectre"]["completed_run_count"] += int(spectre.get("completed_run_count", 0))
                 timing["phases"]["spectre"]["total_seconds"] += float(spectre.get("total_seconds", 0.0))
                 timing["phases"]["spectre"]["runs"].extend(spectre.get("runs") or [])
-                atomic_write_json(os.path.join(candidate_root, "candidate.json"), row)
+                atomic_write_json(os.path.join(candidate_root, _contract_text("candidate.json")), row)
                 if _retryable_setup_attempt(command, setup_backend) and attempt < retries:
                     continue
                 break
@@ -761,7 +832,7 @@ def _evaluate_candidate(run_root, index, generation, values, spec, prepared, sel
             }
             timing["phases"]["lock"]["maestro_seconds"] = timing["phases"]["maestro"]["lock_wait_seconds"]
             timing["phases"]["active"]["maestro_seconds"] = timing["phases"]["maestro"]["active_seconds"]
-            atomic_write_json(timing_path, timing)
+            _write_candidate_timing(timing_path, timing)
             if command.get("termination_failed"):
                 row["cleanup_pending"] = True
                 row["process_cleanup"] = command.get("guardian_cleanup") or {
@@ -784,6 +855,7 @@ def _evaluate_candidate(run_root, index, generation, values, spec, prepared, sel
                     "%s batch failed with return code %s"
                     % (setup_backend, command["returncode"])
                 )
+            phase_timing.transition("collection")
             row["parameter_application"] = verify_parameter_application(
                 workspace, patch_result, candidate_root,
                 history_name=command.get("history_name"),
@@ -794,7 +866,7 @@ def _evaluate_candidate(run_root, index, generation, values, spec, prepared, sel
             else:
                 parsed = parse_latest_rdb(workspace_root)
             timing["phases"]["parse"] = {"elapsed_seconds": time.monotonic() - parse_started}
-            atomic_write_json(timing_path, timing)
+            _write_candidate_timing(timing_path, timing)
             row["rdb_path"] = parsed["path"]
             required_outputs = [
                 definition["output_key"]
@@ -849,18 +921,17 @@ def _evaluate_candidate(run_root, index, generation, values, spec, prepared, sel
                 row["failure_stage"] = "source_integrity"
                 row["error"] = "%s: %s" % (error.__class__.__name__, error)
                 row.pop("metrics", None)
+    phase_timing.finish(row["status"])
+    timing["phases"].update(observer_phases(phase_timing))
     row["finished_at"] = utc_timestamp()
-    timing["status"] = row["status"]
-    timing["finished_epoch"] = time.time()
-    timing["elapsed_seconds"] = max(0.0, timing["finished_epoch"] - timing_started_epoch)
     timing["phases"]["lock"]["total_seconds"] = (
         timing["phases"]["lock"]["virtuoso_seconds"] + timing["phases"]["lock"]["maestro_seconds"]
     )
     timing["phases"]["active"]["total_seconds"] = (
         timing["phases"]["active"]["virtuoso_seconds"] + timing["phases"]["active"]["maestro_seconds"]
     )
-    atomic_write_json(timing_path, timing)
-    atomic_write_json(os.path.join(candidate_root, "candidate.json"), row)
+    _finish_candidate_timing(row, timing, timing_started, timing_path)
+    atomic_write_json(os.path.join(candidate_root, _contract_text("candidate.json")), row)
     return row
 
 
@@ -916,8 +987,9 @@ def _persistent_running_row(run_root, index, generation, values):
     candidate_id = "g%03d_c%04d" % (generation, index)
     candidate_root = ensure_dir(os.path.join(run_root, "candidates", candidate_id))
     started_epoch = time.time()
+    started = timing_tick()
     timing = {
-        "schema_version": "crescendo.candidate_timing.v1", "candidate_id": candidate_id,
+        "schema_version": _contract_text("crescendo.candidate_timing.v1"), "candidate_id": candidate_id,
         "started_epoch": started_epoch, "backend": "persistent_maestro",
         "phases": {
             "lock": {"virtuoso_seconds": 0.0, "maestro_seconds": 0.0, "total_seconds": 0.0},
@@ -931,9 +1003,9 @@ def _persistent_running_row(run_root, index, generation, values):
         "execution_backend": "persistent_maestro",
         "execution_progress": {"stage": "preparing", "tasks": []},
     }
-    atomic_write_json(os.path.join(candidate_root, "timing.json"), timing)
-    atomic_write_json(os.path.join(candidate_root, "candidate.json"), row)
-    return {"row": row, "root": candidate_root, "timing": timing}
+    _write_candidate_timing(os.path.join(candidate_root, _contract_text("timing.json")), timing)
+    atomic_write_json(os.path.join(candidate_root, _contract_text("candidate.json")), row)
+    return {"row": row, "root": candidate_root, "timing": timing, "timing_started": started}
 
 
 def _discard_unreturned_candidate_roots(candidates, returned, run_root, spec):
@@ -976,7 +1048,7 @@ def _simulation_submission_metadata(config, controller="maestro"):
         "spectre_submit_script"
     ) or submit_spectre_script_path()
     result = {
-        "schema_version": "crescendo.simulation_submission.v1",
+        "schema_version": _contract_text("crescendo.simulation_submission.v1"),
         "controller": str(controller or "maestro"),
         "simulator": selected_simulator(config),
         "command_scheduler": config.get("runtime", {}).get("command_scheduler", "auto"),
@@ -1151,7 +1223,7 @@ def _persist_worker_startup_failure(run_root, worker_index, controller, error):
     stage = stage_match.group(1) if stage_match else "bootstrap"
     control_root = os.path.abspath(controller.control_root)
     document = {
-        "schema_version": "crescendo.startup_failure.v1",
+        "schema_version": _contract_text("crescendo.startup_failure.v1"),
         "recorded_at": utc_timestamp(),
         "worker_index": worker_index,
         "epoch": getattr(controller, "epoch", None),
@@ -1175,7 +1247,7 @@ def _persist_worker_startup_failure(run_root, worker_index, controller, error):
         for name in list(document["diagnostic"]):
             text = document["diagnostic"][name]
             document["diagnostic"][name] = text[len(text) // 2:]
-    path = os.path.join(run_root, "startup_failure.json")
+    path = os.path.join(run_root, _contract_text("startup_failure.json"))
     atomic_write_json(path, document)
     return path, document
 
@@ -1194,7 +1266,7 @@ def _diagnostic_tail_reason(diagnostic, limit=600):
     preferred = [
         line for line in lines
         if re.search(
-            r"CRESCENDO_ADAPTER_ERROR|callback|out[ -]?of[ -]?range|invalid|error|fatal",
+            _contract_text(r"CRESCENDO_ADAPTER_ERROR|callback|out[ -]?of[ -]?range|invalid|error|fatal"),
             line, re.IGNORECASE,
         )
     ]
@@ -1208,7 +1280,7 @@ def _persistent_protocol_failure_diagnostics(states, spectre_summary, diagnostic
         diagnostic_text = json.dumps(diagnostic or {}, sort_keys=True).lower()
         stage = (
             "pdk_callback"
-            if "cr_adapter_error" in diagnostic_text or "cdf callback" in diagnostic_text
+            if _contract_text("cr_adapter_error") in diagnostic_text or "cdf callback" in diagnostic_text
             else "parameter_application"
         )
         return stage, "not_started"
@@ -1501,7 +1573,7 @@ class _WholeRunPersistentWorker(object):
             log_paths = [
                 os.path.join(control_root, "ocean.stdout"),
                 os.path.join(control_root, "ocean.stderr"),
-                os.path.join(control_root, "spectre_timeout.log"),
+                os.path.join(control_root, _contract_text("spectre_timeout.log")),
             ]
         storage_paths = [self.run_root]
         if self.workspace and self.workspace.get("root"):
@@ -1709,7 +1781,7 @@ class _WholeRunPersistentWorker(object):
         self.last_retirement = copy.deepcopy(result)
         if epoch_root is not None and os.path.isdir(epoch_root):
             try:
-                atomic_write_json(os.path.join(epoch_root, "retirement.json"), result)
+                atomic_write_json(os.path.join(epoch_root, _contract_text("retirement.json")), result)
             except Exception:
                 pass
         if (
@@ -1747,6 +1819,7 @@ def _evaluate_persistent_candidate(worker, run_root, index, generation, values,
     row = item["row"]
     timing = item["timing"]
     attempts = []
+    phase_attempts = []
     artifact = None
     source_guard = None
     protocol_completed = False
@@ -1755,6 +1828,9 @@ def _evaluate_persistent_candidate(worker, run_root, index, generation, values,
     infrastructure_retries_used = 0
     fallback_used = False
     for attempt in range(retries + 2):
+        collection_started = None
+        attempt_phases = {}
+        phase_attempts.append(attempt_phases)
         try:
             if getattr(worker, "_native_stop_requested", False):
                 raise InfrastructureFailure("serial cluster candidate stopped before submission")
@@ -1763,7 +1839,11 @@ def _evaluate_persistent_candidate(worker, run_root, index, generation, values,
             )
             if callable(boundary_guard):
                 boundary_guard(generation)
-            startup = worker.ensure_started()
+            setup_started = timing_tick()
+            try:
+                startup = worker.ensure_started()
+            finally:
+                attempt_phases["worker_setup"] = phase_seconds(elapsed_seconds(setup_started))
             if getattr(worker, "_native_stop_requested", False):
                 raise InfrastructureFailure("serial cluster candidate stopped during preparation")
             before_spectre = summarize_spectre_timing(worker.controller.spectre_log, worker.workspace["root"])
@@ -1771,6 +1851,7 @@ def _evaluate_persistent_candidate(worker, run_root, index, generation, values,
                 row["candidate_id"], values, item["root"],
                 timeout_seconds=serial_timeout_seconds(spec, config),
             )
+            attempt_phases.update(artifact.get("phase_timing") or {})
             states = list(artifact.get("states") or [])
             protocol_completed = bool(states and states[-1] == "DONE")
             attempts.append({
@@ -1854,6 +1935,7 @@ def _evaluate_persistent_candidate(worker, run_root, index, generation, values,
                 row["failure_stage"] = failure_stage
                 row["spectre_state"] = spectre_state
                 break
+            collection_started = timing_tick()
             worker.controller.require_candidate_time(artifact, "candidate patch record validation")
             patch_result = validate_candidate_records(artifact)
             worker.controller.require_candidate_time(artifact, "candidate patch record validation")
@@ -2084,6 +2166,7 @@ def _evaluate_persistent_candidate(worker, run_root, index, generation, values,
                 source_guard = retirement.get("source_guard") or source_guard
             break
         except PersistentMaestroWorkerError as error:
+            attempt_phases.update(getattr(error, "phase_timing", None) or {})
             startup_failure = isinstance(error, PersistentMaestroWorkerStartupError)
             attempts.append({
                 "attempt": attempt + 1, "error": "%s: %s" % (error.__class__.__name__, error),
@@ -2200,6 +2283,10 @@ def _evaluate_persistent_candidate(worker, run_root, index, generation, values,
             source_guard = verify_sources_unchanged(worker.workspace)
         except Exception as error:
             source_guard = {"ok": False, "error": "%s: %s" % (error.__class__.__name__, error)}
+        finally:
+            if collection_started is not None:
+                attempt_phases["collection"] = phase_seconds(elapsed_seconds(collection_started))
+
     if source_guard is None:
         source_guard = {"ok": True, "libraries": [], "workspace_created": False}
     row["source_guard"] = source_guard
@@ -2232,16 +2319,20 @@ def _evaluate_persistent_candidate(worker, run_root, index, generation, values,
         })),
     }
     row["finished_at"] = utc_timestamp()
-    timing["status"] = row["status"]
-    timing["finished_epoch"] = time.time()
-    timing["elapsed_seconds"] = max(0.0, timing["finished_epoch"] - timing["started_epoch"])
+    for name in ("worker_setup", "build", "execution", "native_collection", "collection"):
+        observations = [phases[name] for phases in phase_attempts if name in phases]
+        if observations:
+            known = [phase["elapsed_seconds"] for phase in observations if phase["elapsed_seconds"] is not None]
+            timing["phases"][name] = phase_seconds(sum(known) if known else None,
+                count=len(known), total_count=len(observations),
+                source=observations[-1].get("source"))
     timing["phases"]["maestro"] = {
         "attempts": attempts,
-        "elapsed_seconds": timing["elapsed_seconds"],
+        "elapsed_seconds": elapsed_seconds(item["timing_started"]),
         "session_start_count": worker.start_count,
     }
-    atomic_write_json(os.path.join(item["root"], "timing.json"), timing)
-    atomic_write_json(os.path.join(item["root"], "candidate.json"), row)
+    _finish_candidate_timing(row, timing, item["timing_started"], os.path.join(item["root"], _contract_text("timing.json")))
+    atomic_write_json(os.path.join(item["root"], _contract_text("candidate.json")), row)
     return row
 
 
@@ -2258,7 +2349,9 @@ def _evaluate_run_persistent_batch(worker, run_root, planned, generation, spec,
         raise InfrastructureFailure("batch stopped before submission")
     if callable(boundary):
         boundary(generation)
+    setup_started = timing_tick()
     worker.ensure_started()
+    setup_elapsed = elapsed_seconds(setup_started)
     if getattr(worker, "_native_stop_requested", False):
         raise InfrastructureFailure("batch stopped during workspace preparation")
     items = [_persistent_running_row(run_root, index, generation, values)
@@ -2295,6 +2388,7 @@ def _evaluate_run_persistent_batch(worker, run_root, planned, generation, spec,
                     "fallback": "native batch preparation failed before submission; serial candidate isolation",
                     "retirement": retirement}
         raise InfrastructureFailure("native Maestro batch did not complete: %s" % batch.get("states"))
+    shared_collection_started = timing_tick()
     validate_snapshot_batch(batch)
     source_guard = verify_sources_unchanged(worker.workspace)
     if not source_guard.get("ok"):
@@ -2309,7 +2403,9 @@ def _evaluate_run_persistent_batch(worker, run_root, planned, generation, spec,
     required_outputs = [definition["output_key"] for definition in
                         spec.get("objectives", []) + spec.get("constraints", [])]
     rows = []
+    shared_collection = elapsed_seconds(shared_collection_started)
     for item in items:
+        collection_started = timing_tick()
         row = item["row"]
         artifact = artifacts[row["candidate_id"]]
         if artifact.get("native_storage_paths") is not None:
@@ -2377,13 +2473,19 @@ def _evaluate_run_persistent_batch(worker, run_root, planned, generation, spec,
         }
         row["finished_at"] = utc_timestamp()
         timing = item["timing"]
-        timing.update({"status": row["status"], "finished_epoch": time.time()})
-        timing["elapsed_seconds"] = max(0.0, timing["finished_epoch"] - timing["started_epoch"])
+        batch_id = batch["batch_id"]
+        timing["phases"].update({
+            name: dict(phase, scope="batch", batch_id=batch_id)
+            for name, phase in (batch.get("phase_timing") or {}).items()
+        })
+        timing["phases"]["worker_setup"] = phase_seconds(setup_elapsed, scope="batch", batch_id=batch_id)
+        timing["phases"]["collection"] = phase_seconds(elapsed_seconds(collection_started))
+        timing["phases"]["shared_collection"] = phase_seconds(shared_collection, scope="batch", batch_id=batch_id)
         timing["phases"]["spectre"] = candidate_spectre
-        timing["phases"]["maestro"] = {"batch_id": batch["batch_id"],
-                                      "elapsed_seconds": batch.get("elapsed_seconds")}
-        atomic_write_json(os.path.join(item["root"], "timing.json"), timing)
-        atomic_write_json(os.path.join(item["root"], "candidate.json"), row)
+        timing["phases"]["maestro"] = {"batch_id": batch_id, "elapsed_seconds": batch.get("elapsed_seconds")}
+        _finish_candidate_timing(row, timing, item["timing_started"], os.path.join(item["root"], _contract_text("timing.json")),
+                                 elapsed_scope="candidate_in_batch")
+        atomic_write_json(os.path.join(item["root"], _contract_text("candidate.json")), row)
         rows.append(row)
     if callable(boundary):
         boundary(generation)
@@ -2408,16 +2510,13 @@ def _persistent_controller_failure_candidate(run_root, index, generation, values
     }
     row["finished_at"] = utc_timestamp()
     timing = item["timing"]
-    timing["status"] = row["status"]
-    timing["finished_epoch"] = time.time()
-    timing["elapsed_seconds"] = max(0.0, timing["finished_epoch"] - timing["started_epoch"])
     timing["phases"]["maestro"] = {
         "attempts": [],
-        "elapsed_seconds": timing["elapsed_seconds"],
+        "elapsed_seconds": elapsed_seconds(item["timing_started"]),
         "controller_termination": termination,
     }
-    atomic_write_json(os.path.join(item["root"], "timing.json"), timing)
-    atomic_write_json(os.path.join(item["root"], "candidate.json"), row)
+    _finish_candidate_timing(row, timing, None, os.path.join(item["root"], _contract_text("timing.json")))
+    atomic_write_json(os.path.join(item["root"], _contract_text("candidate.json")), row)
     return row
 
 
@@ -2560,7 +2659,7 @@ def _terminal_wal_completion_summary_matches(row, completion):
 def _terminal_wal_completion_evidence_is_valid(completion, row, spec):
     if not isinstance(completion, dict):
         return False
-    if completion.get("schema_version") != "crescendo.completion_evidence.v1":
+    if completion.get("schema_version") != _contract_text("crescendo.completion_evidence.v1"):
         return False
     if completion.get("adapter") != "maestro-rdb-psf-v1" or completion.get("ok") is not True:
         return False
@@ -2575,7 +2674,7 @@ def _terminal_wal_completion_evidence_is_valid(completion, row, spec):
         "/" in history_name or "\\" in history_name or history_name in (".", "..")
     ):
         return False
-    candidate_history = re.match(r"^CRESCENDO_(g\d{3}_c\d{4})(?:_|$)", history_name)
+    candidate_history = re.match(_contract_text(r"^CRESCENDO_(g\d{3}_c\d{4})(?:_|$)"), history_name)
     if candidate_history and candidate_history.group(1) != row.get("candidate_id"):
         return False
 
@@ -2757,7 +2856,7 @@ def _recover_terminal_candidate_wal(run_root, index, generation, values, spec,
         not os.path.isdir(candidate_root)
     ):
         return None
-    candidate_path = os.path.join(candidate_root, "candidate.json")
+    candidate_path = os.path.join(candidate_root, _contract_text("candidate.json"))
     if not _terminal_wal_regular_file(candidate_path, candidate_root):
         return None
     try:
@@ -2783,7 +2882,7 @@ def _recover_terminal_candidate_wal(run_root, index, generation, values, spec,
         return None
     completion_path = None
     if row["status"] == "completed":
-        completion_path = os.path.join(candidate_root, "completion_evidence.json")
+        completion_path = os.path.join(candidate_root, _contract_text("completion_evidence.json"))
         if not _terminal_wal_regular_file(completion_path, candidate_root):
             return None
         try:
@@ -2794,7 +2893,7 @@ def _recover_terminal_candidate_wal(run_root, index, generation, values, spec,
             return None
         row["completion_evidence"] = completion
     recovery = {
-        "schema_version": "crescendo.terminal_candidate_wal_recovery.v1",
+        "schema_version": _contract_text("crescendo.terminal_candidate_wal_recovery.v1"),
         "recovered": True,
         "candidate_id": candidate_id,
         "terminal_status": row["status"],
@@ -3034,8 +3133,8 @@ def _evaluate_persistent_batch(run_root, planned, generation, spec, prepared, se
                 0.0, batch_elapsed - timing["phases"]["lock"]["maestro_seconds"],
             )
             timing["phases"]["active"]["total_seconds"] = timing["phases"]["active"]["maestro_seconds"]
-            atomic_write_json(os.path.join(item["root"], "timing.json"), timing)
-            atomic_write_json(os.path.join(item["root"], "candidate.json"), row)
+            atomic_write_json(os.path.join(item["root"], _contract_text("timing.json")), timing)
+            atomic_write_json(os.path.join(item["root"], _contract_text("candidate.json")), row)
     return [item["row"] for item in returned]
 
 
@@ -3150,8 +3249,8 @@ def _environment_test_run(spec):
     if (not isinstance(marker, dict) or
             not {"schema_version", "test_id"}.issubset(marker) or
             set(marker) - {"schema_version", "test_id", "simulator", "frozen_candidate", "frozen_candidate_sha256", "frozen_plan", "frozen_plan_sha256"} or
-            marker.get("schema_version") != "crescendo.environment_test.run.v1"):
-        raise ValueError("environment_test must use crescendo.environment_test.run.v1")
+            marker.get("schema_version") != _contract_text("crescendo.environment_test.run.v1")):
+        raise ValueError(_contract_text("environment_test must use crescendo.environment_test.run.v1"))
     if "simulator" in marker and (marker["simulator"] not in ("spectre", "alps") or
             ("simulator" in spec and marker["simulator"] != spec["simulator"])):
         raise ValueError("environment_test simulator identity disagrees with the selected solver")
@@ -3337,8 +3436,8 @@ def _optional_candidate_timeout(value):
 
 
 def resolve_design_config(document, prepared):
-    if not isinstance(document, dict) or document.get("schema_version") != "crescendo.design_config.v1":
-        raise ValueError("unsupported design config; expected crescendo.design_config.v1")
+    if not isinstance(document, dict) or document.get("schema_version") != _contract_text("crescendo.design_config.v1"):
+        raise ValueError(_contract_text("unsupported design config; expected crescendo.design_config.v1"))
     optimization = document.get("optimization") or {}
     variables = list(optimization.get("variables") or [])
     objectives = list(optimization.get("objectives") or [])
@@ -3506,8 +3605,8 @@ def _unpack_candidate(packed, variable_ids, spec):
 
 
 def checkpoint_candidates(checkpoint):
-    if not isinstance(checkpoint, dict) or checkpoint.get("schema_version") != "crescendo.checkpoint.v1":
-        raise ValueError("unsupported checkpoint; expected crescendo.checkpoint.v1")
+    if not isinstance(checkpoint, dict) or checkpoint.get("schema_version") != _contract_text("crescendo.checkpoint.v1"):
+        raise ValueError(_contract_text("unsupported checkpoint; expected crescendo.checkpoint.v1"))
     spec = checkpoint.get("spec", {})
     parameter_ids = checkpoint.get("parameter_ids", [])
     packed_candidates = checkpoint.get("candidates", [])
@@ -3557,7 +3656,7 @@ def checkpoint_candidates(checkpoint):
 
 def checkpoint_with_candidates(checkpoint, rows):
     if not isinstance(checkpoint, dict):
-        raise ValueError("unsupported checkpoint; expected crescendo.checkpoint.v1")
+        raise ValueError(_contract_text("unsupported checkpoint; expected crescendo.checkpoint.v1"))
     if not isinstance(rows, (list, tuple)):
         raise ValueError("checkpoint candidate rows must be a list")
     if any(not isinstance(row, dict) for row in rows):
@@ -3746,7 +3845,7 @@ def configuration_binding_identity(hierarchy):
         return None
     payload = _sorted_semantic_rows(designs)
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return {"schema_version": "crescendo.configuration_bindings.v1", "sha256": hashlib.sha256(encoded).hexdigest()}
+    return {"schema_version": _contract_text("crescendo.configuration_bindings.v1"), "sha256": hashlib.sha256(encoded).hexdigest()}
 
 
 def _prepared_schema_fingerprint_v2(prepared):
@@ -3930,7 +4029,7 @@ def _prepared_eda_context_identity(prepared):
     else:
         submit_identity = {"kind": "missing"}
     payload = {
-        "schema_version": "crescendo.eda_context_identity.v2",
+        "schema_version": _contract_text("crescendo.eda_context_identity.v2"),
         "cadence_versions": version_checks,
         "pdk": {
             "ok": pdk.get("ok"),
@@ -4068,7 +4167,7 @@ def _checkpoint_document(spec, prepared, generator, rows, selection_history, nex
         "algorithm": spec.get("algorithm"),
         "algorithm_policy": spec.get("algorithm_policy"),
         "algorithm_parameters": spec.get("algorithm_parameters"),
-        "prepared_schema_version": "crescendo.prepared_fingerprint.v2",
+        "prepared_schema_version": _contract_text("crescendo.prepared_fingerprint.v2"),
         "prepared_schema_sha256": _prepared_schema_fingerprint(prepared),
     }
     if spec.get("simulator_execution_identity") is not None:
@@ -4077,7 +4176,8 @@ def _checkpoint_document(spec, prepared, generator, rows, selection_history, nex
         manifest["execution_commands"] = copy.deepcopy(spec["execution_commands"])
     if spec.get("execution_protocol") is not None:
         manifest["execution_protocol"] = spec["execution_protocol"]
-    for field in ("command_scheduler", "simulator_model_profile_identity", "netlist_generation_protocol",
+    for field in ("native_candidate_batching", "native_batch_schema", "native_batching_protocol", "local_solver_max_jobs", "measurement_jobs", "progress_flush_interval_seconds", "reader_protocol",
+                  "command_scheduler", "simulator_model_profile_identity", "netlist_generation_protocol",
                   "native_qualification_revision", "execution_selection"):
         if spec.get(field) is not None:
             manifest[field] = copy.deepcopy(spec[field])
@@ -4096,7 +4196,7 @@ def _checkpoint_document(spec, prepared, generator, rows, selection_history, nex
             prepared["job_policy"], spec.get("maestro_job_overrides"),
         )
     document = {
-        "schema_version": "crescendo.checkpoint.v1",
+        "schema_version": _contract_text("crescendo.checkpoint.v1"),
         "created_at": utc_timestamp(),
         "manifest": manifest,
         "spec": spec,
@@ -4155,8 +4255,8 @@ def _checkpoint_nonnegative_integer(value, description):
 
 
 def validate_checkpoint_integrity(checkpoint):
-    if not isinstance(checkpoint, dict) or checkpoint.get("schema_version") != "crescendo.checkpoint.v1":
-        raise ValueError("unsupported checkpoint; expected crescendo.checkpoint.v1")
+    if not isinstance(checkpoint, dict) or checkpoint.get("schema_version") != _contract_text("crescendo.checkpoint.v1"):
+        raise ValueError(_contract_text("unsupported checkpoint; expected crescendo.checkpoint.v1"))
     expected_checksum = checkpoint.get("payload_sha256")
     if expected_checksum is not None:
         try:
@@ -4187,14 +4287,21 @@ def validate_checkpoint_integrity(checkpoint):
         raise ValueError("checkpoint manifest and spec cell selections disagree")
     if (manifest or {}).get("simulator_execution_identity") != spec.get("simulator_execution_identity"):
         raise ValueError("checkpoint simulator execution identities disagree")
-    for field in ("execution_commands", "execution_protocol", "simulator_model_profile_identity", "netlist_generation_protocol",
+    for field in ("native_candidate_batching", "native_batch_schema", "native_batching_protocol", "local_solver_max_jobs", "measurement_jobs", "progress_flush_interval_seconds", "reader_protocol",
+                  "execution_commands", "execution_protocol", "simulator_model_profile_identity", "netlist_generation_protocol",
                   "native_qualification_revision", "execution_selection"):
         if (manifest or {}).get(field) != spec.get(field):
             raise ValueError("checkpoint %s identities disagree" % field)
     if (manifest or {}).get("command_scheduler", "auto") != spec.get("command_scheduler", "auto"):
         raise ValueError("checkpoint command_scheduler identities disagree")
-    if spec.get("command_scheduler", "auto") not in ("auto", "batch", "receipt"):
-        raise ValueError("checkpoint command_scheduler is unsupported")
+    from .generation_batch import validate_batching_protocol
+    validate_batching_protocol(spec)
+    if spec.get('native_candidate_batching', 'serial') not in ('serial', 'generation'):
+        raise ValueError('Unsupported native candidate batching checkpoint setting')
+    if spec.get('native_candidate_batching') == 'generation' and spec.get('native_batch_schema') != _contract_text('crescendo.generation_batch.v1'):
+        raise ValueError('Unsupported native batch checkpoint schema')
+    from .runtime import scheduler_mode
+    scheduler_mode(spec.get("command_scheduler", "auto"))
     if spec.get("execution_commands") is not None:
         from .execution_commands import validate_execution_commands
         validate_execution_commands(spec["execution_commands"])
@@ -4335,7 +4442,7 @@ def validate_checkpoint_integrity(checkpoint):
     rng_state = generator_state.get("rng_state")
     modern_real_checkpoint = (
         real_eda
-        and (manifest or {}).get("prepared_schema_version") == "crescendo.prepared_fingerprint.v2"
+        and (manifest or {}).get("prepared_schema_version") == _contract_text("crescendo.prepared_fingerprint.v2")
     )
     if rng_state is None and modern_real_checkpoint:
         raise ValueError("real EDA checkpoint optimizer rng_state is missing")
@@ -4377,16 +4484,16 @@ def validate_checkpoint(checkpoint, prepared):
     rows = validate_checkpoint_integrity(checkpoint)
     spec = checkpoint.get("spec") or {}
     if (spec.get("execution_backend") == "maestro_baseline" and
-            spec.get("execution_protocol") != "crescendo.maestro_baseline.v1"):
+            spec.get("execution_protocol") != _contract_text("crescendo.maestro_baseline.v1")):
         raise ValueError("Maestro baseline checkpoint protocol does not match its execution backend")
-    if (spec.get("execution_protocol") == "crescendo.maestro_baseline.v1" and
+    if (spec.get("execution_protocol") == _contract_text("crescendo.maestro_baseline.v1") and
             spec.get("execution_backend") != "maestro_baseline"):
         raise ValueError("Maestro baseline checkpoint cannot be resumed with another execution backend")
     if (str(spec.get("evaluator", "real")).lower() != "mock" and
             spec.get("execution_backend") in ("maestro_netlist", "private_netlist")):
         from .native_maestro_parameters import GENERATION_PROTOCOL
         if spec.get("netlist_generation_protocol") != GENERATION_PROTOCOL:
-            raise ValueError("Checkpoint uses an older netlist-generation protocol; retain it for reading/export or resume with its original Crescendo version. Start a new run for native Device Parameters.")
+            raise ValueError(_contract_text("Checkpoint uses an older netlist-generation protocol; retain it for reading/export or resume with its original Crescendo version. Start a new run for native Device Parameters."))
         from .native_qualification import NATIVE_QUALIFICATION_REVISION
         if spec.get("native_qualification_revision") != NATIVE_QUALIFICATION_REVISION:
             raise ValueError("Checkpoint uses an older point-qualification revision; retain its results for reading/export. Start a new run so exact Test Local/RDB and generated-netlist values are qualified again.")
@@ -4420,9 +4527,9 @@ def validate_checkpoint(checkpoint, prepared):
     real_eda = str(spec.get("evaluator", "real")).strip().lower() != "mock"
     expected_fingerprint = manifest.get("prepared_schema_sha256")
     fingerprint_version = manifest.get("prepared_schema_version")
-    if fingerprint_version in (None, "crescendo.prepared_fingerprint.v1"):
+    if fingerprint_version in (None, _contract_text("crescendo.prepared_fingerprint.v1")):
         actual_fingerprint = _prepared_schema_fingerprint_v1(prepared)
-    elif fingerprint_version == "crescendo.prepared_fingerprint.v2":
+    elif fingerprint_version == _contract_text("crescendo.prepared_fingerprint.v2"):
         actual_fingerprint = _prepared_schema_fingerprint_v2(prepared)
     else:
         raise ValueError("checkpoint prepared fingerprint version is not supported: %s" % fingerprint_version)
@@ -4518,11 +4625,11 @@ def _reconcile_baseline_shutdown(run_root, owned_roots):
                      "native_terminal_state": kind, "raw_deleted": False,
                      "artifact_policy": "retain_owned_suite_and_candidate_evidence",
                      "candidate_root": root, "observed_at": utc_timestamp()}
-            state_path = os.path.join(root, "native_baseline", "native_baseline_state.json")
+            state_path = os.path.join(root, "native_baseline", _contract_text("native_baseline_state.json"))
             observations.append({"candidate_root": os.path.relpath(root, run_root), "ok": ok,
                                  "native_terminal_state": kind,
                                  "process_termination_proven": process_proven, "remote_stop_proven": terminal,
-                                 "raw_cleanup_proof": os.path.relpath(os.path.join(root, "raw_cleanup_proof.json"), run_root),
+                                 "raw_cleanup_proof": os.path.relpath(os.path.join(root, _contract_text("raw_cleanup_proof.json")), run_root),
                                  "native_state_path": os.path.relpath(state_path, run_root),
                                  "native_state_sha256": sha256_file(state_path) if os.path.isfile(state_path) else None})
         except Exception as error:
@@ -4536,13 +4643,13 @@ def _reconcile_baseline_shutdown(run_root, owned_roots):
                                  "native_terminal_state": "unknown", "error": proof["error"][:1024]})
         candidate_proofs[root] = proof
         if os.path.dirname(root) == candidates_root and os.path.isdir(root) and not os.path.islink(root):
-            atomic_write_json(os.path.join(root, "raw_cleanup_proof.json"), proof)
+            atomic_write_json(os.path.join(root, _contract_text("raw_cleanup_proof.json")), proof)
     process_proven = all(row["process_termination_proven"] for row in observations)
     terminal_proven = all(row["remote_stop_proven"] for row in observations)
     settled = all(row["ok"] for row in observations)
-    index_path = os.path.join(run_root, "baseline_shutdown_roots.json")
-    atomic_write_json(index_path, {"schema_version": "crescendo.maestro_baseline_shutdown_roots.v1", "roots": observations})
-    root_index = {"path": "baseline_shutdown_roots.json", "count": len(roots), "sha256": sha256_file(index_path)}
+    index_path = os.path.join(run_root, _contract_text("baseline_shutdown_roots.json"))
+    atomic_write_json(index_path, {"schema_version": _contract_text("crescendo.maestro_baseline_shutdown_roots.v1"), "roots": observations})
+    root_index = {"path": _contract_text("baseline_shutdown_roots.json"), "count": len(roots), "sha256": sha256_file(index_path)}
     final = {"process_termination_proven": process_proven, "remote_stop_proven": terminal_proven,
              "artifact_cleanup_complete": settled, "raw_deleted": False,
              "artifact_policy": "retain_owned_suite_and_candidate_evidence",
@@ -4559,7 +4666,7 @@ def _write_worker_shutdown(run_root, workers, final_cleanup=None):
     """Retain detailed diagnostics and publish a small shutdown proof."""
     finished_at = utc_timestamp()
     details = []
-    compact = {"schema_version": "crescendo.worker_shutdown.v1", "workers": [],
+    compact = {"schema_version": _contract_text("crescendo.worker_shutdown.v1"), "workers": [],
                "finished_at": finished_at}
     for row in workers:
         item = {"worker_index": row.get("worker_index"), "ok": row.get("ok") is True}
@@ -4570,20 +4677,20 @@ def _write_worker_shutdown(run_root, workers, final_cleanup=None):
             item["details_path"] = "private_netlist/shutdown.json"
         elif result or row.get("error") is not None:
             details.append(row)
-            item["details_path"] = "worker_shutdown_details.json"
+            item["details_path"] = _contract_text("worker_shutdown_details.json")
         item["result"] = dict((key, result[key]) for key in (
             "cleanup_proven", "termination_proven", "process_still_alive",
             "process_termination_proven", "remote_stop_proven", "artifact_cleanup_complete")
             if isinstance(result.get(key), bool))
         compact["workers"].append(item)
     if details:
-        atomic_write_json(os.path.join(run_root, "worker_shutdown_details.json"), {
-            "schema_version": "crescendo.worker_shutdown.v1", "workers": details,
+        atomic_write_json(os.path.join(run_root, _contract_text("worker_shutdown_details.json")), {
+            "schema_version": _contract_text("crescendo.worker_shutdown.v1"), "workers": details,
             "finished_at": finished_at})
     if final_cleanup is not None:
         compact["final_cleanup"] = dict((key, final_cleanup.get(key)) for key in
             ("process_termination_proven", "remote_stop_proven", "artifact_cleanup_complete"))
-    atomic_write_json(os.path.join(run_root, "worker_shutdown.json"), compact)
+    atomic_write_json(os.path.join(run_root, _contract_text("worker_shutdown.json")), compact)
 
 
 def run_optimization(spec, config, prepared=None, run_root=None, resume_checkpoint=None,
@@ -4604,9 +4711,9 @@ def _run_coordinated_resume(spec, config, prepared, run_root, resume_checkpoint,
                             continuation_lease, runtime_optimization_lease=None):
     if (
         not isinstance(resume_checkpoint, dict) or
-        resume_checkpoint.get("schema_version") != "crescendo.checkpoint.v1"
+        resume_checkpoint.get("schema_version") != _contract_text("crescendo.checkpoint.v1")
     ):
-        raise ValueError("unsupported checkpoint; expected crescendo.checkpoint.v1")
+        raise ValueError(_contract_text("unsupported checkpoint; expected crescendo.checkpoint.v1"))
     if continuation_lease is None or not continuation_lease.held:
         raise RuntimeError("coordinated checkpoint resume requires a held continuation lease")
     return _run_optimization_with_leases(
@@ -4690,8 +4797,8 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                                resume_checkpoint=None, continuation_id=None,
                                checkpoint_anchor_root=None):
     if resume_checkpoint is not None:
-        if not isinstance(resume_checkpoint, dict) or resume_checkpoint.get("schema_version") != "crescendo.checkpoint.v1":
-            raise ValueError("unsupported checkpoint; expected crescendo.checkpoint.v1")
+        if not isinstance(resume_checkpoint, dict) or resume_checkpoint.get("schema_version") != _contract_text("crescendo.checkpoint.v1"):
+            raise ValueError(_contract_text("unsupported checkpoint; expected crescendo.checkpoint.v1"))
         spec = dict(resume_checkpoint.get("spec") or {})
     else:
         spec = dict(spec)
@@ -4828,33 +4935,36 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
         else "adexl" if setup_backend == "adexl"
         else "legacy"
     )
+    if baseline_backend or netlist_backend:
+        from .generation_batch import freeze_batching, generation_batching_enabled
+        freeze_batching(spec, config, resuming=resume_checkpoint is not None)
     if baseline_backend:
-        if resume_checkpoint is not None:
-            raise ValueError("Maestro baseline checkpoint resume is unavailable until owned native stop and identity are verified; start a new run")
         if setup_backend != "maestro" or not selected or any(row.get("backend", "schematic") != "schematic" for row in selected):
             raise ValueError("Maestro baseline requires a Maestro setup and selected schematic device parameters")
-        spec["execution_protocol"] = "crescendo.maestro_baseline.v1"
+        spec["execution_protocol"] = _contract_text("crescendo.maestro_baseline.v1")
     if netlist_backend:
         from .native_maestro_parameters import GENERATION_PROTOCOL
         from .native_qualification import NATIVE_QUALIFICATION_REVISION
         spec["netlist_generation_protocol"] = GENERATION_PROTOCOL
         spec["native_qualification_revision"] = NATIVE_QUALIFICATION_REVISION
         if resume_checkpoint is not None and requested_backend not in ("private_netlist", "maestro_netlist"):
-            raise ValueError("Historical native-ADE checkpoint cannot be resumed with the shared CLI solver; use its original Crescendo version or start a fresh Maestro Netlist run")
+            raise ValueError(_contract_text("Historical native-ADE checkpoint cannot be resumed with the shared CLI solver; use its original Crescendo version or start a fresh Maestro Netlist run"))
         commands = normalize_execution_commands(config, spec)
         scheduler = spec.get("command_scheduler", "auto" if resume_checkpoint is not None
                              else config.get("runtime", {}).get("command_scheduler", "auto"))
-        if scheduler not in ("auto", "batch", "receipt"):
-            raise ValueError("Command scheduler must be auto, batch or receipt")
+        from .runtime import scheduler_mode
+        scheduler_mode(scheduler)
+        from .execution_settings import freeze_execution_settings
+        freeze_execution_settings(spec, config, resuming=resume_checkpoint is not None)
         spec["command_scheduler"] = scheduler
         config.setdefault("runtime", {})["command_scheduler"] = scheduler
         if (resume_checkpoint is not None and checkpoint_candidates(resume_checkpoint)
                 and not spec.get("simulator_model_profile_identity")):
-            raise ValueError("Historical CLI checkpoint has no frozen model profile; use its original Crescendo version or start a fresh optimization")
+            raise ValueError(_contract_text("Historical CLI checkpoint has no frozen model profile; use its original Crescendo version or start a fresh optimization"))
         if resume_checkpoint is not None and spec.get("execution_commands") and spec["execution_commands"] != commands:
             raise ValueError("Checkpoint solver/submission command identity changed; start a fresh optimization")
         spec["execution_commands"] = commands
-        spec["execution_protocol"] = "crescendo.unified_execution.v1"
+        spec["execution_protocol"] = _contract_text("crescendo.unified_execution.v1")
         if setup_backend != "maestro":
             raise ValueError("Shared CLI netlist generation requires a Maestro setup; ADE XL remains readable in historical runs")
         if not selected or any(row.get("backend", "schematic") != "schematic" for row in selected):
@@ -4899,7 +5009,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
     config.setdefault("runtime", {})["run_root"] = run_root
     config["runtime"]["_run_display_name"] = display_name or os.path.basename(run_root)
     stop_path = os.path.join(run_root, "STOP")
-    status_path = os.path.join(run_root, "status.json")
+    status_path = os.path.join(run_root, _contract_text("status.json"))
     spec["variables"] = variables
     spec["variable_labels"] = dict(
         (parameter["parameter_id"], "%s/%s" % (
@@ -4908,13 +5018,13 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
         ))
         for parameter in selected
     )
-    atomic_write_json(os.path.join(run_root, "spec.json"), spec)
+    atomic_write_json(os.path.join(run_root, _contract_text("spec.json")), spec)
     if spec.get("evaluator", "real") == "real":
         export_prepared = dict((key, copy.deepcopy(prepared[key])) for key in
                                ("setup", "hierarchy", "source_identity", "pdk") if key in prepared)
         export_prepared["parameters"] = copy.deepcopy(selected)
-        atomic_write_json(os.path.join(run_root, "schematic_export_context.json"), {
-            "schema_version": "crescendo.schematic_export_context.v1",
+        atomic_write_json(os.path.join(run_root, _contract_text("schematic_export_context.json")), {
+            "schema_version": _contract_text("crescendo.schematic_export_context.v1"),
             "prepared": export_prepared, "config": config,
             "origin_run_id": os.path.basename(((resume_checkpoint or {}).get("manifest") or {}).get("origin_run_root") or "") or None,
         })
@@ -4927,6 +5037,43 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                           key=lambda row: (row["generation"], row["index"]))
     elif resume_checkpoint is not None:
         _seed_checkpoint_candidates(run_root, all_rows)
+    if baseline_backend and resume_checkpoint is not None:
+        all_rows = [r for r in all_rows if r.get('status') == 'completed']
+    if resume_checkpoint is not None and netlist_backend:
+        # The coordinated Resume gate has quiesced the old owner. These epochs
+        # cannot accept more commits; pending candidates get a fresh epoch.
+        from .generation_batch import retire_resumed_history
+        previous_root = os.path.dirname((resume_checkpoint.get("candidate_store") or {}).get("path") or "")
+        groups = {}
+        for row in all_rows:
+            if row.get('status') == 'completed' and row.get('batch_reference'):
+                reference = row['batch_reference']
+                groups.setdefault(reference['root'], (reference, []))[1].append(row['candidate_id'])
+        for reference, completed_ids in groups.values():
+            # A chained continuation may reference a still older retained epoch.
+            owner_root = os.path.dirname(os.path.dirname(reference['root']))
+            retire_resumed_history(reference, completed_ids, owner_root)
+        if previous_root and os.path.realpath(previous_root) != os.path.realpath(run_root):
+            import shutil
+            for row in all_rows:
+                if row.get('status') != 'completed' or not row.get('batch_reference'):
+                    continue
+                cid = row['candidate_id']
+                if not re.match(r'^g[0-9]{3,}_c[0-9]{4,}$', cid):
+                    raise ValueError('Invalid resumed candidate identity')
+                source = os.path.join(previous_root, 'candidates', cid)
+                if os.path.realpath(source) != source:
+                    raise ValueError('Unsafe resumed candidate audit path')
+                destination = ensure_dir(os.path.join(run_root, 'candidates', cid))
+                if os.path.realpath(destination) != destination:
+                    raise ValueError('Unsafe resumed audit destination')
+                for name in (_contract_text('candidate.json'), _contract_text('completion_evidence.json'), _contract_text('timing.json')):
+                    path = os.path.join(source, name)
+                    if os.path.isfile(path) and not os.path.islink(path):
+                        target = os.path.join(destination, name)
+                        if os.path.lexists(target):
+                            raise ValueError('Resumed candidate audit destination already exists')
+                        shutil.copyfile(path, target)
     data_store = RunDataStore(os.path.join(run_root, CORE_NAME), metadata={
         "run_id": os.path.basename(run_root), "display_name": display_name or os.path.basename(run_root),
         "spec": copy.deepcopy(spec), "parameters": copy.deepcopy(selected),
@@ -4941,7 +5088,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
     planned_core_ids = set(row["candidate_id"] for row in all_rows)
     point_commit_queue = queue.Queue()
     status = {
-        "schema_version": "crescendo.run_status.v1",
+        "schema_version": _contract_text("crescendo.run_status.v1"),
         "run_id": os.path.basename(run_root),
         "run_root": run_root,
         "display_name": display_name or os.path.basename(run_root),
@@ -4957,7 +5104,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
             row for row in all_rows if row["status"] == "infrastructure_failed"
         ]),
         "message": "checkpoint restored" if resume_checkpoint is not None else "preparation complete",
-        "main_log_file": os.path.join(run_root, "crescendo.log"),
+        "main_log_file": os.path.join(run_root, _contract_text("crescendo.log")),
         "algorithm": algorithm,
         "algorithm_parameters": algorithm_parameters,
         "execution_backend": spec["execution_backend"],
@@ -5051,8 +5198,8 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
         status["spectre_task_policy"] = copy.deepcopy(netlist_optimizer.policy)
         status["simulator_task_policy"] = copy.deepcopy(netlist_optimizer.policy)
         status["maestro_max_jobs"] = netlist_optimizer.policy["max_jobs"]
-        status["private_netlist_protocol"] = "crescendo.private_netlist_optimizer.v1"
-        status["execution_protocol"] = "crescendo.unified_execution.v1"
+        status["private_netlist_protocol"] = _contract_text("crescendo.private_netlist_optimizer.v1")
+        status["execution_protocol"] = _contract_text("crescendo.unified_execution.v1")
         status["netlist_source"] = "template" if spec["execution_backend"] == "private_netlist" else "maestro"
     if persistent_backend:
         status["persistent_worker_lifetime"] = "optimization_run"
@@ -5094,7 +5241,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
             reference = data_store.reference()
         except Exception:
             reference = None
-        atomic_write_json(os.path.join(run_root, "result.json"), compact_result_summary(result, reference))
+        atomic_write_json(os.path.join(run_root, _contract_text("result.json")), compact_result_summary(result, reference))
     identity_guard_slots = _PersistentIdentityGuardSlots()
     session_health_guards = identity_guard_slots.boundary
     active_session_health_guards = identity_guard_slots.active
@@ -5443,7 +5590,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
     def observe_session_health(worker, cleanup_result):
         if runtime_config.get("persistent_health_enabled", True) is False:
             return {
-                "schema_version": "crescendo.persistent_session_health.v1",
+                "schema_version": _contract_text("crescendo.persistent_session_health.v1"),
                 "state": "disabled", "triggered": False,
             }
         health = (cleanup_result or {}).get("health")
@@ -5755,7 +5902,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
         save_checkpoint(generation, plan)
         return True
 
-    def save_checkpoint(next_generation, plan, terminal_state=None, terminal_reason=None):
+    def persist_generation_checkpoint(next_generation, plan, terminal_state=None, terminal_reason=None):
         nonlocal checkpoint_ancestry, checkpoint_parent_checksum, terminal_checkpoint_written
         status["checkpoint_revision"] = int(status.get("checkpoint_revision", 0)) + 1
         ancestry = list(checkpoint_ancestry)
@@ -5827,7 +5974,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
         )
         persist_continuation_pending(anchor_root, continuation_id, pending)
         persist_checkpoint(
-            os.path.join(run_root, "checkpoint.json"), document, "run checkpoint",
+            os.path.join(run_root, _contract_text("checkpoint.json")), document, "run checkpoint",
         )
         persist_checkpoint(anchor_path, document, "continuation checkpoint anchor")
         clear_continuation_pending(anchor_root, continuation_id)
@@ -5836,14 +5983,54 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
         if terminal_state == "completed":
             terminal_checkpoint_written = True
 
+    generation_timing = None
+    generation_timings = []
+    generation_rows, infrastructure_rows = [], []
+    resumed_segment = False
+
+    def save_checkpoint(next_generation, plan, terminal_state=None, terminal_reason=None):
+        phase = generation_timing.active_phase if generation_timing is not None else None
+        if phase is not None:
+            generation_timing.transition("persist")
+        try:
+            persist_generation_checkpoint(next_generation, plan, terminal_state, terminal_reason)
+        finally:
+            if phase is not None:
+                generation_timing.transition(phase)
+
+    def finish_generation(outcome):
+        if generation_timing is None or generation_timing.active_phase is None:
+            return
+        generation_timing.finish(outcome)
+        try:
+            summary = generation_timing_summary(generation, generation_timing,
+                generation_rows + infrastructure_rows, resumed=resumed_segment)
+            if netlist_optimizer is not None and netlist_optimizer.context is not None:
+                capacity = netlist_optimizer.context.generation_capacity(generation)
+                sidecar = os.path.join(run_root, "timings", "g%03d_capacity.json" % generation)
+                ensure_dir(os.path.dirname(sidecar))
+                atomic_write_json(sidecar, capacity)
+                summary["capacity"] = {key: value for key, value in capacity.items() if key != "events"}
+                summary["capacity_sidecar"] = os.path.relpath(sidecar, run_root)
+                from .run_log import append_run_event
+                append_run_event(run_root, "generation_capacity", "Generation %d capacity and observed concurrency" % (generation + 1),
+                                 details=summary["capacity"])
+            if baseline_backend:
+                summary['native_batches'] = [b for b in status.get('native_batches', []) if b['generation'] == generation]
+            generation_timings.append(summary)
+            # Keep frequent status writes bounded. The final result retains all summaries.
+            status["generation_timings"] = generation_timings[-20:]
+        except Exception:
+            pass
+
     live_candidate_rows = {}
     live_batch_snapshots = {}
 
     def update_live_batch(planned, generation, initializing=False, serial=False):
         from .maestro_progress import read_batch_progress
         ids = ['g%03d_c%04d' % (generation, index) for index, _values in planned]
-        path = (os.path.join(run_root, 'candidates', ids[0], 'execution_progress.json') if serial else
-                os.path.join(run_root, 'batches', 'g%03d_%s' % (generation, ids[0]), 'execution_progress.json'))
+        path = (os.path.join(run_root, 'candidates', ids[0], _contract_text('execution_progress.json')) if serial else
+                os.path.join(run_root, 'batches', 'g%03d_%s' % (generation, ids[0]), _contract_text('execution_progress.json')))
         snapshot = read_batch_progress(path, run_root, ids)
         key = json.dumps(snapshot, sort_keys=True) if snapshot else None
         if not initializing and (snapshot is None or live_batch_snapshots.get(path) == key):
@@ -5920,16 +6107,27 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
     if netlist_optimizer is not None:
         netlist_optimizer.point_commit_callback = request_point_commit
 
+    pending_shared_compactions = {}
+
     def fold_successful_candidate(row, native_cleanup_proven):
         if row.get("status") != "completed" or not native_cleanup_proven:
             return None
+        if (netlist_optimizer is not None and row.get('batch_reference') and
+                not netlist_optimizer.shared_cleanup_ready(row)):
+            pending_shared_compactions[row['candidate_id']] = (row, native_cleanup_proven)
+            row['artifact_compaction'] = {'ok': True, 'state': 'waiting_shared_cleanup',
+                'artifact_cleanup_complete': False, 'candidate_id': row['candidate_id']}
+            data_store.commit_candidates([row])
+            return row['artifact_compaction']
         candidate_root = os.path.join(run_root, "candidates", row["candidate_id"])
         if not os.path.isdir(candidate_root):
             return None
-        for key, name in (("timing", "timing.json"), ("completion_evidence", "completion_evidence.json")):
-            path = os.path.join(candidate_root, name)
-            if os.path.isfile(path) and not os.path.islink(path):
-                row[key] = load_json(path)
+        timing = _read_candidate_timing(os.path.join(candidate_root, _contract_text("timing.json")), row.get("timing"))
+        if timing is not None:
+            row["timing"] = timing
+        evidence_path = os.path.join(candidate_root, _contract_text("completion_evidence.json"))
+        if os.path.isfile(evidence_path) and not os.path.islink(evidence_path):
+            row["completion_evidence"] = load_json(evidence_path)
         summary = summarize_successful_candidate_artifacts(candidate_root, run_root)
         if not summary:
             return None
@@ -5955,6 +6153,15 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
             start_generation, active_plan, terminal_state=resume_terminal_state,
             terminal_reason=resume_terminal_reason,
         )
+        if resume_checkpoint is not None and netlist_optimizer is not None:
+            generation = start_generation
+            for row in all_rows:
+                if (row.get('status') == 'completed' and row.get('batch_reference')
+                        and not row.get('cleanup_pending')
+                        and (row.get('native_job_state') or {}).get('native_completion_proven') is True):
+                    fold_successful_candidate(row, 'reconciled_owned_task_completion')
+            save_checkpoint(start_generation, active_plan, terminal_state=resume_terminal_state,
+                            terminal_reason=resume_terminal_reason)
         if (
             persistent_backend and persistent_worker_lifetime == "run"
             and execution_start_generation < generations
@@ -5969,6 +6176,10 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
             if os.path.exists(stop_path):
                 stopped_reason = "user_stop"
                 break
+            generation_rows, infrastructure_rows = [], []
+            generation_timing = DiagnosticTiming()
+            generation_timing.start("evaluate")
+            resumed_segment = bool(active_plan is not None and active_plan.get("generation") == generation)
             status.update({"generation": generation + 1, "message": "evaluating generation %d" % (generation + 1)})
             atomic_write_json(status_path, status)
             generation_rows = [
@@ -5985,6 +6196,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
             )
             _raise_source_integrity_failure(generation, infrastructure_rows)
             if active_plan is None or active_plan.get("generation") != generation:
+                generation_timing.transition("ask")
                 if frozen_diagnostic_plan is not None:
                     generator.population_size = population
                     initial_values = [copy.deepcopy(item['values']) for item in frozen_diagnostic_plan
@@ -6003,6 +6215,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                     "planned": list(enumerate(initial_values)),
                 }
                 save_checkpoint(generation, active_plan)
+                generation_timing.transition("evaluate")
 
             def record_future_rows(future_rows, cleanup_worker, startup_streak):
                 if not isinstance(future_rows, list):
@@ -6027,32 +6240,35 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                                 task['corner'] = matching[0].get('source_corner') or matching[0].get('corner')
                     evaluated_row = row
                     candidate_root = os.path.join(run_root, "candidates", row["candidate_id"])
-                    candidate_path = os.path.join(candidate_root, "candidate.json")
+                    candidate_path = os.path.join(candidate_root, _contract_text("candidate.json"))
                     cleanup_request = None
                     process_cleanup_unproven = bool(evaluated_row.get("cleanup_pending"))
                     candidate_is_persisted = (
                         spec.get("evaluator", "real") == "real" and os.path.isfile(candidate_path)
                     )
+                    generation_timing.transition("candidate_persist")
                     if candidate_is_persisted:
                         persist_lightweight_candidate(candidate_root, row)
-                        required_paths = [
-                            candidate_path,
-                            os.path.join(candidate_root, "timing.json"),
-                        ]
+                        timing_path = os.path.join(candidate_root, _contract_text("timing.json"))
+                        required_paths = [candidate_path]
+                        if os.path.isfile(timing_path) and not os.path.islink(timing_path):
+                            required_paths.append(timing_path)
                         if row.get("status") == "completed":
-                            required_paths.append(os.path.join(candidate_root, "completion_evidence.json"))
+                            required_paths.append(os.path.join(candidate_root, _contract_text("completion_evidence.json")))
                         if row.get("execution_backend") in ("private_netlist", "maestro_netlist"):
-                            diagnostic_path = os.path.join(candidate_root, "execution_diagnostics.json")
+                            diagnostic_path = os.path.join(candidate_root, _contract_text("execution_diagnostics.json"))
                             if os.path.isfile(diagnostic_path):
                                 required_paths.append(diagnostic_path)
                         if (row.get("source_guard", {}).get("ok") and not process_cleanup_unproven
                                 and row.get("execution_backend") != "maestro_baseline"):
                             cleanup_request = (candidate_root, row["source_guard"], required_paths)
                         row = lightweight_candidate_record(row)
-                        for key, name in (("timing", "timing.json"), ("completion_evidence", "completion_evidence.json")):
-                            path = os.path.join(candidate_root, name)
-                            if os.path.isfile(path) and not os.path.islink(path):
-                                row[key] = load_json(path)
+                        timing = _read_candidate_timing(timing_path, evaluated_row.get("timing"))
+                        if timing is not None:
+                            row["timing"] = timing
+                        evidence_path = os.path.join(candidate_root, _contract_text("completion_evidence.json"))
+                        if os.path.isfile(evidence_path) and not os.path.islink(evidence_path):
+                            row["completion_evidence"] = load_json(evidence_path)
                     data_store.commit_candidates([row])
                     all_rows.append(row)
                     if row["status"] == "infrastructure_failed":
@@ -6074,6 +6290,9 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                     # The terminal candidate must be durable before the shared Maestro
                     # session discards its only raw result/history binding.
                     save_checkpoint(generation, active_plan)
+                    if netlist_optimizer is not None and row.get('batch_reference'):
+                        netlist_optimizer.commit_candidate(row)
+                    generation_timing.transition("candidate_cleanup")
                     compact_before_cleanup = json.dumps({
                         "candidate": _pack_candidate(row, checkpoint_variable_ids),
                         "counts": [
@@ -6208,7 +6427,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                             candidate_cleanup = cleanup_proven_terminal_infrastructure_candidate(
                                 candidate_root, run_root,
                                 required_lightweight_paths=[candidate_path, os.path.join(
-                                    candidate_root, "timing.json",
+                                    candidate_root, _contract_text("timing.json"),
                                 )],
                             )
                         except Exception as error:
@@ -6233,6 +6452,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                             row.setdefault("persistent_worker", {})["candidate_cleanup"] = candidate_cleanup
                             cleanup_changed = True
                     if cleanup_changed:
+                        generation_timing.transition("candidate_persist")
                         data_store.commit_candidates([row])
                         if candidate_is_persisted:
                             persist_lightweight_candidate(candidate_root, row)
@@ -6246,6 +6466,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                         }, separators=(",", ":"), sort_keys=True)
                         if compact_after_cleanup != compact_before_cleanup:
                             save_checkpoint(generation, active_plan)
+                        generation_timing.transition("candidate_cleanup")
                     if fatal_cleanup_error is not None:
                         raise RuntimeError(fatal_cleanup_error)
                     if row.get("status") == "completed":
@@ -6258,6 +6479,12 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                             and not process_cleanup_unproven and cleanup_request is not None)
                         if native_ack or cli_ack or legacy_ack:
                             fold_successful_candidate(row, "native_candidate_cleanup_ack" if native_ack else "owned_task_completion")
+                    if row.get('batch_reference') and netlist_optimizer is not None:
+                        for candidate_id, (deferred, proof) in list(pending_shared_compactions.items()):
+                            if netlist_optimizer.shared_cleanup_ready(deferred):
+                                fold_successful_candidate(deferred, proof)
+                                del pending_shared_compactions[candidate_id]
+                    generation_timing.transition("evaluate")
                     if health_limit_decision is not None:
                         if not resource_guard_is_recyclable(
                                 health_limit_decision, "candidate_boundary"):
@@ -6469,6 +6696,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                         # survive before discarding their shared native history.
                         persistent_startup_streak = record_future_rows(rows, None, persistent_startup_streak)
                         save_checkpoint(generation, active_plan)
+                        generation_timing.transition("candidate_cleanup")
                         cleanup = worker.commit_candidate(result["batch_id"])
                         status["last_batch_cleanup"] = cleanup
                         if not isinstance(cleanup, dict) or not cleanup.get("ok"):
@@ -6478,6 +6706,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                             if (row.get("batch_execution") or {}).get("batch_id") == result["batch_id"]:
                                 row.setdefault("persistent_worker", {})["cleanup_pending"] = False
                                 fold_successful_candidate(row, "native_batch_cleanup_ack")
+                        generation_timing.transition("evaluate")
                         from .maestro_batch import compact_committed_batch
                         status["last_batch_artifact_compaction"] = compact_committed_batch(
                             run_root, result["batch_id"], cleanup,
@@ -6914,7 +7143,79 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                             except StopIteration:
                                 continue
                             submit_controller_request(worker, item)
+                elif pending and baseline_backend and spec.get('native_candidate_batching') == 'generation':
+                    from .generation_batch import build_generation_plan, BatchUnsupported
+                    from .native_baseline import evaluate_native_baseline_generation
+                    batch_plan = build_generation_plan(generation, pending, selected,
+                        {'prepared': _prepared_schema_fingerprint(prepared), 'spec': spec})
+                    batch_root = os.path.join(run_root, 'candidates', 'batch_' + batch_plan['batch_epoch'])
+                    committed = set()
+                    def consume_batch_candidate(candidate, native_result):
+                        nonlocal persistent_startup_streak
+                        row = _evaluate_native_baseline_candidate(run_root, candidate['index'], generation,
+                            candidate['values'], spec, prepared, selected, config,
+                            lambda: os.path.exists(stop_path), _native_result=native_result)
+                        persistent_startup_streak = record_future_rows(row, None, persistent_startup_streak)
+                        if row['status'] != 'completed':
+                            raise RuntimeError('Maestro baseline candidate failed; evidence retained: ' + str(row.get('error')))
+                        committed.add(candidate['candidate_id'])
+                    baseline_candidate_roots.add(os.path.abspath(batch_root))
+                    try:
+                        evaluate_native_baseline_generation(batch_plan, selected, spec, prepared, config, batch_root,
+                            cancel_check=lambda: os.path.exists(stop_path), consume=consume_batch_candidate)
+                        status.setdefault('native_batches', []).append({'generation': generation,
+                            'batch_epoch': batch_plan['batch_epoch'], 'logical_count': batch_plan['logical_count'],
+                            'physical_row_count': batch_plan['physical_row_count'], 'physical_count': batch_plan.get('physical_count'),
+                            'capacity': {'native_parallelism': batch_plan.get('native_parallelism'),
+                                'observed_solver_peak': None, 'solver_peak_reason': 'native start/terminal events unavailable'},
+                            'manifest': os.path.relpath(os.path.join(batch_root, _contract_text('batch_manifest.json')), run_root),
+                            'timing': os.path.relpath(os.path.join(batch_root, _contract_text('batch_timing.json')), run_root)})
+                    except BatchUnsupported as error:
+                        if batch_plan.get('submitted'):
+                            raise RuntimeError('Submitted native batch cannot replay serially')
+                        # An unsupported plan can fail before creating a driver.
+                        if not os.path.isfile(os.path.join(batch_root, 'native_baseline', _contract_text('native_baseline_state.json'))):
+                            baseline_candidate_roots.discard(os.path.abspath(batch_root))
+                        status['native_batch_fallback'] = {'generation': generation, 'reason': str(error),
+                            'batch_epoch': batch_plan['batch_epoch'], 'submitted': False}
+                        status['native_candidate_batching_effective'] = 'serial'
+                        atomic_write_json(os.path.join(run_root, 'batch_fallback_' + batch_plan['batch_epoch'] + '.json'), status['native_batch_fallback'])
+                        status['message'] = 'Native generation declined before submission; serial: ' + str(error)
+                        atomic_write_json(status_path, status)
+                        for index, values in pending:
+                            if os.path.exists(stop_path):
+                                break
+                            row = _evaluate_native_baseline_candidate(run_root, index, generation, values,
+                                spec, prepared, selected, config, lambda: os.path.exists(stop_path),
+                                owned_roots=baseline_candidate_roots)
+                            persistent_startup_streak = record_future_rows(row, None, persistent_startup_streak)
+                            if row['status'] != 'completed' and not os.path.exists(stop_path):
+                                raise RuntimeError('Maestro baseline candidate failed; evidence retained: ' + str(row.get('error')))
+                    except Exception as error:
+                        for candidate in batch_plan['candidates']:
+                            if candidate['candidate_id'] in committed:
+                                continue
+                            error.batch_reference = {'root': batch_root, 'batch_epoch': batch_plan['batch_epoch'],
+                                'physical_ids': (batch_plan.get('candidate_to_physical') or {}).get(candidate['candidate_id'])}
+                            row = _evaluate_native_baseline_candidate(run_root, candidate['index'], generation,
+                                candidate['values'], spec, prepared, selected, config,
+                                lambda: os.path.exists(stop_path), _native_error=error)
+                            persistent_startup_streak = record_future_rows(row, None, persistent_startup_streak)
+                        if not os.path.exists(stop_path):
+                            raise
                 elif pending:
+                    generation_inputs = {}
+                    if netlist_optimizer is not None and generation_batching_enabled(spec):
+                        try:
+                            generation_inputs = netlist_optimizer.prepare_generation(generation, pending)
+                        except Exception:
+                            if not os.path.exists(stop_path):
+                                raise
+                            netlist_optimizer.cancel()
+                            stopped_reason = 'user_stop'
+                            save_checkpoint(generation, active_plan)
+                            finish_generation('stopped')
+                            break
                     with ThreadPoolExecutor(max_workers=jobs) as executor:
                         pending_iter = iter(pending)
                         active_futures = {}
@@ -6925,7 +7226,11 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                             except StopIteration:
                                 return False
                             if netlist_optimizer is not None:
-                                future = executor.submit(netlist_optimizer.evaluate, index, generation, values)
+                                item = generation_inputs.get('g%03d_c%04d' % (generation, index))
+                                if item is None:
+                                    future = executor.submit(netlist_optimizer.evaluate, index, generation, values)
+                                else:
+                                    future = executor.submit(netlist_optimizer.evaluate, index, generation, values, item)
                             elif baseline_backend:
                                 future = executor.submit(_evaluate_native_baseline_candidate,
                                     run_root, index, generation, values, spec, prepared, selected, config,
@@ -7006,6 +7311,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                 allowance = replacement_limit - active_plan["replacements"]
                 if missing > 0 and allowance > 0 and not os.path.exists(stop_path):
                     count = min(missing, allowance)
+                    generation_timing.transition("ask")
                     replacement_values = generator.ask(count)
                     first_index = active_plan["next_index"]
                     active_plan["planned"].extend(
@@ -7017,11 +7323,13 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                     status["message"] = "resampling %d infrastructure-failed candidate(s)" % count
                     atomic_write_json(status_path, status)
                     save_checkpoint(generation, active_plan)
+                    generation_timing.transition("evaluate")
                     continue
                 break
             if netlist_optimizer is not None:
                 netlist_optimizer.verify_sources()
             if stopped_reason == "user_stop":
+                finish_generation("stopped")
                 break
             if not generation_rows and infrastructure_rows:
                 raise RuntimeError(
@@ -7030,16 +7338,20 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                         generation + 1, _infrastructure_failure_summary(infrastructure_rows),
                     )
                 )
+            generation_timing.transition("settlement")
             generation_rows.sort(key=lambda row: (
                 int(row.get("index", 0)), str(row.get("candidate_id") or ""),
             ))
+            generation_timing.transition("tell")
             generation_accepted = generator.tell(generation_rows)
+            generation_timing.transition("settlement")
             completed_generation = [row for row in generation_rows if row["status"] == "completed"]
             if not completed_generation:
                 status["message"] = "generation %d had no valid candidate; retained prior population" % (generation + 1)
                 atomic_write_json(status_path, status)
                 active_plan = None
                 save_checkpoint(generation + 1, active_plan)
+                finish_generation("completed")
                 continue
             survivor_population = [row for row in generator.previous if row.get("status") == "completed"]
             representative, ideal_distance = select_representative(survivor_population or completed_generation)
@@ -7065,6 +7377,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                         generation + 1, active_plan, terminal_state="completed",
                         terminal_reason=stopped_reason,
                     )
+                    finish_generation("completed")
                     break
             active_plan = None
             if generation + 1 >= generations:
@@ -7075,6 +7388,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                 )
             else:
                 save_checkpoint(generation + 1, active_plan)
+            finish_generation("completed")
         completed = [row for row in all_rows if row["status"] == "completed"]
         if not completed and stopped_reason != "user_stop":
             raise RuntimeError("all %d candidates failed across %d generations; inspect candidate errors" % (len(all_rows), generations))
@@ -7088,7 +7402,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
         representative, ideal_distance = select_representative(completed) if completed else (None, None)
         result_state = "stopped" if stopped_reason == "user_stop" else "completed"
         result = {
-            "schema_version": "crescendo.run_result.v2",
+            "schema_version": _contract_text("crescendo.run_result.v2"),
             "run_id": status["run_id"],
             "run_root": run_root,
             "display_name": status["display_name"],
@@ -7103,13 +7417,14 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
             "pareto_front": front,
             "candidates": all_rows,
             "selection_history": selection_history,
+            "generation_timings": generation_timings,
             "raw_cleanup": {"policy": "zero_raw_retention", "kept": []},
             "finished_at": utc_timestamp(),
         }
         if objective_count == 1 and representative is not None:
             result["best"] = representative
         if representative is not None:
-            assignment_name = "best_assignment.json" if objective_count == 1 else "representative_assignment.json"
+            assignment_name = _contract_text("best_assignment.json") if objective_count == 1 else _contract_text("representative_assignment.json")
             pending_assignment = (assignment_name, {
                 "candidate_id": representative["candidate_id"],
                 "role": result["representative_role"],
@@ -7122,6 +7437,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
         atomic_write_json(status_path, status)
         pending_result = result
     except Exception as error:
+        finish_generation("failed")
         message = "%s: %s" % (error.__class__.__name__, error)
         status.setdefault("primary_failure", {
             "error_type": error.__class__.__name__, "message": str(error),
@@ -7185,7 +7501,8 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                 status["final_cleanup"] = baseline_shutdown["final_cleanup"]
                 for row in all_rows:
                     root = os.path.join(run_root, "candidates", row["candidate_id"])
-                    proof = baseline_shutdown["candidate_proofs"].get(root)
+                    reference = row.get('batch_reference') or {}
+                    proof = baseline_shutdown["candidate_proofs"].get(reference.get('root') or root)
                     if proof is not None:
                         row["raw_cleanup_proof"] = proof
                         persist_lightweight_candidate(root, row)
@@ -7203,7 +7520,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
         if persistent_workers or netlist_optimizer is not None:
             try:
                 shutdown_document = {
-                    "schema_version": "crescendo.worker_shutdown.v1",
+                    "schema_version": _contract_text("crescendo.worker_shutdown.v1"),
                     "workers": shutdown,
                     "finished_at": utc_timestamp(),
                 }

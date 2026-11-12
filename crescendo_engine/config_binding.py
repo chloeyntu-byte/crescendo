@@ -4,6 +4,9 @@ No source HDB object is opened for writing. Logical library names resolve to the
 already verified private workspace copies; reference libraries remain read only.
 """
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 
 import ast
 import hashlib
@@ -104,7 +107,7 @@ def private_config_plan(workspace, clone_plan):
             row['specifier'] = ancestry
         result.append({'config': private_key, 'top': top,
                        'generated_config': bool(design.get('generated_config')),
-                       'backup_view': 'cr_source_' + hashlib.sha1('\x1f'.join(key).encode('utf-8')).hexdigest()[:12],
+                       'backup_view': _contract_text('cr_source_') + hashlib.sha1('\x1f'.join(key).encode('utf-8')).hexdigest()[:12],
                        'bindings': sorted(rows.values(), key=lambda row: (row['hierarchy_path'].count('/'), row['hierarchy_path']))})
         if workspace.get('same_library_objects'):
             result[-1]['owned_view'] = next(row for row in workspace['same_library_registry']
@@ -117,8 +120,8 @@ def config_binding_lines(workspace, clone_plan, verification_path):
     plan = private_config_plan(workspace, clone_plan)
     if not plan:
         return [], plan
-    lines = ['crescConfigVerify = outfile(%s)' % _string(verification_path),
-             'unless(crescConfigVerify error("Crescendo cannot create config verification evidence\\n"))']
+    lines = [_contract_text('crescConfigVerify = outfile(%s)') % _string(verification_path),
+             _contract_text('unless(crescConfigVerify error("Crescendo cannot create config verification evidence\\n"))')]
     for design in plan:
         config = design['config']
         # HDB accepts an empty default stop list, but the Spectre SI entrypoint
@@ -127,61 +130,61 @@ def config_binding_lines(workspace, clone_plan, verification_path):
         stopped_views = set(row['target'][2] for row in design['bindings'] if row.get('stop'))
         traversed_views = set(row['target'][2] for row in design['bindings'] if not row.get('stop'))
         traversed_views.add(design['top'][2])
-        default_stops = sorted(stopped_views - traversed_views) or ['cr_config_stop_sentinel']
+        default_stops = sorted(stopped_views - traversed_views) or [_contract_text('cr_config_stop_sentinel')]
         args = ' '.join(_string(value) for value in config)
         backup = _string(design['backup_view'])
         if not design.get('generated_config'):
             lines.extend([
             'unless(hdbIsConfig(%s %s %s)' % (_string(config[0]), _string(config[1]), backup),
-            '  crescSourceConfig = hdbOpen(%s "r")' % args,
-            '  unless(crescSourceConfig error("Crescendo cannot open copied original config\\n"))',
-            '  unless(hdbSaveACopy(crescSourceConfig %s %s %s) error("Crescendo cannot preserve original copied config\\n"))' % (_string(config[0]), _string(config[1]), backup),
-            '  hdbClose(crescSourceConfig)', ')',
+            _contract_text('  crescSourceConfig = hdbOpen(%s "r")') % args,
+            _contract_text('  unless(crescSourceConfig error("Crescendo cannot open copied original config\\n"))'),
+            _contract_text('  unless(hdbSaveACopy(crescSourceConfig %s %s %s) error("Crescendo cannot preserve original copied config\\n"))') % (_string(config[0]), _string(config[1]), backup),
+            _contract_text('  hdbClose(crescSourceConfig)'), ')',
             ])
         lines.extend([
-            'crescPrivateConfig = hdbOpen(%s "w")' % args,
-            'unless(crescPrivateConfig error("Crescendo cannot write private config\\n"))',
-            'unless(hdbSetTopCellViewName(crescPrivateConfig %s) error("Crescendo cannot redirect private config top\\n"))' % ' '.join(_string(v) for v in design['top']),
-            'unless(hdbSetDefaultStopListString(crescPrivateConfig %s) error("Crescendo cannot set private config stop list\\n"))' % _string(' '.join(default_stops)),
-            'unless(hdbSetDefaultViewListString(crescPrivateConfig %s) error("Crescendo cannot set private config view list\\n"))' % _string(' '.join(sorted(set(row['target'][2] for row in design['bindings']) | set([design['top'][2]])))),
+            _contract_text('crescPrivateConfig = hdbOpen(%s "w")') % args,
+            _contract_text('unless(crescPrivateConfig error("Crescendo cannot write private config\\n"))'),
+            _contract_text('unless(hdbSetTopCellViewName(crescPrivateConfig %s) error("Crescendo cannot redirect private config top\\n"))') % ' '.join(_string(v) for v in design['top']),
+            _contract_text('unless(hdbSetDefaultStopListString(crescPrivateConfig %s) error("Crescendo cannot set private config stop list\\n"))') % _string(' '.join(default_stops)),
+            _contract_text('unless(hdbSetDefaultViewListString(crescPrivateConfig %s) error("Crescendo cannot set private config view list\\n"))') % _string(' '.join(sorted(set(row['target'][2] for row in design['bindings']) | set([design['top'][2]])))),
         ])
         for row in design['bindings']:
             spec = 'list(%s)' % ' '.join('list(%s)' % ' '.join(_string(value) for value in step) for step in row['specifier'])
             lines.extend([
-                'unless(hdbSetObjBindRule(crescPrivateConfig %s list(\'hdbcBindingRule list(%s))) error("Crescendo cannot set exact config occurrence %s\\n"))' % (spec, ' '.join(_string(v) for v in row['target']), _quote(row['hierarchy_path'])),
+                _contract_text('unless(hdbSetObjBindRule(crescPrivateConfig %s list(\'hdbcBindingRule list(%s))) error("Crescendo cannot set exact config occurrence %s\\n"))') % (spec, ' '.join(_string(v) for v in row['target']), _quote(row['hierarchy_path'])),
             ])
             if row.get('stop'):
-                lines.append('unless(hdbSetObjBindRule(crescPrivateConfig %s list(\'hdbcStopRule t)) error("Crescendo cannot preserve config stop point\\n"))' % spec)
-        lines.append('unless(hdbSave(crescPrivateConfig) error("Crescendo private config save failed\\n"))')
+                lines.append(_contract_text('unless(hdbSetObjBindRule(crescPrivateConfig %s list(\'hdbcStopRule t)) error("Crescendo cannot preserve config stop point\\n"))') % spec)
+        lines.append(_contract_text('unless(hdbSave(crescPrivateConfig) error("Crescendo private config save failed\\n"))'))
         if design.get('owned_view'):
             from .same_library_views import ownership_marker_lines
             lines.extend(ownership_marker_lines(design['owned_view']))
-        lines.extend(['hdbClose(crescPrivateConfig)', 'crescPrivateConfig = hdbOpen(%s "r")' % args,
-                      'unless(crescPrivateConfig error("Crescendo cannot reopen persisted private config\\n"))',
-                      'unless(equal(list(hdbGetTopLibName(crescPrivateConfig) hdbGetTopCellName(crescPrivateConfig) hdbGetTopViewName(crescPrivateConfig)) list(%s)) error("Crescendo persisted config top mismatch\\n"))' % ' '.join(_string(v) for v in design['top']),
-                      'fprintf(crescConfigVerify "CONFIG_TOP\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" %s)' % ' '.join(_string(v) for v in config + design['top'])])
+        lines.extend([_contract_text('hdbClose(crescPrivateConfig)'), _contract_text('crescPrivateConfig = hdbOpen(%s "r")') % args,
+                      _contract_text('unless(crescPrivateConfig error("Crescendo cannot reopen persisted private config\\n"))'),
+                      _contract_text('unless(equal(list(hdbGetTopLibName(crescPrivateConfig) hdbGetTopCellName(crescPrivateConfig) hdbGetTopViewName(crescPrivateConfig)) list(%s)) error("Crescendo persisted config top mismatch\\n"))') % ' '.join(_string(v) for v in design['top']),
+                      _contract_text('fprintf(crescConfigVerify "CONFIG_TOP\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" %s)') % ' '.join(_string(v) for v in config + design['top'])])
         bindings_by_path = dict((node['hierarchy_path'], node) for node in design['bindings'])
         for row in design['bindings']:
-            lines.extend(['crescConfigPath = hdbCreatePathVector(crescPrivateConfig)',
-                          'unless(crescConfigPath error("Crescendo cannot create private config path vector\\n"))'])
+            lines.extend([_contract_text('crescConfigPath = hdbCreatePathVector(crescPrivateConfig)'),
+                          _contract_text('unless(crescConfigPath error("Crescendo cannot create private config path vector\\n"))')])
             for index, step in enumerate(row['specifier'][:-1]):
                 parent_path = '/' + '/'.join(s[3] for s in row['specifier'][:index+1])
                 ancestor = bindings_by_path[parent_path]
-                lines.append('unless(hdbPushCell(crescConfigPath %s %s) error("Crescendo cannot reconstruct private config path\\n"))' % (_string(step[3]), ' '.join(_string(v) for v in ancestor['target'])))
+                lines.append(_contract_text('unless(hdbPushCell(crescConfigPath %s %s) error("Crescendo cannot reconstruct private config path\\n"))') % (_string(step[3]), ' '.join(_string(v) for v in ancestor['target'])))
             raw = row.get('verification_master') or tuple(row.get('master_' + name) for name in ('library', 'cell', 'view'))
             if not all(raw):
                 raise ValueError('config raw master identity is incomplete: %s' % row['hierarchy_path'])
             flags = ' '.join('t' if row.get('fixed_' + name) else 'nil' for name in ('library', 'cell', 'view'))
             lines.extend([
-                'crescConfigBound = hdbBind(crescConfigPath %s %s %s)' % (' '.join(_string(v) for v in raw), _string(row['name']), flags),
-                'unless(equal(list(car(crescConfigBound) cadr(crescConfigBound) caddr(crescConfigBound)) list(%s)) error("Crescendo persisted config binding mismatch at %s: %%L\\n" crescConfigBound))' % (' '.join(_string(v) for v in row['target']), _quote(row['hierarchy_path'])),
-                'unless(hdbPushCell(crescConfigPath %s %s) error("Crescendo cannot enter private config binding\\n"))' % (_string(row['name']), ' '.join(_string(v) for v in row['target'])),
-                'unless(equal(if(hdbIsAtStopPoint(crescConfigPath) then t else nil) %s) error("Crescendo persisted config stop mismatch at %s\\n"))' % ('t' if row.get('stop') else 'nil', _quote(row['hierarchy_path'])),
-                'fprintf(crescConfigVerify "CONFIG_BINDING\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" %s %s %s %s)' % (' '.join(_string(v) for v in config), _string(row['hierarchy_path']), ' '.join(_string(v) for v in row['target']), 't' if row.get('stop') else 'nil'),
-                'hdbDestroyPathVector(crescConfigPath)',
+                _contract_text('crescConfigBound = hdbBind(crescConfigPath %s %s %s)') % (' '.join(_string(v) for v in raw), _string(row['name']), flags),
+                _contract_text('unless(equal(list(car(crescConfigBound) cadr(crescConfigBound) caddr(crescConfigBound)) list(%s)) error("Crescendo persisted config binding mismatch at %s: %%L\\n" crescConfigBound))') % (' '.join(_string(v) for v in row['target']), _quote(row['hierarchy_path'])),
+                _contract_text('unless(hdbPushCell(crescConfigPath %s %s) error("Crescendo cannot enter private config binding\\n"))') % (_string(row['name']), ' '.join(_string(v) for v in row['target'])),
+                _contract_text('unless(equal(if(hdbIsAtStopPoint(crescConfigPath) then t else nil) %s) error("Crescendo persisted config stop mismatch at %s\\n"))') % ('t' if row.get('stop') else 'nil', _quote(row['hierarchy_path'])),
+                _contract_text('fprintf(crescConfigVerify "CONFIG_BINDING\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" %s %s %s %s)') % (' '.join(_string(v) for v in config), _string(row['hierarchy_path']), ' '.join(_string(v) for v in row['target']), 't' if row.get('stop') else 'nil'),
+                _contract_text('hdbDestroyPathVector(crescConfigPath)'),
             ])
-        lines.append('hdbClose(crescPrivateConfig)')
-    lines.extend(['close(crescConfigVerify)', 'crescConfigVerify = nil', 'crescPrivateConfig = nil', 'crescSourceConfig = nil', 'crescConfigPath = nil'])
+        lines.append(_contract_text('hdbClose(crescPrivateConfig)'))
+    lines.extend([_contract_text('close(crescConfigVerify)'), _contract_text('crescConfigVerify = nil'), _contract_text('crescPrivateConfig = nil'), _contract_text('crescSourceConfig = nil'), _contract_text('crescConfigPath = nil')])
     return lines, plan
 
 
@@ -211,19 +214,19 @@ def config_clone_cdf_lines(clone):
     source_library = clone.get('symbol_source_library') or clone['source_library']
     source_cell = clone.get('symbol_source_cell') or clone['source_cell']
     return [
-        'crescCloneSourceCDF = cdfGetBaseCellCDF(ddGetObj(%s %s))' % (_string(source_library), _string(source_cell)),
-        'when(crescCloneSourceCDF',
-        '  crescCloneDestCell = ddGetObj(%s %s)' % (_string(clone['clone_library']), _string(clone['clone_cell'])),
-        '  unless(crescCloneDestCell error("Crescendo cannot obtain private clone CDF cell\\n"))',
-        '  crescCloneDestCDF = cdfCopyCDF(crescCloneDestCell "baseCellData" crescCloneSourceCDF)',
-        '  unless(crescCloneDestCDF error("Crescendo cloned module CDF is absent\\n"))',
-        '  cdfSaveCDF(crescCloneDestCDF)',
-        '  unless(length(crescCloneSourceCDF~>parameters) == length(crescCloneDestCDF~>parameters) error("Crescendo cloned module CDF parameter count mismatch\\n"))',
-        '  foreach(crescSourceParam crescCloneSourceCDF~>parameters',
-        '    crescDestParam = cdfFindParamByName(crescCloneDestCDF crescSourceParam~>name)',
-        '    unless(crescDestParam && equal(list(crescSourceParam~>name crescSourceParam~>type crescSourceParam~>defValue crescSourceParam~>callback crescSourceParam~>parseAsNumber crescSourceParam~>parseAsCEL) list(crescDestParam~>name crescDestParam~>type crescDestParam~>defValue crescDestParam~>callback crescDestParam~>parseAsNumber crescDestParam~>parseAsCEL)) error("Crescendo cloned module CDF parameter mismatch\\n"))',
+        _contract_text('crescCloneSourceCDF = cdfGetBaseCellCDF(ddGetObj(%s %s))') % (_string(source_library), _string(source_cell)),
+        _contract_text('when(crescCloneSourceCDF'),
+        _contract_text('  crescCloneDestCell = ddGetObj(%s %s)') % (_string(clone['clone_library']), _string(clone['clone_cell'])),
+        _contract_text('  unless(crescCloneDestCell error("Crescendo cannot obtain private clone CDF cell\\n"))'),
+        _contract_text('  crescCloneDestCDF = cdfCopyCDF(crescCloneDestCell "baseCellData" crescCloneSourceCDF)'),
+        _contract_text('  unless(crescCloneDestCDF error("Crescendo cloned module CDF is absent\\n"))'),
+        _contract_text('  cdfSaveCDF(crescCloneDestCDF)'),
+        _contract_text('  unless(length(crescCloneSourceCDF~>parameters) == length(crescCloneDestCDF~>parameters) error("Crescendo cloned module CDF parameter count mismatch\\n"))'),
+        _contract_text('  foreach(crescSourceParam crescCloneSourceCDF~>parameters'),
+        _contract_text('    crescDestParam = cdfFindParamByName(crescCloneDestCDF crescSourceParam~>name)'),
+        _contract_text('    unless(crescDestParam && equal(list(crescSourceParam~>name crescSourceParam~>type crescSourceParam~>defValue crescSourceParam~>callback crescSourceParam~>parseAsNumber crescSourceParam~>parseAsCEL) list(crescDestParam~>name crescDestParam~>type crescDestParam~>defValue crescDestParam~>callback crescDestParam~>parseAsNumber crescDestParam~>parseAsCEL)) error("Crescendo cloned module CDF parameter mismatch\\n"))'),
         '  )',
-        '  unless(equal(crescCloneSourceCDF~>simInfo crescCloneDestCDF~>simInfo) error("Crescendo cloned module CDF simInfo mismatch\\n"))',
+        _contract_text('  unless(equal(crescCloneSourceCDF~>simInfo crescCloneDestCDF~>simInfo) error("Crescendo cloned module CDF simInfo mismatch\\n"))'),
         ')',
-        'crescCloneSourceCDF = nil', 'crescCloneDestCDF = nil', 'crescCloneDestCell = nil', 'crescSourceParam = nil', 'crescDestParam = nil',
+        _contract_text('crescCloneSourceCDF = nil'), _contract_text('crescCloneDestCDF = nil'), _contract_text('crescCloneDestCell = nil'), _contract_text('crescSourceParam = nil'), _contract_text('crescDestParam = nil'),
     ]

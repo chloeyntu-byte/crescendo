@@ -61,6 +61,11 @@ class NativeBaselineProtocolTests(unittest.TestCase):
         self.assertEqual(raised.exception.detail["failure_stage"], "source_guard")
         self.assertEqual(raised.exception.detail["source_guard"], {"ok": False})
         self.assertFalse(raised.exception.detail["cleanup_pending"])
+        phases = raised.exception.detail["timing"]["phases"]
+        self.assertFalse(phases["build"]["completed"])
+        self.assertGreaterEqual(phases["build"]["elapsed_seconds"], 0)
+        self.assertTrue(phases["native_cleanup"]["completed"])
+        self.assertNotIn("execution", phases)
 
     def test_named_policy_without_frozen_definition_cannot_fall_back_local(self):
         workspace = {"root": self.root, "setup": {"job_policy_references": {"global": "SourcePolicy"}}}

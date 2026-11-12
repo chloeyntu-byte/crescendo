@@ -6,6 +6,9 @@ imports and checkpoint evidence reject it.  This file never grants authority to
 submit, resume or export OA: those operations still require their native proofs.
 """
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 
 import copy
 import bisect
@@ -20,9 +23,9 @@ try:
 except ImportError:  # pragma: no cover - supported deployment is Linux
     fcntl = None
 
-CORE_NAME = "optimization.crescendo"
-SCHEMA_VERSION = "crescendo.optimization_dataset.v1"
-RECORD_SCHEMA = "crescendo.optimization_record.v1"
+CORE_NAME = _contract_text("optimization.crescendo")
+SCHEMA_VERSION = _contract_text("crescendo.optimization_dataset.v1")
+RECORD_SCHEMA = _contract_text("crescendo.optimization_record.v1")
 MAX_RECORD_BYTES = 64 * 1024 * 1024
 TERMINAL_STATES = ("completed", "failed", "infrastructure_failed")
 _ACTIVE_WRITERS = {}

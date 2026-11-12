@@ -1,8 +1,11 @@
 """Owned Test/Analysis choices; the inspected source remains immutable."""
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 import copy
 import json
 
-SCHEMA = 'crescendo.execution_selection.v1'
+SCHEMA = _contract_text('crescendo.execution_selection.v1')
 
 
 def catalogue(setup):
@@ -102,26 +105,26 @@ def selection_skill_lines(plan):
     lines = []
     for name in plan['available']:
         enabled = name in plan['selected']
-        lines.append('unless(member(%s maeGetSetup(?typeName "tests" ?session session)) error("Crescendo selected Test unavailable\\n"))' % quote(name))
+        lines.append(_contract_text('unless(member(%s maeGetSetup(?typeName "tests" ?session session)) error("Crescendo selected Test unavailable\\n"))') % quote(name))
         for analysis in plan['available_analyses'][name]:
             wanted = analysis in plan['analyses'][name]
             lines.extend([
-                'crescAnalysisBefore=maeGetAnalysis(%s %s ?includeEmpty t ?session session)' % (quote(name), quote(analysis)),
-                'unless(maeSetAnalysis(%s %s ?enable %s ?session session) error("Crescendo analysis selection setter failed\\n"))' % (quote(name), quote(analysis), 't' if wanted else 'nil'),
-                'crescAnalysisAfter=maeGetAnalysis(%s %s ?includeEmpty t ?session session)' % (quote(name), quote(analysis)),
-                'unless(equal(setof(item crescAnalysisBefore car(item)!="enable") setof(item crescAnalysisAfter car(item)!="enable")) error("Crescendo analysis options changed while selecting analysis\\n"))',
+                _contract_text('crescAnalysisBefore=maeGetAnalysis(%s %s ?includeEmpty t ?session session)') % (quote(name), quote(analysis)),
+                _contract_text('unless(maeSetAnalysis(%s %s ?enable %s ?session session) error("Crescendo analysis selection setter failed\\n"))') % (quote(name), quote(analysis), 't' if wanted else 'nil'),
+                _contract_text('crescAnalysisAfter=maeGetAnalysis(%s %s ?includeEmpty t ?session session)') % (quote(name), quote(analysis)),
+                _contract_text('unless(equal(setof(item crescAnalysisBefore car(item)!="enable") setof(item crescAnalysisAfter car(item)!="enable")) error("Crescendo analysis options changed while selecting analysis\\n"))'),
             ])
         expected = 'list(%s)' % ' '.join(quote(value) for value in plan['analyses'][name])
-        lines.append('unless(equal(sort(copy(maeGetEnabledAnalysis(%s ?session session)) \'alphalessp) sort(%s \'alphalessp)) error("Crescendo enabled analysis readback differs\\n"))' % (quote(name), expected))
+        lines.append(_contract_text('unless(equal(sort(copy(maeGetEnabledAnalysis(%s ?session session)) \'alphalessp) sort(%s \'alphalessp)) error("Crescendo enabled analysis readback differs\\n"))') % (quote(name), expected))
     # Qualify the final active Test set after all configuration changes.
     # IC618 stores active/disabledtests separately from test enabled attributes.
     for name in plan['available']:
         enabled = name in plan['selected']
         lines.extend([
-            'unless(maeSetSetup(?tests list(%s) ?enabled %s ?session session) error("Crescendo Test selection setter failed\\n"))' % (quote(name), 't' if enabled else 'nil'),
+            _contract_text('unless(maeSetSetup(?tests list(%s) ?enabled %s ?session session) error("Crescendo Test selection setter failed\\n"))') % (quote(name), 't' if enabled else 'nil'),
         ])
     expected_tests = 'list(%s)' % ' '.join(quote(value) for value in plan['selected'])
-    lines.append('unless(equal(sort(copy(maeGetSetup(?typeName "tests" ?enabled t ?session session)) \'alphalessp) sort(%s \'alphalessp)) error("Crescendo final enabled Test set differs\\n"))' % expected_tests)
+    lines.append(_contract_text('unless(equal(sort(copy(maeGetSetup(?typeName "tests" ?enabled t ?session session)) \'alphalessp) sort(%s \'alphalessp)) error("Crescendo final enabled Test set differs\\n"))') % expected_tests)
     return lines
 
 

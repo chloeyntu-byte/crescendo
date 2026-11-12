@@ -3,6 +3,9 @@ import json
 import hashlib
 import os
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .utils import atomic_write_text
 
 
@@ -11,11 +14,11 @@ def write_setup_diagnostic_log(reference, error=None):
     from .native_diagnostics import skill_command_diagnostics, _owned_binary_stream, MAX_GUARD_SCRIPT_BYTES
     owner = _owner(reference)
     info = private_session_info(reference)
-    state = _load(os.path.join(owner["root"], "session_state.json"))
+    state = _load(os.path.join(owner["root"], _contract_text("session_state.json")))
     operations = state.get("operations") or []
     if not isinstance(operations, list) or len(operations) > 4096:
         raise ValueError("Setup operation inventory is not bounded")
-    summary = {"schema_version": "crescendo.setup_private_diagnostics.v1",
+    summary = {"schema_version": _contract_text("crescendo.setup_private_diagnostics.v1"),
         "session_id": owner["session_id"], "status": info.get("status"),
         "maestro": info.get("maestro"), "configs": [{key: row.get(key) for key in
             ("library", "cell", "view", "path", "top")} for row in info.get("configs") or []],
@@ -23,7 +26,7 @@ def write_setup_diagnostic_log(reference, error=None):
         "binding_verification": info.get("binding_verification"),
         "native_run_invoked": False, "solver_invocations": 0,
         "scope": "Setup creates and binds private views; candidate capture belongs to its run log"}
-    lines = ["Crescendo Setup 私有化诊断", "setup_summary " + json.dumps(summary, ensure_ascii=False, sort_keys=True)]
+    lines = [_contract_text("Crescendo Setup 私有化诊断"), "setup_summary " + json.dumps(summary, ensure_ascii=False, sort_keys=True)]
     if error is not None:
         lines.append("first_cause " + json.dumps({"type": type(error).__name__, "message": str(error)[:8192]}, ensure_ascii=False))
         if operations:
@@ -32,7 +35,7 @@ def write_setup_diagnostic_log(reference, error=None):
             if (not isinstance(control, str) or os.path.dirname(control) != parent
                     or os.path.realpath(control) != control or not os.path.isdir(control)):
                 raise ValueError("Setup command root is not owned")
-            command_path = os.path.join(control, "command.json")
+            command_path = os.path.join(control, _contract_text("command.json"))
             script_path = os.path.join(control, "setup.il")
             if os.path.isfile(command_path):
                 command = _load(command_path)
@@ -47,11 +50,11 @@ def write_setup_diagnostic_log(reference, error=None):
                         else:
                             evidence["script_hash_omitted"] = "script exceeds the diagnostic byte bound"
                 evidence["native_error"] = skill_command_diagnostics(command, script_path,
-                    required_marker="CRESCENDO_SETUP_PRIVATE_BINDING_DONE", owned_root=control)
+                    required_marker=_contract_text("CRESCENDO_SETUP_PRIVATE_BINDING_DONE"), owned_root=control)
                 lines.append("native_binding_failure " + json.dumps(evidence, ensure_ascii=False, sort_keys=True))
             else:
                 lines.append("native_binding_failure " + json.dumps({"state": "command_not_registered",
                     "command_root": control}, ensure_ascii=False))
-    path = os.path.join(owner["root"], "environment_test.log")
+    path = os.path.join(owner["root"], _contract_text("environment_test.log"))
     atomic_write_text(path, "\n".join(lines) + "\n")
     return path

@@ -174,6 +174,7 @@ class BaselineLoopTests(unittest.TestCase):
             config['runtime']['run_root'] = root
             spec = {'evaluator': 'real', 'execution_backend': 'maestro_baseline', 'selected_test': 'main',
                 'execution_selection': {'tests': ['main'], 'analyses': {'main': ['dc']}},
+                'native_candidate_batching': 'serial',
                 'algorithm': 'random', 'generations': 1, 'population': 2, 'jobs': 4,
                 'variables': [{'parameter_id': 'x', 'minimum': 0, 'maximum': 1}],
                 'objectives': [{'output_key': 'main::gain', 'direction': 'maximize', 'corners': ['nominal']}],

@@ -15,6 +15,9 @@ import stat
 import tempfile
 import uuid
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .ade_setup import resolve_setup_locator
 from .cadence import (CADENCE_BINARY_RELATIVES, _first_existing,
                       _root_from_binary, discover_eda_environment)
@@ -25,11 +28,11 @@ from .native_environment import (
     restore_native_environment, validate_native_values,
 )
 
-SCHEMA = "CRESCENDO_MAESTRO_CONTEXT_1"
+SCHEMA = _contract_text("CRESCENDO_MAESTRO_CONTEXT_1")
 MAX_CONTEXT_BYTES = 1024 * 1024
 MAX_FIELD_CHARS = 16384
 # makeTempFileName keeps only a short basename prefix on Cadence 6.1.8.
-NATIVE_TEMP_PREFIXES = ("cr_ctx_", "cr_maestro_", "cr_maes")
+NATIVE_TEMP_PREFIXES = (_contract_text("cr_ctx_"), _contract_text("cr_maestro_"), _contract_text("cr_maes"))
 RUNTIME_ENV_NAMES = frozenset(NATIVE_ENV_NAMES)
 _TOKEN = re.compile(r'\s*("(?:[^"\\\r\n]|\\.)*"|nil|t|-?[0-9]+)(?=\s|$)')
 
@@ -243,7 +246,7 @@ def load_launch_context(path, consume=True, storage_base_root=None):
     context = parse_launch_records(raw)
     # Persistent mapping/settings/results are named by TB in its working
     # directory. Each launch only adds an isolated, explicitly temporary probe.
-    override = os.environ.get("CRESCENDO_RUN_ROOT") or storage_base_root
+    override = os.environ.get(_contract_text("CRESCENDO_RUN_ROOT")) or storage_base_root
     design_dir = design_storage_root(context["source"], context["libraries"], base_root=override)
     os.makedirs(design_dir, mode=0o700, exist_ok=True)
     parent = ensure_dir(os.path.join(design_dir, "cache", "probes"))
@@ -251,8 +254,8 @@ def load_launch_context(path, consume=True, storage_base_root=None):
     from .scratch import register_scratch
     context["scratch_ownership"] = register_scratch(context_dir, kind="launch_context")
     context["launch_id"] = uuid.uuid4().hex
-    context["context_path"] = os.path.join(context_dir, "launch_context.json")
-    context["state_path"] = os.path.join(context_dir, "launch_state.json")
+    context["context_path"] = os.path.join(context_dir, _contract_text("launch_context.json"))
+    context["state_path"] = os.path.join(context_dir, _contract_text("launch_state.json"))
     # Same source + loaded map keeps one runtime for recent runs and resume.
     # Different real paths remain distinct even when logical names are equal.
     context["design_root"] = design_dir
@@ -284,10 +287,10 @@ def load_launch_context(path, consume=True, storage_base_root=None):
 def validate_bound_setup(context, path):
     source = context.get("source") or {}
     if source.get("modified") is True:
-        raise ValueError("The invoking Maestro has unsaved changes. Save the setup in Maestro and reopen Crescendo before preparing or running.")
+        raise ValueError(_contract_text("The invoking Maestro has unsaved changes. Save the setup in Maestro and reopen Crescendo before preparing or running."))
     locator = resolve_setup_locator(path, backend=source.get("backend") or "auto")
     if os.path.realpath(locator["path"]) != os.path.realpath(source.get("setup_path") or ""):
-        raise ValueError("This Crescendo window is bound to %s/%s/%s. Select another saved setup with Browse and Load and Inspect, or open Crescendo from its Maestro." % (
+        raise ValueError(_contract_text("This Crescendo window is bound to %s/%s/%s. Select another saved setup with Browse and Load and Inspect, or open Crescendo from its Maestro.") % (
             source.get("library"), source.get("cell"), source.get("view")))
     return locator["path"]
 
@@ -443,7 +446,7 @@ def selected_setup_config(origin_config, current_config, locator):
     result["runtime"]["storage_namespace_override"] = bool(explicit_base)
     result["runtime"]["settings_root"] = ensure_dir(os.path.join(namespace_root, "states"))
     result["runtime"]["cache_root"] = ensure_dir(os.path.join(namespace_root, "cache"))
-    cadence["user_config_path"] = os.path.join(result["runtime"]["settings_root"], "eda.json")
+    cadence["user_config_path"] = os.path.join(result["runtime"]["settings_root"], _contract_text("eda.json"))
     cadence["project_dir"] = source["work_dir"]
     result["_maestro_launch_context"] = None
     result["_selected_setup_path"] = source["setup_path"]
@@ -505,7 +508,7 @@ def bind_launch_config(config, context):
         overrides.update(spectre_bin=native_spectre, spectre_root=
                          _root_from_binary(native_spectre, ("tools.lnx86/spectre", "tools.lnx86")) or os.path.dirname(os.path.dirname(native_spectre)))
     native_alps = None
-    if not explicit_alps and not (environ.get("CRESCENDO_ALPS_BIN") or environ.get("CRESCENDO_ALPS_ROOT") or environ.get("ALPS_HOME")):
+    if not explicit_alps and not (environ.get(_contract_text("CRESCENDO_ALPS_BIN")) or environ.get(_contract_text("CRESCENDO_ALPS_ROOT")) or environ.get("ALPS_HOME")):
         native_alps = shutil.which("alps", path=environ.get("PATH", os.defpath))
         if native_alps:
             parent = os.path.dirname(native_alps)
@@ -535,7 +538,7 @@ def bind_launch_config(config, context):
     cadence["launch_environment"] = captured
     cadence["_native_library_mappings"] = copy.deepcopy(context.get("libraries") or {})
     cadence["setup_mode"] = "auto"
-    cadence["user_config_path"] = os.path.join(context.get("settings_root") or os.path.dirname(context["context_path"]), "eda.json")
+    cadence["user_config_path"] = os.path.join(context.get("settings_root") or os.path.dirname(context["context_path"]), _contract_text("eda.json"))
     cadence["project_dir"] = source["work_dir"]
     # Service run IDs already contain UUIDs; probes need per-launch isolation.
     result.setdefault("runtime", {})["run_root"] = context["runtime_root"]

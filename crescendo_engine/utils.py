@@ -1,4 +1,7 @@
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 
 import hashlib
 import json
@@ -77,7 +80,7 @@ def atomic_write_text(path, text):
 
 def atomic_write_json(path, value):
     atomic_write_text(path, json.dumps(value, indent=2, sort_keys=True) + "\n")
-    if os.path.basename(path) in ("status.json", "startup_failure.json", "server_error.json", "worker_shutdown.json", "candidate.json"):
+    if os.path.basename(path) in (_contract_text("status.json"), _contract_text("startup_failure.json"), _contract_text("server_error.json"), _contract_text("worker_shutdown.json"), _contract_text("candidate.json")):
         try:
             from .run_log import observe_saved_json
             observe_saved_json(path, value)

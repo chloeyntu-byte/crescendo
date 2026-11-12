@@ -15,10 +15,13 @@ import tempfile
 import shlex
 import sys
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .utils import atomic_write_text, ensure_dir
 
-SCHEMA = "crescendo.maestro_job_policy.v1"
-RECORD_SCHEMA = "CRESCENDO_JOB_POLICY_1"
+SCHEMA = _contract_text("crescendo.maestro_job_policy.v1")
+RECORD_SCHEMA = _contract_text("CRESCENDO_JOB_POLICY_1")
 MAX_VALUE_CHARS = 16384
 JOB_TIMEOUT_PROPERTIES = {
     "start_seconds": "starttimeout", "configure_seconds": "configuretimeout",
@@ -59,7 +62,7 @@ def job_timeout_policy(properties, overrides=None, fallbacks=None, scope=None):
         elif native in properties:
             raw, source = properties[native], "maestro_job_setup"
         elif field in fallbacks:
-            raw, source = fallbacks[field], "cr_runtime_fallback"
+            raw, source = fallbacks[field], _contract_text("cr_runtime_fallback")
         else:
             raw, source = None, "unavailable"
         seconds, status = None, "unknown"
@@ -242,7 +245,7 @@ def policy_from_records(rows, source="invoking_session"):
     for scope, row in [("global", result["global"])] + [("test " + name, row) for name, row in by_test.items()]:
         opaque = row.get("opaque_properties") or {}
         if opaque:
-            result["warnings"].append("Maestro Job Setup %s has native properties not interpreted by Crescendo CLI: %s. No CLI translation is applied." %
+            result["warnings"].append(_contract_text("Maestro Job Setup %s has native properties not interpreted by Crescendo CLI: %s. No CLI translation is applied.") %
                 (scope, ", ".join("%s (%s)" % item for item in sorted(opaque.items()))))
     result["available"] = bool(result["global"]["available"])
     if not result["available"]:
@@ -274,7 +277,7 @@ def parse_policy_records(raw, source="saved_setup_native"):
 
 
 def job_policy_capture_definitions():
-    return r'''
+    return _contract_text(r'''
 procedure(crescWriteOneJobPolicy(port sess scope testName @optional identicalPolicy)
   let((result policy cursor key value)
     result = nil
@@ -333,7 +336,7 @@ procedure(crescWriteJobPolicyRecords(port sess testNames)
     )
   )
 )
-'''
+''')
 
 
 
@@ -360,9 +363,9 @@ def _bounded_test_list(values, variable):
 
 def job_policy_capture_skill(library, cell, view, output_path, tests):
     strings = lambda value: json.dumps(value, ensure_ascii=False)
-    test_lines, test_list = _bounded_test_list(tests, "crescCapturePolicyTests")
+    test_lines, test_list = _bounded_test_list(tests, _contract_text("crescCapturePolicyTests"))
     from .storage_policy import native_storage_capture_definitions
-    return job_policy_capture_definitions() + native_storage_capture_definitions() + "\n".join(test_lines) + "\n" + '''
+    return job_policy_capture_definitions() + native_storage_capture_definitions() + "\n".join(test_lines) + "\n" + _contract_text('''
 let((sess port result)
   result = errset(progn(
     sess = maeOpenSetup(%s %s %s ?mode "r")
@@ -380,7 +383,7 @@ let((sess port result)
   unless(result && car(result) exit(1))
 )
 exit(0)
-''' % (strings(library), strings(cell), strings(view), strings(output_path), test_list)
+''') % (strings(library), strings(cell), strings(view), strings(output_path), test_list)
 
 
 def _qualify_saved_job_policy(policy, references):
@@ -407,7 +410,7 @@ def _qualify_saved_job_policy(policy, references):
     if not differences:
         return policy
     result = unavailable_job_policy(policy.get("source") or "saved_setup_native",
-        "Saved JobPolicy could not be resolved in the read-only query; open Crescendo from this Maestro or override Command.")
+        _contract_text("Saved JobPolicy could not be resolved in the read-only query; open Crescendo from this Maestro or override Command."))
     result["name_reference_validation"] = {
         "ok": False, "saved_references": copy.deepcopy(references),
         "differences": differences, "observed_policy": copy.deepcopy(policy),
@@ -489,7 +492,7 @@ def capture_setup_job_policy(setup, config):
         command = run_command([cadence["ocean_bin"], "-nograph", "-restore", script], cwd=root,
                               env=child_environment(config, ensure_dir(os.path.join(root, "home"))),
                               timeout_seconds=min(float(runtime.get("command_timeout_seconds", 1800)), 90),
-                              stdout_path=os.path.join(root, "stdout.log"), stderr_path=os.path.join(root, "stderr.log"))
+                              stdout_path=os.path.join(root, _contract_text("stdout.log")), stderr_path=os.path.join(root, _contract_text("stderr.log")))
         if command.get("returncode") != 0 or not os.path.isfile(output):
             raise RuntimeError("Read-only Maestro policy query failed (see %s)" % root)
         with open(output, "rb") as stream:
@@ -508,7 +511,7 @@ def capture_setup_job_policy(setup, config):
             identity = dict(library=library, cell=reference.get("cell_name"), view=reference.get("view_name"),
                             view_dir=reference.get("view_dir"), work_dir=(config.get("cadence") or {}).get("project_dir"))
             result["save_options"] = save_options_from_records(rows, source="saved_setup_native_environment", identity=identity)
-            result["save_options"]["warnings"].append("Saved setup query uses its native environment defaults; open Crescendo from that Maestro to capture its current Save Options, or override Data Root.")
+            result["save_options"]["warnings"].append(_contract_text("Saved setup query uses its native environment defaults; open Crescendo from that Maestro to capture its current Save Options, or override Data Root."))
             # The isolated query HOME/workdir must never become the user's
             # persistent default. Preserve observed paths for diagnosis only.
             observed = result["save_options"]["effective"]
@@ -548,13 +551,13 @@ def job_policy_override_definitions(overrides=None):
         if overrides["command"]:
             override_lines.append('    original->distributionmethod = "Command"')
         else:
-            override_lines.append('    when(original->distributionmethod == "Command" error("Crescendo: Command distribution requires a nonempty submission command.\\n"))')
+            override_lines.append(_contract_text('    when(original->distributionmethod == "Command" error("Crescendo: Command distribution requires a nonempty submission command.\\n"))'))
     if "max_jobs" in overrides:
         override_lines.extend(["    original->maxjobs = %s" % json.dumps(str(overrides["max_jobs"]))])
     for key, value in sorted(timeout_override_properties(overrides).items()):
         override_lines.append("    original->%s = %s" % (key, json.dumps(value)))
     # Always define the copier even when there are no user overrides.
-    return '''
+    return _contract_text('''
 procedure(crescJobPolicyKeys(policy)
   let((cursor keys valid)
     valid = policy && listp(policy) && cdr(policy)
@@ -703,8 +706,8 @@ procedure(crescApplyJobOverrides(sess @optional testNames)
 %s
   )
 )
-''' % (known, "\n".join(copy_lines), known, (
-        '''    unless(isCallable('maeGetJobPolicy) && isCallable('maeSetJobPolicy)
+''') % (known, "\n".join(copy_lines), known, (
+        _contract_text('''    unless(isCallable('maeGetJobPolicy) && isCallable('maeSetJobPolicy)
       error("Crescendo: public job policy APIs are unavailable; explicit override cannot be applied.\\n"))
     globalPolicy = copy(maeGetJobPolicy(?session sess))
     unless(globalPolicy error("Crescendo: original global job policy unavailable.\\n"))
@@ -733,7 +736,7 @@ procedure(crescApplyJobOverrides(sess @optional testNames)
         crescCloneJobPolicy(sess original car(item) strcat("CRESCENDO_override_" car(item)))
       )
     )
-    t''' % ("\n".join(override_lines), "\n".join(override_lines))
+    t''') % ("\n".join(override_lines), "\n".join(override_lines))
         if overrides else "    t ; No explicit override: leave every original submission setting unchanged."
     ))
 
@@ -742,7 +745,7 @@ def job_policy_override_skill(overrides=None, session_expr="sess", tests=None):
     if not re.match(r"^[A-Za-z][A-Za-z0-9_]*$", session_expr):
         raise ValueError("Invalid SKILL session expression")
     test_expr = "" if tests is None else " list(%s)" % " ".join(json.dumps(name, ensure_ascii=False) for name in tests)
-    return job_policy_override_definitions(overrides) + "\ncrescApplyJobOverrides(%s%s)\n" % (session_expr, test_expr)
+    return job_policy_override_definitions(overrides) + _contract_text("\ncrescApplyJobOverrides(%s%s)\n") % (session_expr, test_expr)
 
 
 def effective_job_policy(policy, overrides=None):
@@ -756,7 +759,7 @@ def effective_job_policy(policy, overrides=None):
         detail = "; ".join("%s%s expected %r, actual %r" % (
             row.get("scope") or "policy", "/" + str(row["test"]) if row.get("test") else "",
             row.get("expected"), row.get("actual")) for row in differences)
-        raise ValueError("Saved JobPolicy name mismatch (%s); open Crescendo from the source Maestro or provide an explicit Command override. Local fallback is blocked." % detail)
+        raise ValueError(_contract_text("Saved JobPolicy name mismatch (%s); open Crescendo from the source Maestro or provide an explicit Command override. Local fallback is blocked.") % detail)
     for scope in [result.get("global") or {}] + list(result.get("tests") or []):
         props = scope.setdefault("properties", {})
         if "command" in overrides:
@@ -808,7 +811,7 @@ def command_job_policy(policy, overrides=None, tests=None):
              "maxjobs": str(values["max_jobs"])}
     props.update(timeout_override_properties(values))
     names = list(tests) if tests is not None else [r["name"] for r in (policy or {}).get("tests") or [] if r.get("name")]
-    return {"schema_version": SCHEMA, "source": "cr_job_input_fields", "available": True,
+    return {"schema_version": SCHEMA, "source": _contract_text("cr_job_input_fields"), "available": True,
             "global": {"available": True, "properties": copy.deepcopy(props)},
             "tests": [{"name": name, "available": True, "properties": copy.deepcopy(props)} for name in names],
             "run_options": copy.deepcopy((policy or {}).get("run_options") or {}),
@@ -855,8 +858,8 @@ def job_policy_application_skill(policy=None, overrides=None, session_expr="sess
     global_props = captured_global.get("properties") or {}
     test_names = list(tests) if tests is not None else [row["name"] for row in policy.get("tests") or [] if row.get("name")]
     if policy.get("available") and captured_global.get("available"):
-        lines.append('unless(isCallable(\'maeGetJobPolicy) && isCallable(\'maeSetJobPolicy) error("Crescendo: captured job policy cannot be applied; no simulation submitted.\\n"))')
-        lines.append('crescCloneJobPolicy(%s %s nil "CRESCENDO_captured_global")' % (sess, _skill_policy(global_props)))
+        lines.append(_contract_text('unless(isCallable(\'maeGetJobPolicy) && isCallable(\'maeSetJobPolicy) error("Crescendo: captured job policy cannot be applied; no simulation submitted.\\n"))'))
+        lines.append(_contract_text('crescCloneJobPolicy(%s %s nil "CRESCENDO_captured_global")') % (sess, _skill_policy(global_props)))
         for row in policy.get("tests") or []:
             name = row.get("name")
             if name not in test_names:
@@ -866,14 +869,14 @@ def job_policy_application_skill(policy=None, overrides=None, session_expr="sess
             props = row.get("properties") or {}
             compare = lambda values: dict((key, value) for key, value in values.items() if key != "name")
             if compare(props) == compare(global_props):
-                lines.append('crescRequireJobPolicyMatch(%s maeGetJobPolicy(?session %s ?testName %s))' % (_skill_policy(props), sess, _skill_scalar(name)))
+                lines.append(_contract_text('crescRequireJobPolicyMatch(%s maeGetJobPolicy(?session %s ?testName %s))') % (_skill_policy(props), sess, _skill_scalar(name)))
             else:
-                lines.append('crescCloneJobPolicy(%s %s %s %s)' % (sess, _skill_policy(props), _skill_scalar(name), _skill_scalar("CRESCENDO_captured_" + name)))
+                lines.append(_contract_text('crescCloneJobPolicy(%s %s %s %s)') % (sess, _skill_policy(props), _skill_scalar(name), _skill_scalar(_contract_text("CRESCENDO_captured_") + name)))
     # Existing saved policies remain authoritative when capture is unavailable.
     # Explicit overrides still require public APIs and exact native readback.
-    test_lines, test_expr = _bounded_test_list(test_names, "crescApplyPolicyTests")
+    test_lines, test_expr = _bounded_test_list(test_names, _contract_text("crescApplyPolicyTests"))
     lines.extend(test_lines)
-    lines.append('crescApplyJobOverrides(%s%s)' % (sess, " " + test_expr if tests is not None else ""))
+    lines.append(_contract_text('crescApplyJobOverrides(%s%s)') % (sess, " " + test_expr if tests is not None else ""))
     options = policy.get("run_options") or {}
     option_values = dict((key, options[key]) for key in ("RunIn", "DivideJobs", "JobLimit") if key in options and options.get("available"))
     if force_parallel:
@@ -885,13 +888,13 @@ def job_policy_application_skill(policy=None, overrides=None, session_expr="sess
                 value = option_values[key]
                 args.extend(["?" + key, "stringToSymbol(%s)" % _skill_scalar(value) if key in ("RunIn", "DivideJobs") and isinstance(value, str) else _skill_scalar(value)])
         lines.extend([
-            'unless(isCallable(\'axlSetRunDistributeOptions) && isCallable(\'axlGetRunDistributeOptions) error("Crescendo: native Run Options cannot be applied/read back; no simulation submitted.\\n"))',
-            'crescRunOptionsSetup = axlGetActiveSetup(axlGetMainSetupDB(%s))' % sess,
-            'unless(axlSetRunDistributeOptions(crescRunOptionsSetup %s) error("Crescendo: private Run Options were rejected; no simulation submitted.\\n"))' % " ".join(args),
-            'crescRunOptionsReadback = axlGetRunDistributeOptions(crescRunOptionsSetup)',
+            _contract_text('unless(isCallable(\'axlSetRunDistributeOptions) && isCallable(\'axlGetRunDistributeOptions) error("Crescendo: native Run Options cannot be applied/read back; no simulation submitted.\\n"))'),
+            _contract_text('crescRunOptionsSetup = axlGetActiveSetup(axlGetMainSetupDB(%s))') % sess,
+            _contract_text('unless(axlSetRunDistributeOptions(crescRunOptionsSetup %s) error("Crescendo: private Run Options were rejected; no simulation submitted.\\n"))') % " ".join(args),
+            _contract_text('crescRunOptionsReadback = axlGetRunDistributeOptions(crescRunOptionsSetup)'),
         ])
         for key, value in option_values.items():
-            lines.append('unless(equal(get(crescRunOptionsReadback \'%s) %s) error("Crescendo: private Run Options readback differs for %s; no simulation submitted.\\n"))' % (key, "stringToSymbol(%s)" % _skill_scalar(value) if key in ("RunIn", "DivideJobs") and isinstance(value, str) else _skill_scalar(value), key))
+            lines.append(_contract_text('unless(equal(get(crescRunOptionsReadback \'%s) %s) error("Crescendo: private Run Options readback differs for %s; no simulation submitted.\\n"))') % (key, "stringToSymbol(%s)" % _skill_scalar(value) if key in ("RunIn", "DivideJobs") and isinstance(value, str) else _skill_scalar(value), key))
     # Wrappers are an exact argv observer only; native policy still supplies the
     # ICRP/simulation arguments. Unsupported shell syntax stays native unchanged.
     lines.extend(job_policy_observation_skill(command_wrappers, session_expr=sess).splitlines())
@@ -903,17 +906,17 @@ def job_policy_application_skill(policy=None, overrides=None, session_expr="sess
 def job_policy_readback_skill(output_path, session_expr="session", tests=None):
     if not re.match(r"^[A-Za-z][A-Za-z0-9_]*$", session_expr):
         raise ValueError("Invalid SKILL session expression")
-    test_lines, expression = _bounded_test_list(tests or [], "crescReadbackPolicyTests")
+    test_lines, expression = _bounded_test_list(tests or [], _contract_text("crescReadbackPolicyTests"))
     if tests is None:
         expression = 'maeGetSetup(?typeName "tests" ?session %s)' % session_expr
-    return job_policy_capture_definitions() + "\n".join(test_lines) + "\n" + '''
+    return job_policy_capture_definitions() + "\n".join(test_lines) + "\n" + _contract_text('''
 crescJobPolicyReadbackPort = outfile(%s)
 unless(crescJobPolicyReadbackPort error("Crescendo: effective Job Setup diagnostics could not be written.\\n"))
 fprintf(crescJobPolicyReadbackPort "CRESCENDO_JOB_POLICY_1\\n")
 crescWriteJobPolicyRecords(crescJobPolicyReadbackPort %s %s)
 close(crescJobPolicyReadbackPort)
 crescJobPolicyReadbackPort = nil
-''' % (_skill_scalar(output_path), session_expr, expression)
+''') % (_skill_scalar(output_path), session_expr, expression)
 
 
 def verify_effective_job_policy(readback, expected, test_map=None, command_wrappers=None,
@@ -1031,14 +1034,14 @@ def prepare_job_command_observers(policy, overrides, owned_root, log_path,
         if command not in commands:
             config_path = os.path.join(root, "job_observer_%s.json" % key)
             shell_path = os.path.join(root, "job_observer_%s.sh" % key)
-            atomic_write_json(config_path, {"schema_version": "crescendo.maestro_job_observer.v1",
+            atomic_write_json(config_path, {"schema_version": _contract_text("crescendo.maestro_job_observer.v1"),
                 "command": command, "argv": argv, "log_path": log_path})
             os.chmod(config_path, 0o600)
             lines = ["#!/bin/sh", "# Owned submission observer. Restore these native states only in the real command."]
             for name in GUI_ENV_NAMES:
-                lines.extend(['CRESCENDO_JOB_ENV_%s_SET=${%s+x}' % (name, name),
-                              'CRESCENDO_JOB_ENV_%s_VALUE=${%s-}' % (name, name),
-                              'export CRESCENDO_JOB_ENV_%s_SET CRESCENDO_JOB_ENV_%s_VALUE' % (name, name),
+                lines.extend([_contract_text('CRESCENDO_JOB_ENV_%s_SET=${%s+x}') % (name, name),
+                              _contract_text('CRESCENDO_JOB_ENV_%s_VALUE=${%s-}') % (name, name),
+                              _contract_text('export CRESCENDO_JOB_ENV_%s_SET CRESCENDO_JOB_ENV_%s_VALUE') % (name, name),
                               'unset %s' % name])
             lines.append('exec %s %s --config %s -- "$@"' % (shlex.quote(python_bin), shlex.quote(os.path.abspath(helper_path)), shlex.quote(config_path)))
             atomic_write_text(shell_path, "\n".join(lines) + "\n")
@@ -1050,7 +1053,7 @@ def prepare_job_command_observers(policy, overrides, owned_root, log_path,
         row = copy.deepcopy(commands[command])
         row["test"] = test
         rows.append(row)
-    return {"schema_version": "crescendo.maestro_command_observation.v1", "source": expected.get("source"),
+    return {"schema_version": _contract_text("crescendo.maestro_command_observation.v1"), "source": expected.get("source"),
             "overrides": normalize_job_overrides(overrides), "wrappers": rows,
             "unavailable": unavailable, "log_path": log_path,
             "configured_submission_proves_execution": False}
@@ -1070,11 +1073,11 @@ def job_policy_observation_skill(command_wrappers, session_expr="session", test_
         for target in targets:
             target_arg = ' ?testName %s' % _skill_scalar(target) if target else ""
             lines.extend([
-                'crescObservedPolicy = copy(maeGetJobPolicy(?session %s%s))' % (session_expr, target_arg),
-                'unless(crescObservedPolicy && member(crescObservedPolicy->jobsubmitcommand list(%s %s)) error("Crescendo: observer command identity differs; no simulation submitted.\\n"))' % (_skill_scalar(row["original_command"]), _skill_scalar(row["effective_command"])),
-                'unless(equal(crescObservedPolicy->jobsubmitcommand %s)' % _skill_scalar(row["effective_command"]),
-                '  crescObservedPolicy->jobsubmitcommand = %s' % _skill_scalar(row["effective_command"]),
-                '  crescCloneJobPolicy(%s crescObservedPolicy %s "CRESCENDO_observed_command")' % (session_expr, _skill_scalar(target)),
+                _contract_text('crescObservedPolicy = copy(maeGetJobPolicy(?session %s%s))') % (session_expr, target_arg),
+                _contract_text('unless(crescObservedPolicy && member(crescObservedPolicy->jobsubmitcommand list(%s %s)) error("Crescendo: observer command identity differs; no simulation submitted.\\n"))') % (_skill_scalar(row["original_command"]), _skill_scalar(row["effective_command"])),
+                _contract_text('unless(equal(crescObservedPolicy->jobsubmitcommand %s)') % _skill_scalar(row["effective_command"]),
+                _contract_text('  crescObservedPolicy->jobsubmitcommand = %s') % _skill_scalar(row["effective_command"]),
+                _contract_text('  crescCloneJobPolicy(%s crescObservedPolicy %s "CRESCENDO_observed_command")') % (session_expr, _skill_scalar(target)),
                 ')',
             ])
     return "\n".join(lines) + "\n"
@@ -1117,14 +1120,14 @@ def native_job_policy_assertion_skill(expected, session_expr="session", test_map
             props["jobsubmitcommand"] = wrapper["effective_command"]
         target_arg = ' ?testName %s' % _skill_scalar(target) if target else ""
         if props:
-            lines.append('crescRequireJobPolicyMatch(%s maeGetJobPolicy(?session %s%s))' % (_skill_policy(props), session_expr, target_arg))
+            lines.append(_contract_text('crescRequireJobPolicyMatch(%s maeGetJobPolicy(?session %s%s))') % (_skill_policy(props), session_expr, target_arg))
     options = expected.get("run_options") or {}
     wanted = dict((key, options[key]) for key in ("RunIn", "DivideJobs", "JobLimit") if options.get("available") and key in options)
     if force_parallel:
         wanted["RunIn"] = "Parallel"
     if wanted:
-        lines.append('crescFinalRunOptions = axlGetRunDistributeOptions(axlGetActiveSetup(axlGetMainSetupDB(%s)))' % session_expr)
+        lines.append(_contract_text('crescFinalRunOptions = axlGetRunDistributeOptions(axlGetActiveSetup(axlGetMainSetupDB(%s)))') % session_expr)
         for key, value in wanted.items():
             literal = 'stringToSymbol(%s)' % _skill_scalar(value) if key in ("RunIn", "DivideJobs") and isinstance(value, str) else _skill_scalar(value)
-            lines.append('unless(crescFinalRunOptions && equal(get(crescFinalRunOptions \'%s) %s) error("Crescendo: final effective Run Options differ for %s; no simulation submitted.\\n"))' % (key, literal, key))
+            lines.append(_contract_text('unless(crescFinalRunOptions && equal(get(crescFinalRunOptions \'%s) %s) error("Crescendo: final effective Run Options differ for %s; no simulation submitted.\\n"))') % (key, literal, key))
     return "\n".join(lines) + "\n"

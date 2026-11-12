@@ -14,12 +14,15 @@ import os
 import re
 import xml.etree.ElementTree as ET
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .config_binding import config_binding_lines, private_config_plan
 from .utils import atomic_write_json, ensure_dir, is_under
 from .workspace import (ParameterApplicationFailure, _skill_quote, private_library_name,
                         private_design_identity, private_library_is_owned)
 
-SCHEMA_VERSION = "crescendo.maestro_candidate_batch.v1"
+SCHEMA_VERSION = _contract_text("crescendo.maestro_candidate_batch.v1")
 MODE = "isolated_design_tests"
 
 
@@ -79,7 +82,7 @@ def shared_skill_expressions(lines):
         if (count < 2 or not 80 <= size <= 16384 or (count - 1) * size < 512
                 or re.search(r"\b(?:procedure|defun|lambda|return|go|break|continue|prog)\s*\(", text)):
             continue
-        name = "crescBatchShared_" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:20]
+        name = _contract_text("crescBatchShared_") + hashlib.sha256(text.encode("utf-8")).hexdigest()[:20]
         shared[form] = name
         definitions.append("procedure(%s()" % name)
         definitions.extend(form)
@@ -111,7 +114,7 @@ def _design_key(row):
 def _name(epoch, sequence, slot, identity):
     # A private ownership prefix plus a collision-resistant complete identity.
     value = "\x1f".join(str(item) for item in (epoch, sequence, slot) + tuple(identity))
-    return "cr_b_%s_%s" % (str(epoch)[:8], hashlib.sha256(value.encode("utf-8")).hexdigest()[:17])
+    return _contract_text("cr_b_%s_%s") % (str(epoch)[:8], hashlib.sha256(value.encode("utf-8")).hexdigest()[:17])
 
 
 def qualify_snapshot_batch(workspace, parameters):
@@ -161,11 +164,11 @@ def qualify_snapshot_batch(workspace, parameters):
 
 def _copy_view_lines(source, target, view_type="schematic"):
     return [
-        'unless(ddGetObj("%s" "%s" "%s") == nil error("Crescendo batch destination already exists\\n"))' % tuple(_skill_quote(v) for v in target),
+        _contract_text('unless(ddGetObj("%s" "%s" "%s") == nil error("Crescendo batch destination already exists\\n"))') % tuple(_skill_quote(v) for v in target),
         'srcCv = dbOpenCellViewByType("%s" "%s" "%s" "%s" "r")' % tuple(_skill_quote(v) for v in source + (view_type,)),
-        'unless(srcCv error("Crescendo batch snapshot source could not open\\n"))',
+        _contract_text('unless(srcCv error("Crescendo batch snapshot source could not open\\n"))'),
         'dstCv = dbCopyCellView(srcCv "%s" "%s" "%s")' % tuple(_skill_quote(v) for v in target),
-        'unless(dstCv error("Crescendo batch snapshot could not copy\\n"))',
+        _contract_text('unless(dstCv error("Crescendo batch snapshot could not copy\\n"))'),
         'dbClose(srcCv)', 'dbClose(dstCv)',
     ]
 
@@ -199,7 +202,7 @@ def prepare_snapshot_batch(worker, candidates, batch_root, identity):
                 "batch_tests": [], "snapshot_records": os.path.join(batch_root, "snapshot.records"),
                 "marker_path": os.path.join(batch_root, "persistent_worker_batch.tsv"),
                 "script_path": os.path.join(batch_root, "persistent_worker_batch.il"),
-                "manifest_path": os.path.join(batch_root, "persistent_worker_batch.json")}
+                "manifest_path": os.path.join(batch_root, _contract_text("persistent_worker_batch.json"))}
     lines = []
     seen = set()
     for slot, requested in enumerate(candidates):
@@ -245,11 +248,11 @@ def prepare_snapshot_batch(worker, candidates, batch_root, identity):
                 updated["resolved_top"].update(dict(zip(("library", "cell", "view"), top_map[top])))
                 candidate_configs.append(updated)
                 lines.extend([
-                    'unless(ddGetObj("%s" "%s") == nil error("Crescendo batch config cell exists\\n"))' % tuple(_skill_quote(v) for v in cfg_target[:2]),
-                    'crescSourceConfig = hdbOpen(%s "r")' % " ".join('"%s"' % _skill_quote(v) for v in private_design_identity(source_workspace, design)),
-                    'unless(crescSourceConfig error("Crescendo batch source config unavailable\\n"))',
-                    'unless(hdbSaveACopy(crescSourceConfig %s) error("Crescendo batch config copy failed\\n"))' % " ".join('"%s"' % _skill_quote(v) for v in cfg_target),
-                    'hdbClose(crescSourceConfig)',
+                    _contract_text('unless(ddGetObj("%s" "%s") == nil error("Crescendo batch config cell exists\\n"))') % tuple(_skill_quote(v) for v in cfg_target[:2]),
+                    _contract_text('crescSourceConfig = hdbOpen(%s "r")') % " ".join('"%s"' % _skill_quote(v) for v in private_design_identity(source_workspace, design)),
+                    _contract_text('unless(crescSourceConfig error("Crescendo batch source config unavailable\\n"))'),
+                    _contract_text('unless(hdbSaveACopy(crescSourceConfig %s) error("Crescendo batch config copy failed\\n"))') % " ".join('"%s"' % _skill_quote(v) for v in cfg_target),
+                    _contract_text('hdbClose(crescSourceConfig)'),
                 ])
                 manifest["owned_cells"].append({"library": cfg_target[0], "cell": cfg_target[1]})
             else:
@@ -352,7 +355,7 @@ def _prepare_same_library_snapshot_batch(worker, candidates, batch_root, identit
                 "snapshot_records": os.path.join(batch_root, "snapshot.records"),
                 "marker_path": os.path.join(batch_root, "persistent_worker_batch.tsv"),
                 "script_path": os.path.join(batch_root, "persistent_worker_batch.il"),
-                "manifest_path": os.path.join(batch_root, "persistent_worker_batch.json")}
+                "manifest_path": os.path.join(batch_root, _contract_text("persistent_worker_batch.json"))}
     lines, seen = [], set()
     for slot, requested in enumerate(candidates):
         candidate_id = str(requested["candidate_id"])
@@ -385,11 +388,11 @@ def _prepare_same_library_snapshot_batch(worker, candidates, batch_root, identit
             updated["generated_config"] = bool(source_workspace.get("same_library_objects"))
             candidate_configs.append(updated)
             lines.extend([
-                'unless(ddGetObj(%s) == nil error("Crescendo owned batch config exists\\n"))' % " ".join('"%s"' % _skill_quote(v) for v in (target if owned_config else target[:2])),
-                'crescSourceConfig = hdbOpen(%s "r")' % " ".join('"%s"' % _skill_quote(v) for v in source_config),
-                'unless(crescSourceConfig error("Crescendo batch source config unavailable\\n"))',
-                'unless(hdbSaveACopy(crescSourceConfig %s) error("Crescendo batch config copy failed\\n"))' % " ".join('"%s"' % _skill_quote(v) for v in target),
-                'hdbClose(crescSourceConfig)',
+                _contract_text('unless(ddGetObj(%s) == nil error("Crescendo owned batch config exists\\n"))') % " ".join('"%s"' % _skill_quote(v) for v in (target if owned_config else target[:2])),
+                _contract_text('crescSourceConfig = hdbOpen(%s "r")') % " ".join('"%s"' % _skill_quote(v) for v in source_config),
+                _contract_text('unless(crescSourceConfig error("Crescendo batch source config unavailable\\n"))'),
+                _contract_text('unless(hdbSaveACopy(crescSourceConfig %s) error("Crescendo batch config copy failed\\n"))') % " ".join('"%s"' % _skill_quote(v) for v in target),
+                _contract_text('hdbClose(crescSourceConfig)'),
             ])
             if owned_config:
                 lines.extend(ownership_marker_lines(owned_config))
@@ -451,19 +454,19 @@ def snapshot_preflight_lines(manifest):
     names = " ".join("'%s" % name for name in required)
     source_names = " ".join('"%s"' % _skill_quote(name) for name in manifest["original_enabled_tests"])
     return [
-        "crescBatchUnsupportedReason = nil",
-        "foreach(api list(%s) unless(isCallable(api) crescBatchUnsupportedReason = sprintf(nil \"native_batch_api_unavailable:%%L\" api)))" % names,
-        "unless(crescBatchUnsupportedReason",
-        "  crescNativeParameters = maeGetSetup(?typeName \"parameters\" ?session session)",
-        "  when(crescNativeParameters crescBatchUnsupportedReason = \"existing_device_parameters_require_remapping\")",
-        "  when(maeGetRunPlan(?session session) crescBatchUnsupportedReason = \"existing_run_plan_requires_candidate_remapping\")",
+        _contract_text("crescBatchUnsupportedReason = nil"),
+        _contract_text("foreach(api list(%s) unless(isCallable(api) crescBatchUnsupportedReason = sprintf(nil \"native_batch_api_unavailable:%%L\" api)))") % names,
+        _contract_text("unless(crescBatchUnsupportedReason"),
+        _contract_text("  crescNativeParameters = maeGetSetup(?typeName \"parameters\" ?session session)"),
+        _contract_text("  when(crescNativeParameters crescBatchUnsupportedReason = \"existing_device_parameters_require_remapping\")"),
+        _contract_text("  when(maeGetRunPlan(?session session) crescBatchUnsupportedReason = \"existing_run_plan_requires_candidate_remapping\")"),
         "  foreach(sourceName list(%s)" % source_names,
         "    sourceHandle = axlGetTest(mainSDB sourceName)",
-        "    unless(sourceHandle && axlGetEnabled(sourceHandle) crescBatchUnsupportedReason = \"source_test_enabled_identity_changed\")",
-        "    unless(crescBatchSourceUsesGlobalPolicy(session sourceName) crescBatchUnsupportedReason = \"independent_test_job_policy_requires_serial_adapter\")",
+        _contract_text("    unless(sourceHandle && axlGetEnabled(sourceHandle) crescBatchUnsupportedReason = \"source_test_enabled_identity_changed\")"),
+        _contract_text("    unless(crescBatchSourceUsesGlobalPolicy(session sourceName) crescBatchUnsupportedReason = \"independent_test_job_policy_requires_serial_adapter\")"),
         "    when(isCallable('axlGetPreRunScript)",
         "      sourcePreRunScript = axlGetPreRunScript(session sourceName)",
-        "      when(sourcePreRunScript && sourcePreRunScript != \"\" crescBatchUnsupportedReason = \"custom_pre_run_script_requires_serial_adapter\")",
+        _contract_text("      when(sourcePreRunScript && sourcePreRunScript != \"\" crescBatchUnsupportedReason = \"custom_pre_run_script_requires_serial_adapter\")"),
         "    )",
         "  )",
         ")",
@@ -472,19 +475,19 @@ def snapshot_preflight_lines(manifest):
 
 def snapshot_test_lines(manifest):
     workspace_root = manifest["candidates"][0]["verification_workspace"]["root"]
-    scope_path = os.path.join(workspace_root, "portability_settings.json")
+    scope_path = os.path.join(workspace_root, _contract_text("portability_settings.json"))
     manifest["native_scope_path"] = scope_path
     for candidate in manifest["candidates"]:
         candidate["verification_workspace"]["native_scope_path"] = scope_path
     lines = [
-        'crescBatchCornerScopePort=outfile("%s")' % _skill_quote(scope_path),
-        'unless(crescBatchCornerScopePort error("Crescendo batch native corner scope could not be written\\n"))',
-        'fprintf(crescBatchCornerScopePort "{\\"schema_version\\":\\"crescendo.batch_native_scope.v1\\",\\"corner_copy_policy\\":\\"inherited_exact_native_readback\\",\\"records\\":[\\n")',
-        'crescBatchCornerScopeFirst=t',
-        "crescBatchCopiedCornerScopes=makeTable('crescBatchCopiedCornerScopes nil)",
-        'procedure(crescRecordBatchCornerScope(stage source alias)',
-        'fprintf(crescBatchCornerScopePort "%s{\\"stage\\":%L,\\"source_test\\":%L,\\"alias_test\\":%L,\\"source_corners_skill\\":%L,\\"alias_corners_skill\\":%L,\\"all_corner_groups_skill\\":%L}" if(crescBatchCornerScopeFirst then "" else ",\\n") stage source if(alias then alias else "not_created") sprintf(nil "%L" axlGetCornersForATest(session source)) if(alias then sprintf(nil "%L" axlGetCornersForATest(session alias)) else "not_created") sprintf(nil "%L" axlGetCorners(mainSDB)))',
-        'crescBatchCornerScopeFirst=nil',
+        _contract_text('crescBatchCornerScopePort=outfile("%s")') % _skill_quote(scope_path),
+        _contract_text('unless(crescBatchCornerScopePort error("Crescendo batch native corner scope could not be written\\n"))'),
+        _contract_text('fprintf(crescBatchCornerScopePort "{\\"schema_version\\":\\"crescendo.batch_native_scope.v1\\",\\"corner_copy_policy\\":\\"inherited_exact_native_readback\\",\\"records\\":[\\n")'),
+        _contract_text('crescBatchCornerScopeFirst=t'),
+        _contract_text("crescBatchCopiedCornerScopes=makeTable('crescBatchCopiedCornerScopes nil)"),
+        _contract_text('procedure(crescRecordBatchCornerScope(stage source alias)'),
+        _contract_text('fprintf(crescBatchCornerScopePort "%s{\\"stage\\":%L,\\"source_test\\":%L,\\"alias_test\\":%L,\\"source_corners_skill\\":%L,\\"alias_corners_skill\\":%L,\\"all_corner_groups_skill\\":%L}" if(crescBatchCornerScopeFirst then "" else ",\\n") stage source if(alias then alias else "not_created") sprintf(nil "%L" axlGetCornersForATest(session source)) if(alias then sprintf(nil "%L" axlGetCornersForATest(session alias)) else "not_created") sprintf(nil "%L" axlGetCorners(mainSDB)))'),
+        _contract_text('crescBatchCornerScopeFirst=nil'),
         ')',
     ]
     for test in manifest["batch_tests"]:
@@ -494,50 +497,50 @@ def snapshot_test_lines(manifest):
         if simulator not in ("spectre", "alps"):
             raise MaestroBatchUnsupported("unqualified saved native simulator")
         lines.extend([
-            'crescRecordBatchCornerScope("before_copy" "%s" nil)' % _skill_quote(source),
-            'unless(maeCreateTest("%s" ?sourceTest "%s" ?lib "%s" ?cell "%s" ?view "%s" ?simulator "%s" ?session session) error("Crescendo batch test copy failed\\n"))' % tuple(_skill_quote(v) for v in (alias, source, lib, cell, view, simulator)),
-            'crescRecordBatchCornerScope("after_copy" "%s" "%s")' % (_skill_quote(source), _skill_quote(alias)),
+            _contract_text('crescRecordBatchCornerScope("before_copy" "%s" nil)') % _skill_quote(source),
+            _contract_text('unless(maeCreateTest("%s" ?sourceTest "%s" ?lib "%s" ?cell "%s" ?view "%s" ?simulator "%s" ?session session) error("Crescendo batch test copy failed\\n"))') % tuple(_skill_quote(v) for v in (alias, source, lib, cell, view, simulator)),
+            _contract_text('crescRecordBatchCornerScope("after_copy" "%s" "%s")') % (_skill_quote(source), _skill_quote(alias)),
             'sourceToolArgs = axlGetTestToolArgs(axlGetTest(mainSDB "%s"))' % _skill_quote(source),
-            'unless(sourceToolArgs error("Crescendo batch source tool options unavailable\\n"))',
-            'unless(equal(cadr(assoc("sim" sourceToolArgs)) "%s") error("Crescendo saved batch simulator identity changed\\n"))' % _skill_quote(simulator),
+            _contract_text('unless(sourceToolArgs error("Crescendo batch source tool options unavailable\\n"))'),
+            _contract_text('unless(equal(cadr(assoc("sim" sourceToolArgs)) "%s") error("Crescendo saved batch simulator identity changed\\n"))') % _skill_quote(simulator),
             'batchTestHandle = axlGetTest(mainSDB "%s")' % _skill_quote(alias),
             'copiedToolArgs = axlGetTestToolArgs(batchTestHandle)',
             'batchBindingOptions = append(list(list("lib" "%s") list("cell" "%s") list("view" "%s")) setof(item copiedToolArgs !member(car(item) list("lib" "cell" "view"))))' % tuple(_skill_quote(v) for v in (lib, cell, view)),
-            'unless(axlSetTestToolArgs(batchTestHandle batchBindingOptions) error("Crescendo batch test binding failed\\n"))',
+            _contract_text('unless(axlSetTestToolArgs(batchTestHandle batchBindingOptions) error("Crescendo batch test binding failed\\n"))'),
             'batchToolArgs = axlGetTestToolArgs(batchTestHandle)',
-            'unless(equal(assoc("sim" sourceToolArgs) assoc("sim" batchToolArgs)) error("Crescendo batch simulator changed\\n"))',
+            _contract_text('unless(equal(assoc("sim" sourceToolArgs) assoc("sim" batchToolArgs)) error("Crescendo batch simulator changed\\n"))'),
             'sourceAnalyses = maeGetEnabledAnalysis("%s" ?session session)' % _skill_quote(source),
             'batchAnalyses = maeGetEnabledAnalysis("%s" ?session session)' % _skill_quote(alias),
-            'unless(sourceAnalyses && equal(sort(copy(sourceAnalyses) \'alphalessp) sort(copy(batchAnalyses) \'alphalessp)) error("Crescendo batch copied analyses changed\\n"))',
-            'unless(equal(cadr(assoc("lib" batchToolArgs)) "%s") && equal(cadr(assoc("cell" batchToolArgs)) "%s") && equal(cadr(assoc("view" batchToolArgs)) "%s") error("Crescendo batch test design readback mismatch\\n"))' % tuple(_skill_quote(v) for v in (lib, cell, view)),
-            'crescCopyEffectiveJobPolicy(session "%s" "%s")' % (_skill_quote(source), _skill_quote(alias)),
+            _contract_text('unless(sourceAnalyses && equal(sort(copy(sourceAnalyses) \'alphalessp) sort(copy(batchAnalyses) \'alphalessp)) error("Crescendo batch copied analyses changed\\n"))'),
+            _contract_text('unless(equal(cadr(assoc("lib" batchToolArgs)) "%s") && equal(cadr(assoc("cell" batchToolArgs)) "%s") && equal(cadr(assoc("view" batchToolArgs)) "%s") error("Crescendo batch test design readback mismatch\\n"))') % tuple(_skill_quote(v) for v in (lib, cell, view)),
+            _contract_text('crescCopyEffectiveJobPolicy(session "%s" "%s")') % (_skill_quote(source), _skill_quote(alias)),
             # maeCreateTest inherits the native corner participation and
             # variables. axlGetCornersForATest returns expanded point names;
             # sending these to maeSetCorner creates additional source groups.
-            'unless(equal(axlGetCornersForATest(session "%s") axlGetCornersForATest(session "%s")) error("Crescendo batch inherited corner scope differs from source\\n"))' % (_skill_quote(source), _skill_quote(alias)),
-            'crescBatchCopiedCornerScopes["%s"]=sprintf(nil "%%L" axlGetCornersForATest(session "%s"))' % (_skill_quote(alias), _skill_quote(alias)),
-            'crescRecordBatchCornerScope("after_corner_verify" "%s" "%s")' % (_skill_quote(source), _skill_quote(alias)),
-            'fprintf(crescBatchSnapshotVerify "TEST\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" "%s" "%s")' % tuple(_skill_quote(v) for v in (alias, source, lib, cell, view)),
+            _contract_text('unless(equal(axlGetCornersForATest(session "%s") axlGetCornersForATest(session "%s")) error("Crescendo batch inherited corner scope differs from source\\n"))') % (_skill_quote(source), _skill_quote(alias)),
+            _contract_text('crescBatchCopiedCornerScopes["%s"]=sprintf(nil "%%L" axlGetCornersForATest(session "%s"))') % (_skill_quote(alias), _skill_quote(alias)),
+            _contract_text('crescRecordBatchCornerScope("after_corner_verify" "%s" "%s")') % (_skill_quote(source), _skill_quote(alias)),
+            _contract_text('fprintf(crescBatchSnapshotVerify "TEST\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" "%s" "%s")') % tuple(_skill_quote(v) for v in (alias, source, lib, cell, view)),
         ])
     sources = " ".join('"%s"' % _skill_quote(name) for name in manifest["original_enabled_tests"])
     aliases = " ".join('"%s"' % _skill_quote(row["name"]) for row in manifest["batch_tests"])
     lines.extend([
-        'unless(maeSetSetup(?tests list(%s) ?enabled nil ?session session) error("Crescendo batch source tests could not disable\\n"))' % sources,
-        'unless(maeSetSetup(?tests list(%s) ?enabled t ?session session) error("Crescendo batch candidate tests could not enable\\n"))' % aliases,
-        'crescApplyJobOverrides(session list(%s))' % aliases,
-        'crescBatchTestNames = list(%s)' % aliases,
-        'crescBatchSourceTestNames = list(%s)' % sources,
+        _contract_text('unless(maeSetSetup(?tests list(%s) ?enabled nil ?session session) error("Crescendo batch source tests could not disable\\n"))') % sources,
+        _contract_text('unless(maeSetSetup(?tests list(%s) ?enabled t ?session session) error("Crescendo batch candidate tests could not enable\\n"))') % aliases,
+        _contract_text('crescApplyJobOverrides(session list(%s))') % aliases,
+        _contract_text('crescBatchTestNames = list(%s)') % aliases,
+        _contract_text('crescBatchSourceTestNames = list(%s)') % sources,
     ])
     for test in manifest["batch_tests"]:
-        lines.append('unless(equal(crescBatchCopiedCornerScopes["%s"] sprintf(nil "%%L" axlGetCornersForATest(session "%s"))) error("Crescendo batch corner scope changed while enabling candidate tests\\n"))' % (_skill_quote(test["name"]), _skill_quote(test["name"])))
-        lines.append('crescRecordBatchCornerScope("after_test_enable" "%s" "%s")' % (_skill_quote(test["source"]), _skill_quote(test["name"])))
-    lines.extend(['fprintf(crescBatchCornerScopePort "\\n]}\\n")', 'close(crescBatchCornerScopePort)'])
+        lines.append(_contract_text('unless(equal(crescBatchCopiedCornerScopes["%s"] sprintf(nil "%%L" axlGetCornersForATest(session "%s"))) error("Crescendo batch corner scope changed while enabling candidate tests\\n"))') % (_skill_quote(test["name"]), _skill_quote(test["name"])))
+        lines.append(_contract_text('crescRecordBatchCornerScope("after_test_enable" "%s" "%s")') % (_skill_quote(test["source"]), _skill_quote(test["name"])))
+    lines.extend([_contract_text('fprintf(crescBatchCornerScopePort "\\n]}\\n")'), _contract_text('close(crescBatchCornerScopePort)')])
     return lines
 
 
 def snapshot_cleanup_lines(manifest):
     lines = []
-    prefix = "cr_b_%s_" % str(manifest["worker_epoch"])[:8]
+    prefix = _contract_text("cr_b_%s_") % str(manifest["worker_epoch"])[:8]
     for row in manifest["owned_cells"]:
         if not str(row.get("cell") or "").startswith(prefix):
             raise ValueError("batch cleanup cell lacks this worker's ownership prefix")
@@ -548,32 +551,32 @@ def snapshot_cleanup_lines(manifest):
         alias = _skill_quote(test["name"])
         lines.extend([
             'batchTestHandle = axlGetTest(mainSDB "%s")' % alias,
-            'unless(batchTestHandle error("Crescendo owned batch test disappeared before cleanup\\n"))',
-            'unless(axlRemoveElement(batchTestHandle) error("Crescendo owned batch test cleanup rejected\\n"))',
-            'when(member("%s" maeGetSetup(?typeName "tests" ?session session)) error("Crescendo owned batch test remains after cleanup\\n"))' % alias,
+            _contract_text('unless(batchTestHandle error("Crescendo owned batch test disappeared before cleanup\\n"))'),
+            _contract_text('unless(axlRemoveElement(batchTestHandle) error("Crescendo owned batch test cleanup rejected\\n"))'),
+            _contract_text('when(member("%s" maeGetSetup(?typeName "tests" ?session session)) error("Crescendo owned batch test remains after cleanup\\n"))') % alias,
         ])
     sources = " ".join('"%s"' % _skill_quote(name) for name in manifest["original_enabled_tests"])
-    lines.append('unless(maeSetSetup(?tests list(%s) ?enabled t ?session session) error("Crescendo source tests could not restore\\n"))' % sources)
+    lines.append(_contract_text('unless(maeSetSetup(?tests list(%s) ?enabled t ?session session) error("Crescendo source tests could not restore\\n"))') % sources)
     for row in manifest.get("owned_views") or []:
         target = row["target"]
-        if not row.get("token") or row.get("existed_before") is not False or not target[2].startswith("cr_s_" + row["token"][:8] + "_"):
+        if not row.get("token") or row.get("existed_before") is not False or not target[2].startswith(_contract_text("cr_s_") + row["token"][:8] + "_"):
             raise ValueError("batch cleanup view lacks exact ownership")
         args = " ".join('"%s"' % _skill_quote(v) for v in target)
         lines.extend(['batchOwnedView = ddGetObj(%s)' % args,
-                      'unless(batchOwnedView error("Crescendo owned batch view disappeared\\n"))',
-                      'unless(ddDeleteObj(batchOwnedView) error("Crescendo owned batch view cleanup rejected\\n"))',
-                      'when(ddGetObj(%s) error("Crescendo owned batch view remains\\n"))' % args])
+                      _contract_text('unless(batchOwnedView error("Crescendo owned batch view disappeared\\n"))'),
+                      _contract_text('unless(ddDeleteObj(batchOwnedView) error("Crescendo owned batch view cleanup rejected\\n"))'),
+                      _contract_text('when(ddGetObj(%s) error("Crescendo owned batch view remains\\n"))') % args])
     # Owned identities are generated, below private copied libraries, and checked
     # before rendering. Never discover targets through a broad prefix scan.
     for cell in manifest["owned_cells"]:
         lib, name = _skill_quote(cell["library"]), _skill_quote(cell["cell"])
         lines.extend([
             'batchOwnedCell = ddGetObj("%s" "%s")' % (lib, name),
-            'unless(batchOwnedCell error("Crescendo owned batch cell disappeared before cleanup\\n"))',
-            'unless(ddDeleteObj(batchOwnedCell) error("Crescendo owned batch cell cleanup rejected\\n"))',
-            'when(ddGetObj("%s" "%s") error("Crescendo owned batch cell remains after cleanup\\n"))' % (lib, name),
+            _contract_text('unless(batchOwnedCell error("Crescendo owned batch cell disappeared before cleanup\\n"))'),
+            _contract_text('unless(ddDeleteObj(batchOwnedCell) error("Crescendo owned batch cell cleanup rejected\\n"))'),
+            _contract_text('when(ddGetObj("%s" "%s") error("Crescendo owned batch cell remains after cleanup\\n"))') % (lib, name),
         ])
-    lines.extend(['crescBatchTestNames = nil', 'crescBatchSourceTestNames = nil',
+    lines.extend([_contract_text('crescBatchTestNames = nil'), _contract_text('crescBatchSourceTestNames = nil'),
                   'batchTestHandle = nil', 'batchOwnedCell = nil', 'batchToolArgs = nil'])
     return lines
 
@@ -591,10 +594,10 @@ def persist_batch_artifacts(manifest):
             if all((candidate.get("verification_workspace") or {}).get(key) == value
                    and key in (candidate.get("verification_workspace") or {}) for candidate in candidates):
                 shared[key] = value
-    context = {"schema_version": "crescendo.maestro_batch_context.v1", "verification_workspace": shared,
+    context = {"schema_version": _contract_text("crescendo.maestro_batch_context.v1"), "verification_workspace": shared,
                "protocol_identity": manifest["protocol_identity"]}
     encoded = json.dumps(context, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    context_path = os.path.join(manifest["batch_root"], "batch_context.json")
+    context_path = os.path.join(manifest["batch_root"], _contract_text("batch_context.json"))
     atomic_write_json(context_path, context)
     reference = {"path": context_path, "sha256": hashlib.sha256(encoded).hexdigest()}
     compact_candidates = []
@@ -604,7 +607,7 @@ def persist_batch_artifacts(manifest):
             (candidate.get("verification_workspace") or {}).items() if key not in shared)
         compact["shared_workspace_context"] = reference
         compact_candidates.append(compact)
-        atomic_write_json(os.path.join(candidate["candidate_root"], "persistent_worker_candidate.json"), compact)
+        atomic_write_json(os.path.join(candidate["candidate_root"], _contract_text("persistent_worker_candidate.json")), compact)
     value = dict((key, row) for key, row in manifest.items() if key != "snapshot_lines")
     durable = dict(value)
     durable["candidates"] = compact_candidates
@@ -621,7 +624,7 @@ def expand_batch_artifact(artifact):
     from .utils import load_json
     path = reference.get("path")
     root = os.path.dirname(path or "")
-    if (not path or os.path.basename(path) != "batch_context.json" or os.path.islink(path)
+    if (not path or os.path.basename(path) != _contract_text("batch_context.json") or os.path.islink(path)
             or not os.path.isfile(path) or os.stat(path).st_nlink != 1):
         raise ValueError("batch shared context is unavailable or unsafe")
     context = load_json(path)
@@ -649,7 +652,7 @@ def compact_committed_batch(run_root, batch_id, cleanup, batch_root=None):
     if (os.path.dirname(batch_root) != os.path.join(run_root, "batches")
             or os.path.realpath(batch_root) != batch_root):
         raise ValueError("batch compaction escaped its owned run")
-    path = os.path.join(batch_root, "persistent_worker_batch.json")
+    path = os.path.join(batch_root, _contract_text("persistent_worker_batch.json"))
     if not os.path.isfile(path):
         return {"ok": True, "removed": [], "state": "no_generated_batch_manifest"}
     try:
@@ -663,7 +666,7 @@ def compact_committed_batch(run_root, batch_id, cleanup, batch_root=None):
         # The whole-run worker returns a public summary without fenced protocol
         # fields. Its successful summary alone is never deletion authority.
         # Re-read the complete native ACK and its marker from this exact batch.
-        ack_path = os.path.join(batch_root, "persistent_worker_cleanup.json")
+        ack_path = os.path.join(batch_root, _contract_text("persistent_worker_cleanup.json"))
         marker_path = os.path.join(batch_root, "persistent_worker_cleanup.tsv")
         native_ack = load_json(ack_path)
         if (native_ack.get("schema_version") != WORKER_SCHEMA_VERSION
@@ -679,7 +682,7 @@ def compact_committed_batch(run_root, batch_id, cleanup, batch_root=None):
             raise ValueError("batch native cleanup marker/ACK disagree")
         if cleanup.get("protocol_identity") is not None and cleanup.get("protocol_identity") != identity:
             raise ValueError("batch cleanup result refers to another request")
-        checkpoint = load_json(os.path.join(run_root, "checkpoint.json"))
+        checkpoint = load_json(os.path.join(run_root, _contract_text("checkpoint.json")))
         validate_checkpoint_integrity(checkpoint)
         reference = checkpoint.get("candidate_store")
         if not reference or os.path.dirname(reference.get("path") or "") != run_root:
@@ -695,8 +698,8 @@ def compact_committed_batch(run_root, batch_id, cleanup, batch_root=None):
             if not os.path.isfile(item) or os.stat(item).st_nlink != 1:
                 raise ValueError("batch compaction contains pending or unsafe artifacts")
             files.append({"name": name, "bytes": os.path.getsize(item), "sha256": sha256_file(item)})
-        receipt_path = os.path.join(batch_root, "batch_receipt.json")
-        receipt = {"schema_version": "crescendo.maestro_batch_receipt.v1", "batch_id": batch_id,
+        receipt_path = os.path.join(batch_root, _contract_text("batch_receipt.json"))
+        receipt = {"schema_version": _contract_text("crescendo.maestro_batch_receipt.v1"), "batch_id": batch_id,
                    "protocol_identity": identity, "process_termination_proven": True,
                    "remote_stop_proven": True, "native_completion_proven": True,
                    "proof_scope": "native_batch_jobs_and_snapshot_cleanup",

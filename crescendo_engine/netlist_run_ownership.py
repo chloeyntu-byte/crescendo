@@ -1,3 +1,6 @@
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 """Reconcile only capture roots belonging to this optimizer run."""
 import os
 import re
@@ -16,10 +19,10 @@ def reconcile_run_preparations(run_root, request_cancel=True, timeout_seconds=12
         if os.path.islink(candidates) or not os.path.isdir(candidates):
             raise ValueError("Unsafe netlist candidate ownership directory")
         for name in sorted(os.listdir(candidates)):
-            if not re.match(r"^g[0-9]{3,}_c[0-9]{4,}$", name):
+            if not re.fullmatch(r"(?:g[0-9]{3,}_c[0-9]{4,}|batch_[a-f0-9]{32})", name):
                 continue
             candidate = os.path.join(candidates, name)
-            root = os.path.join(candidate, "simulation")
+            root = candidate if name.startswith('batch_') else os.path.join(candidate, "simulation")
             if os.path.islink(candidate) or os.path.islink(root):
                 raise ValueError("Unsafe netlist preparation ownership directory")
             if os.path.isdir(root) and os.path.exists(os.path.join(root, "numeric")):
@@ -39,7 +42,7 @@ def reconcile_run_preparations(run_root, request_cancel=True, timeout_seconds=12
             elif not all(item.get("cleanup_proven") for item in rows):
                 row["state"] = "retained_until_all_native_generation_stopped"
             else:
-                path = os.path.join(owner["workspace_root"], "workspace.json")
+                path = os.path.join(owner["workspace_root"], _contract_text("workspace.json"))
                 if os.path.lexists(path):
                     _regular(path, owner["root"], MAX_METADATA_BYTES)
                     with open(path, "r") as stream:

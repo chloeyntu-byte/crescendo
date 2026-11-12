@@ -233,7 +233,7 @@ class ShellLauncherPortabilityTests(unittest.TestCase):
         os.makedirs(package, exist_ok=True)
         # Automatic discovery executes the real, bounded helper and probe.
         # The owned interpreter wrapper records only final application launch.
-        for name in ("__init__.py", "launcher.py", "native_environment.py", "python_runtime.py", "gui_runtime_dependencies.py", "scratch.py"):
+        for name in ("__init__.py", "runtime.py", "launcher.py", "native_environment.py", "python_runtime.py", "gui_runtime_dependencies.py", "scratch.py"):
             shutil.copy2(os.path.join(PROJECT_ROOT, "crescendo_engine", name), os.path.join(package, name))
         with open(os.path.join(package, "__main__.py"), "w") as stream:
             stream.write("# owned module placement fixture\n")

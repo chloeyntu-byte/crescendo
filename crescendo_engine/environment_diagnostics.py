@@ -16,6 +16,9 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .environment_probes import _redact
 
 MAX_FILE = 2 * 1024 * 1024
@@ -33,43 +36,50 @@ ERROR = re.compile(r'\*Error\*|syntax error|\bfatal\b|\bexception\b|Traceback|'
                    r'\b(?:ERROR|SFE-\d+|SPECTRE-\d+|ASSEMBLER-5031)\b|'
                    r'undefined function|unbound variable|token.*(?:missing|not found)|'
                    r'permission denied|quota exceeded|no space left|cannot.*submit', re.I)
-JSON_NAMES = frozenset(('baseline_shutdown_roots.json', 'raw_cleanup_proof.json', 'native_baseline_evidence.json', 'native_baseline_result.json', 'native_baseline_state.json', 'corner_identity.json', 'preparation_failure.json',
-    'reader_request.json', 'reader_status.json',
-    'portability_settings.json', 'capture_diagnostics.json', 'capture_generation.json',
-    'command.json', 'native_storage.json', 'native_storage_readback.json',
-    'worker_shutdown.json', 'parameter_application.json', 'source_guard.json', 'native_file_inputs.json',
-    'cleanup_failure.json', 'cleanup_diagnostics.json', 'scheduler_context.json',
-    'native_submission.json', 'point_identity.json', 'submission.json', 'error.json',
-    'result.json', 'measurement_error.json', 'execution_diagnostics.json',
-    'effective_job_policy.json', 'native_storage_evidence.json', 'worker_manifest.json', 'guardian_state.json',
-    'worker_state.json', 'startup_session_ownership.json', 'ownership.json',
-    'persistent_command.json', 'bootstrap_diagnostics.json', 'compute_metadata.json',
-    'private_netlist.json', 'private_netlist_candidate.json', 'netlist_generation.json',
-    'native_test_projection.json', 'native_capture_projection.json', 'native_generation_required.json',
-    'execution_pipeline.json', 'cli_results.json', 'completion_evidence.json',
-    'solver_artifacts.json', 'measurement.json', 'result_reader_capability.json', 'native_worker_diagnostics.json'))
-TEXT_NAMES = frozenset(('native_baseline_protocol.tsv', 'native_corner_schedule.tsv', 'native_dispatch.jsonl',
-    'ocean.stdout', 'ocean.stderr', 'spectre.out', 'spectre.log', 'Job1.log',
-    'capture.il', 'bootstrap.il', 'native_capture_ready', 'crescendo.log',
+JSON_NAMES = frozenset((_contract_text('baseline_shutdown_roots.json'), _contract_text('raw_cleanup_proof.json'), _contract_text('native_baseline_evidence.json'), _contract_text('native_baseline_result.json'), _contract_text('native_baseline_state.json'), _contract_text('corner_identity.json'), _contract_text('preparation_failure.json'),
+    _contract_text('reader_request.json'), _contract_text('reader_status.json'),
+    _contract_text('portability_settings.json'), _contract_text('capture_diagnostics.json'), _contract_text('capture_generation.json'),
+    _contract_text('command.json'), _contract_text('native_storage.json'), _contract_text('native_storage_readback.json'),
+    _contract_text('worker_shutdown.json'), _contract_text('parameter_application.json'), _contract_text('source_guard.json'), _contract_text('native_file_inputs.json'),
+    _contract_text('cleanup_failure.json'), _contract_text('cleanup_diagnostics.json'), _contract_text('scheduler_context.json'),
+    _contract_text('native_submission.json'), _contract_text('point_identity.json'), _contract_text('submission.json'), _contract_text('error.json'),
+    _contract_text('result.json'), _contract_text('measurement_error.json'), _contract_text('execution_diagnostics.json'),
+    _contract_text('effective_job_policy.json'), _contract_text('native_storage_evidence.json'), _contract_text('worker_manifest.json'), _contract_text('guardian_state.json'),
+    _contract_text('worker_state.json'), _contract_text('startup_session_ownership.json'), _contract_text('ownership.json'),
+    _contract_text('persistent_command.json'), _contract_text('bootstrap_diagnostics.json'), _contract_text('compute_metadata.json'),
+    _contract_text('private_netlist.json'), _contract_text('private_netlist_candidate.json'), _contract_text('netlist_generation.json'),
+    _contract_text('native_test_projection.json'), _contract_text('native_capture_projection.json'), _contract_text('native_generation_required.json'),
+    _contract_text('execution_pipeline.json'), _contract_text('cli_results.json'), _contract_text('completion_evidence.json'),
+    _contract_text('solver_artifacts.json'), _contract_text('measurement.json'), _contract_text('result_reader_capability.json'), _contract_text('native_worker_diagnostics.json')))
+TEXT_NAMES = frozenset(('native_baseline_protocol.tsv', 'native_corner_schedule.tsv', _contract_text('native_dispatch.jsonl'),
+    'ocean.stdout', 'ocean.stderr', 'spectre.out', _contract_text('spectre.log'), _contract_text('Job1.log'),
+    'capture.il', 'bootstrap.il', 'native_capture_ready', _contract_text('crescendo.log'),
     'effective_job_policy.tsv', 'startup.tsv', 'persistent_worker_status.tsv',
     'simulator.stdout', 'simulator.stderr', 'started.receipt', 'terminal.receipt',
-    'compute_metadata.tsv', 'alps.out', 'psf.log', 'psf.warn', 'scheduler.stdout', 'scheduler.stderr'))
+    'compute_metadata.tsv', 'alps.out', _contract_text('psf.log'), 'psf.warn', 'scheduler.stdout', 'scheduler.stderr'))
+from .scheduler_providers import log_artifacts as _scheduler_log_artifacts
+_SCHEDULER_LOG_NAMES = tuple(os.path.basename(path) for path in
+    _scheduler_log_artifacts(os.path.abspath(os.curdir)).values())
+TEXT_NAMES = TEXT_NAMES.union(_SCHEDULER_LOG_NAMES)
+_SCHEDULER_AUX_PATTERN = (r'^(?:' + '|'.join(re.escape(name) for name in
+    sorted(set(['scheduler'] + [os.path.splitext(name)[0] for name in _SCHEDULER_LOG_NAMES]))) +
+    r')_(?:query|status|cancel|help|cancel_help)(?:_[0-9]+)?\.(?:stdout|stderr)$')
 POINT_READER_FILES = ('read_point_parameters.il', 'parameters.tsv', 'reader_progress.tsv',
-                      'reader_request.json', 'reader_status.json')
+                      _contract_text('reader_request.json'), _contract_text('reader_status.json'))
 
 
 def _diagnostic_text_name(name):
-    return (name in TEXT_NAMES or name.endswith(('.psf.log', '.psf.warn'))
-            or bool(re.match(r'^scheduler_(?:query|status|cancel|help|cancel_help)(?:_[0-9]+)?\.(?:stdout|stderr)$', name)))
+    return (name in TEXT_NAMES or name.endswith((_contract_text('.psf.log'), '.psf.warn'))
+            or bool(re.match(_SCHEDULER_AUX_PATTERN, name)))
 
 
 def _alps_companion_name(name):
-    return name in ('psf.log', 'psf.warn') or name.endswith(('.psf.log', '.psf.warn'))
+    return name in (_contract_text('psf.log'), 'psf.warn') or name.endswith((_contract_text('.psf.log'), '.psf.warn'))
 
 
 def _raw_scheduler_text_name(name):
-    return (name in ('scheduler.stdout', 'scheduler.stderr') or
-            bool(re.match(r'^scheduler_(?:query|status|cancel|help|cancel_help)(?:_[0-9]+)?\.(?:stdout|stderr)$', name)))
+    return (name in (('scheduler.stdout', 'scheduler.stderr') + _SCHEDULER_LOG_NAMES) or
+            bool(re.match(_SCHEDULER_AUX_PATTERN, name)))
 
 
 def _serialized(value):
@@ -83,6 +93,8 @@ def _sha(data):
 def package_identity():
     """Hash shipped code, never the host's tokens, user setup or old results."""
     from . import __version__
+    from .runtime import contract
+    application_version = contract()['identity'].get('version') or __version__
     package = os.path.dirname(os.path.abspath(__file__))
     project = os.path.dirname(package)
     digest = hashlib.sha256()
@@ -108,11 +120,11 @@ def package_identity():
         digest.update(relative.encode('utf-8') + b'\0' + hashlib.sha256(data).digest())
         count += 1
         size += len(data)
-    result = {'application_version': __version__,
+    result = {'application_version': application_version, 'engine_version': __version__,
               'source_tree_sha256': digest.hexdigest(), 'source_file_count': count,
               'source_bytes': size, 'source_root': project,
-              'scope': 'crescendo_engine/cadence/tools Python/SKILL/shell plus load.il/start.sh; backups/cache excluded'}
-    for name in ('DELIVERY_MANIFEST.json', 'DELIVERY_MANIFEST.txt'):
+              'scope': _contract_text('crescendo_engine/cadence/tools Python/SKILL/shell plus load.il/start.sh; backups/cache excluded')}
+    for name in (_contract_text('DELIVERY_MANIFEST.json'), _contract_text('DELIVERY_MANIFEST.txt')):
         path = os.path.join(project, name)
         if os.path.isfile(path) and not os.path.islink(path):
             try:
@@ -125,6 +137,8 @@ def package_identity():
             except (ValueError, OSError):
                 result['delivery_manifest'] = {'filename': name, 'status': 'UNREADABLE'}
             break
+    from .runtime import build_identity
+    result['engine_runtime'] = build_identity()
     return result
 
 
@@ -278,10 +292,10 @@ def _identity_coverage_summary(parsed, prepared):
                     for name, group in list(groups.items())[:8] if isinstance(group, dict)),
                 'group_count': len(groups), 'groups_omitted': max(0, len(groups) - 8)}
     failed_phases = [os.path.dirname(path) for path, value in parsed.items()
-                     if path.endswith('capture_diagnostics.json') and isinstance(value, dict)
+                     if path.endswith(_contract_text('capture_diagnostics.json')) and isinstance(value, dict)
                      and (value.get('skill') or {}).get('ok') is False]
     for path, document in parsed.items():
-        if path.endswith('capture_diagnostics.json') and isinstance(document, dict):
+        if path.endswith(_contract_text('capture_diagnostics.json')) and isinstance(document, dict):
             points = document.get('point_coverage')
             if isinstance(points, dict):
                 point_row = dict((key, bounded(points.get(key))) for key in
@@ -291,7 +305,7 @@ def _identity_coverage_summary(parsed, prepared):
                     for key in ('missing_test_points', 'unexpected_test_points',
                                 'duplicate_test_points', 'masked_test_points'))
                 point_coverage.append(point_row)
-        if not path.endswith('corner_identity.json') or not isinstance(document, dict):
+        if not path.endswith(_contract_text('corner_identity.json')) or not isinstance(document, dict):
             continue
         coverage = document.get('native_coverage')
         if not isinstance(coverage, dict):
@@ -395,7 +409,7 @@ def _semantic_artifact(value):
         return [_semantic_artifact(item) for item in value]
     if not isinstance(value, dict):
         return value
-    if value.get('schema_version') == 'crescendo.native_worker_diagnostics.v1':
+    if value.get('schema_version') == _contract_text('crescendo.native_worker_diagnostics.v1'):
         value = _worker_report_projection(value)
     result = {}
     for key, item in value.items():
@@ -500,7 +514,7 @@ def _point_termination_qualification(task):
     if not isinstance(token, str) or not re.match(r'^[0-9a-f]{32}$', token):
         problems.append('owned raw task token unavailable')
     elif (receipt.get('token') != token or evidence.get('receipt_token') != token
-            or guardian.get('token') != 'cr_netlist_task_' + token):
+            or guardian.get('token') != _contract_text('cr_netlist_task_') + token):
         problems.append('local guardian/raw/effective token bindings differ')
     bindings = plan.get('bindings') or {}
     bindings = bindings if isinstance(bindings, dict) else {}
@@ -542,7 +556,7 @@ def pipeline_qualification(candidate, engine, simulator):
     problems = []
     if not isinstance(pipeline, dict):
         pipeline = {}
-    if pipeline.get('schema_version') != 'crescendo.execution_pipeline.v1':
+    if pipeline.get('schema_version') != _contract_text('crescendo.execution_pipeline.v1'):
         problems.append('shared execution pipeline schema missing or mismatched')
     if pipeline.get('solver') != 'shared_cli' or pipeline.get('submission') != 'shared_local_or_command':
         problems.append('solver/submission are not the common CLI layers')
@@ -588,7 +602,7 @@ def pipeline_qualification(candidate, engine, simulator):
         for field, layer in (('solver_command_plan', 'solve'), ('submission_command_plan', 'submit')):
             plan = task.get(field) or {}
             argv = plan.get('argv') if isinstance(plan, dict) else None
-            if not (isinstance(plan, dict) and plan.get('schema_version') == 'crescendo.execution_command_plan.v1'
+            if not (isinstance(plan, dict) and plan.get('schema_version') == _contract_text('crescendo.execution_command_plan.v1')
                     and plan.get('layer') == layer and isinstance(argv, list) and argv
                     and all(isinstance(arg, str) and arg for arg in argv)):
                 problems.append('point %s expanded %s argv unproven' % (task_id, layer))
@@ -609,7 +623,7 @@ def _baseline_pipeline_qualification(candidate, completion, pipeline, simulator)
     """Index native producer evidence without inventing CLI command receipts."""
     pipeline = pipeline if isinstance(pipeline, dict) else {}
     problems = []
-    if pipeline.get('schema_version') != 'crescendo.maestro_baseline.v1':
+    if pipeline.get('schema_version') != _contract_text('crescendo.maestro_baseline.v1'):
         problems.append('native Maestro execution protocol missing or mismatched')
     if pipeline.get('solver') != 'native_maestro' or pipeline.get('submission') != 'native_job_setup':
         problems.append('baseline did not use native Maestro Run and Job Setup')
@@ -633,7 +647,7 @@ def pipeline_summary(pipeline):
     """Keep actual commands and point identities without repeating raw results."""
     if not isinstance(pipeline, dict):
         return {'status': 'NOT_TESTED', 'reason': 'shared execution pipeline not produced'}
-    if pipeline.get('schema_version') == 'crescendo.maestro_baseline.v1':
+    if pipeline.get('schema_version') == _contract_text('crescendo.maestro_baseline.v1'):
         points = pipeline.get('points') or []
         return dict({key: pipeline.get(key) for key in ('schema_version', 'solver', 'submission', 'run_id',
                     'history_name', 'rdb_path', 'native_run_invoked', 'native_wait_completed',
@@ -716,7 +730,7 @@ def _pipeline_artifact_summary(document):
         return document
     completion = document.get('completion') or document.get('completion_evidence') or {}
     pipeline = document.get('execution_pipeline') or (completion.get('execution_pipeline') if isinstance(completion, dict) else None)
-    if document.get('schema_version') == 'crescendo.execution_pipeline.v1':
+    if document.get('schema_version') == _contract_text('crescendo.execution_pipeline.v1'):
         pipeline = document
     if pipeline:
         generation = document.get('netlist_generation') or (completion.get('netlist_generation') if isinstance(completion, dict) else None)
@@ -733,7 +747,7 @@ def _pipeline_artifact_summary(document):
 def _windows(text, radius=4, max_lines=240, console_source=None):
     """Include first error context, all bounded distinct errors, and final state."""
     lines = text.splitlines()
-    si_log = isinstance(console_source, str) and os.path.basename(console_source) == 'si.foregnd.log'
+    si_log = isinstance(console_source, str) and os.path.basename(console_source) == _contract_text('si.foregnd.log')
     warning = re.compile(r'^\s*WARNING\s*\([A-Z]+-\d+\)\s*:', re.I)
     def is_error(line):
         if warning.match(line):
@@ -773,7 +787,7 @@ def _windows(text, radius=4, max_lines=240, console_source=None):
     critical = [i for i, line in enumerate(lines) if _FIELD.match(line)
         and _FIELD.match(line).group(1) in _TASK_FIELDS | _RESOURCE_FIELDS | {'TASK_INFO', 'RESOURCE_USAGE_SUMMARY'}]
     selected.update(critical)
-    callback_inputs = [i for i,line in enumerate(lines) if 'CRESCENDO_CDF_CALLBACK_INPUT' in line]
+    callback_inputs = [i for i,line in enumerate(lines) if _contract_text('CRESCENDO_CDF_CALLBACK_INPUT') in line]
     retained_callback_inputs = callback_inputs[-min(8,max_lines):]
     selected.update(retained_callback_inputs)
     native_following = []
@@ -852,17 +866,17 @@ def _native_capture_cdf_failures(capture, capture_path, console_path, root, scri
     The full native scanner owns physical line numbers even when the later
     collector has only a head/tail excerpt. No JSON tree search or extra read.
     """
-    if not isinstance(capture, dict) or capture.get('schema_version') != 'crescendo.native_capture_diagnostics.v1' or capture.get('capture_only') is not True:
+    if not isinstance(capture, dict) or capture.get('schema_version') != _contract_text('crescendo.native_capture_diagnostics.v1') or capture.get('capture_only') is not True:
         return []
     directory, name = os.path.dirname(console_path), os.path.basename(console_path)
     script = os.path.join(directory, 'capture.il')
     if (name not in ('ocean.stdout', 'ocean.stderr') or script not in scripts
-            or capture_path != os.path.join(directory, 'capture_diagnostics.json')
+            or capture_path != os.path.join(directory, _contract_text('capture_diagnostics.json'))
             or capture.get('script_path') != os.path.join(root, script)):
         return []
     skill = capture.get('skill') or {}
     inspected = skill.get('inspected_logs') if isinstance(skill, dict) else None
-    if (not isinstance(skill, dict) or skill.get('schema_version') != 'crescendo.native_skill_diagnostics.v1'
+    if (not isinstance(skill, dict) or skill.get('schema_version') != _contract_text('crescendo.native_skill_diagnostics.v1')
             or skill.get('console_scope') != 'owned_full_logs'
             or not isinstance(inspected, list) or len(inspected) > 2 or name not in inspected):
         return []
@@ -871,7 +885,7 @@ def _native_capture_cdf_failures(capture, capture_path, console_path, root, scri
         return []
     result = []
     for row in rows[:8]:
-        if (not isinstance(row, dict) or row.get('schema_version') != 'crescendo.cdf_callback_failure.v1'
+        if (not isinstance(row, dict) or row.get('schema_version') != _contract_text('crescendo.cdf_callback_failure.v1')
                 or row.get('capture_stage') != 'callback_failure' or row.get('console_source') != name
                 or not isinstance(row.get('property'), str) or not row['property']
                 or not isinstance(row.get('callback_error'), str)
@@ -893,7 +907,7 @@ def _native_capture_cdf_failures(capture, capture_path, console_path, root, scri
 
 def _reader_capability_summary(document, path):
     """Index actual owned Ocean observations, never substitute parameter proof."""
-    if (not isinstance(document, dict) or document.get('schema_version') != 'crescendo.result_reader_capability.v1'
+    if (not isinstance(document, dict) or document.get('schema_version') != _contract_text('crescendo.result_reader_capability.v1')
             or not isinstance(document.get('task_id'), str) or not document['task_id']
             or document.get('execution_simulator') not in ('spectre', 'alps')):
         return {'path': path, 'status': 'NOT_TESTED', 'reason': 'Current reader observation identity/schema unavailable'}
@@ -957,7 +971,7 @@ def _protocol_context(name, text):
             row['compute_uid'] = fields[index + 1] if len(fields) > index + 1 else None
             row['compute_identity_status'] = 'RECORDED' if len(fields) > index + 1 else 'NOT_TESTED'
         elif name in ('startup.tsv', 'persistent_worker_status.tsv'):
-            row = {'schema': 'crescendo.worker_protocol.v1', 'identity_fields_redacted': True,
+            row = {'schema': _contract_text('crescendo.worker_protocol.v1'), 'identity_fields_redacted': True,
                    'candidate_id': fields[3] if len(fields) > 3 else None,
                    'state': fields[4] if len(fields) > 4 else None,
                    'message': fields[6] if len(fields) > 6 else None}
@@ -971,9 +985,9 @@ def _protocol_context(name, text):
 def _causal_summary(documents, texts, stop_proven):
     """Small causal index; records retain their native meaning and provenance."""
     counts, samples = collections.Counter(), []
-    stages = {'native_submission.json': 'submission', 'submission.json': 'submission',
-              'compute_metadata.json': 'compute_context', 'measurement_error.json': 'measurement',
-              'result_reader_capability.json': 'result_reader'}
+    stages = {_contract_text('native_submission.json'): 'submission', _contract_text('submission.json'): 'submission',
+              _contract_text('compute_metadata.json'): 'compute_context', _contract_text('measurement_error.json'): 'measurement',
+              _contract_text('result_reader_capability.json'): 'result_reader'}
     for path, document in sorted(documents.items()):
         stage = stages.get(os.path.basename(path))
         if not stage or not isinstance(document, dict):
@@ -990,7 +1004,7 @@ def _causal_summary(documents, texts, stop_proven):
             sample['environment_presence'] = {key: value for key, value in presence.items()
                 if isinstance(value, bool) or value in ('set', 'empty', 'unset')}
         samples.append(sample)
-        if os.path.basename(path) == 'result_reader_capability.json':
+        if os.path.basename(path) == _contract_text('result_reader_capability.json'):
             sample['reader_observation'] = _reader_capability_summary(document, path)
     for path, value in sorted(texts.items()):
         name = os.path.basename(path)
@@ -1021,7 +1035,7 @@ def _script_context(text, locations):
 def _native_selected_rows(script):
     """Read our literal native Parameters declaration, never evaluate SKILL."""
     literal = r'"(?:\\.|[^"\\])*"'
-    declaration = re.findall(r'^\s*crescNpRows=list\(([^\n]*)\)\s*$', script, re.M)
+    declaration = re.findall(_contract_text(r'^\s*crescNpRows=list\(([^\n]*)\)\s*$'), script, re.M)
     if len(declaration) != 1 or len(declaration[0]) > 512 * 1024:
         return [], 'one bounded literal native Parameters declaration unavailable'
     entry = re.compile(r'\s*list\(\s*(%s)\s+(%s)\s+(%s)\s*\)' % ((literal,) * 3))
@@ -1068,7 +1082,7 @@ def _native_run_failure_context(script, capture, prepared, netlists,
             attribution='indirect_reader_during_native_Run', block={}, lines=[],
             reported_locations=indirect_locations[:4], native_stack=run_stack_frames[:8],
             explanation='首条错误后的调用栈包含原生 Run；报告列号与已保存脚本行不匹配，可能涉及间接读取，尚未定位具体输入字符串。')
-    elif block.get('name') and block.get('name') != 'crescNetlistCaptureBodyResult':
+    elif block.get('name') and block.get('name') != _contract_text('crescNetlistCaptureBodyResult'):
         # The scanner sees nested patch markers too. Their body offsets belong
         # to that other script and cannot identify a line in capture.il.
         phase.update(source='nested script marker does not identify the capture script phase',
@@ -1216,7 +1230,7 @@ def _reported_patch_context(text, locations, identity, console_text):
     for index in anchors:
         for nearby in range(max(0, index-36), min(len(lines), index+3)):
             line = lines[nearby]
-            if invocation.search(line) and 'crescDiag' not in line and 'CRESCENDO_CDF_CALLBACK_INPUT' not in line:
+            if invocation.search(line) and _contract_text('crescDiag') not in line and _contract_text('CRESCENDO_CDF_CALLBACK_INPUT') not in line:
                 if nearby not in callback_candidates:
                     callback_candidates.append(nearby)
     selected.update(callback_candidates[:24])
@@ -1306,7 +1320,7 @@ def _settings_xml(path, data=None, identity=None, selected_test=None):
     if data is None:
         data, identity = _read(path)
     if identity['read_truncated']:
-        return dict(identity, schema_version='crescendo.current_setup_diagnostics.v1',
+        return dict(identity, schema_version=_contract_text('crescendo.current_setup_diagnostics.v1'),
                     settings_status='TRUNCATED', path=path)
     root = ET.fromstring(data)
     if selected_test:
@@ -1395,7 +1409,7 @@ def _settings_xml(path, data=None, identity=None, selected_test=None):
                                     for key, count in counts.items() if count > retained_counts[key]))
     lost_fields = collections.Counter(row['category']
                                      for row in retained if _would_truncate(row))
-    return dict(identity, schema_version='crescendo.current_setup_diagnostics.v1',
+    return dict(identity, schema_version=_contract_text('crescendo.current_setup_diagnostics.v1'),
                 path=path, settings_status='PARTIAL' if lost or lost_fields else 'READ',
                 settings_rows=_bounded_value(retained), row_count=sum(counts.values()),
                 scope_coverage={'total_rows': dict(counts), 'omitted_rows': dict(lost),
@@ -1462,7 +1476,7 @@ def native_worker_reports(document):
         seen.add(id(value))
         inspected += 1
         if isinstance(value, dict):
-            if value.get('schema_version') == 'crescendo.native_worker_diagnostics.v1' and not value.get('evidence_ref') and value not in reports:
+            if value.get('schema_version') == _contract_text('crescendo.native_worker_diagnostics.v1') and not value.get('evidence_ref') and value not in reports:
                 reports.append(value)
             report = value.get('native_worker_diagnostics')
             if isinstance(report, dict) and not report.get('evidence_ref') and report not in reports:
@@ -1482,7 +1496,7 @@ def _worker_report_references(value, retained, depth=0):
     if depth > 16:
         return value
     if isinstance(value, dict):
-        if value.get('schema_version') == 'crescendo.native_worker_diagnostics.v1':
+        if value.get('schema_version') == _contract_text('crescendo.native_worker_diagnostics.v1'):
             digest = _sha(_serialized(value).encode('utf-8'))
             if digest in retained:
                 return {'schema_version': value['schema_version'],
@@ -1502,8 +1516,8 @@ def _worker_report_references(value, retained, depth=0):
 
 
 _INPUT_EVIDENCE_SCHEMAS = {
-    'crescendo.source_guard_diagnostic.v1': 'source_guard',
-    'crescendo.native_file_inputs.v1': 'native_file_inputs',
+    _contract_text('crescendo.source_guard_diagnostic.v1'): 'source_guard',
+    _contract_text('crescendo.native_file_inputs.v1'): 'native_file_inputs',
 }
 
 
@@ -1733,11 +1747,11 @@ def _single_test_scope_summary(prepared, spec, parsed=None):
                                 'corners_omitted': max(0, len(choices) - 32) if isinstance(choices, list) else 0})
     receipts = []
     for path, document in (parsed or {}).items():
-        if path.endswith('corner_identity.json') and isinstance(document, dict) and document.get('source_projection_manifest'):
+        if path.endswith(_contract_text('corner_identity.json')) and isinstance(document, dict) and document.get('source_projection_manifest'):
             receipts.append({'path': document['source_projection_manifest'], 'source': path, 'status': 'producer_reference_only'})
             if len(receipts) == 8:
                 break
-        if os.path.basename(path) not in ('native_test_projection.json', 'native_capture_projection.json') or not isinstance(document, dict):
+        if os.path.basename(path) not in (_contract_text('native_test_projection.json'), _contract_text('native_capture_projection.json')) or not isinstance(document, dict):
             continue
         receipts.append({'path': path, 'schema_version': document.get('schema_version'),
                          'selected_test': document.get('selected_test'),
@@ -1745,7 +1759,7 @@ def _single_test_scope_summary(prepared, spec, parsed=None):
                          'files': (document.get('files') or [])[:4]})
         if len(receipts) == 8:
             break
-    return {'schema_version': 'crescendo.single_test_scope_diagnostics.v1',
+    return {'schema_version': _contract_text('crescendo.single_test_scope_diagnostics.v1'),
             'selected_test': selected, 'spec_selected_test': spec.get('selected_test'),
             'loaded_test_count': len(loaded), 'loaded_test_names_sample': names(loaded),
             'source_test_count': len(source), 'source_test_names_sample': names(source),
@@ -1863,10 +1877,10 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
             part(semantic, 'rows')
         return complete
     add('scope', {'engine': engine, 'requested_netlist_source': {'maestro_netlist': 'maestro', 'private_netlist': 'template', 'maestro_baseline': 'native_maestro'}.get(engine, engine),
-                  'execution_pipeline_schema': 'crescendo.maestro_baseline.v1' if engine == 'maestro_baseline' else 'crescendo.execution_pipeline.v1', 'run_root': root, 'stop_proven': stop_proven,
+                  'execution_pipeline_schema': _contract_text('crescendo.maestro_baseline.v1') if engine == 'maestro_baseline' else _contract_text('crescendo.execution_pipeline.v1'), 'run_root': root, 'stop_proven': stop_proven,
                   'scope': 'this fresh run only; actual netlist source is recorded in the candidate pipeline; diagnostic, never completion/stop authority'})
     setup_private = prepared.get('setup_private_session') or {}
-    if isinstance(setup_private, dict) and setup_private.get('schema_version') == 'crescendo.setup_private_session.v1':
+    if isinstance(setup_private, dict) and setup_private.get('schema_version') == _contract_text('crescendo.setup_private_session.v1'):
         add('setup_private_session', _setup_private_summary(setup_private))
         if prepared.get('suite_update'):
             add('private_suite_update', prepared['suite_update'])
@@ -1879,7 +1893,7 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
         requested_missing = [key for key in requested_missing if key.rsplit('::', 1)[0] == selected_test]
     if requested_missing:
         state_path = selected_source.get('active_state')
-        targeted = {'schema_version':'crescendo.missing_output_source.v1','path':state_path,
+        targeted = {'schema_version':_contract_text('crescendo.missing_output_source.v1'),'path':state_path,
                     'requested_output_keys':requested_missing,'trigger':'measurement_preflight/missing_output_expression'}
         reason = stopped()
         if not isinstance(state_path,str) or not state_path:
@@ -1915,7 +1929,7 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
                 'scope': 'directory inventory only; presence is not successful readback'})
         for name in sorted(names):
             path = os.path.join(directory, name)
-            if (name in JSON_NAMES or _diagnostic_text_name(name) or name in ('input.scs', 'maestro.sdb') or name.startswith('capture.') or re.match(r'^retained_spectre_.*\.log$', name)
+            if (name in JSON_NAMES or _diagnostic_text_name(name) or name in (_contract_text('input.scs'), 'maestro.sdb') or name.startswith('capture.') or re.match(r'^retained_spectre_.*\.log$', name)
                     or (name in POINT_READER_FILES and os.path.basename(directory) == 'native_point_parameters')
                     or (name in ('startup.il', 'run.il', 'finish.il', 'stop.il') and os.path.basename(directory) == 'native_baseline')):
                 files.append(path)
@@ -1926,11 +1940,11 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
             break
     # Exact producer causes are small and must precede large setup/history
     # artifacts when the existing read or inline budget is exhausted.
-    first_names = {'preparation_failure.json': 0, 'native_worker_diagnostics.json': 1,
-                   'capture_diagnostics.json': 2, 'execution_diagnostics.json': 3,
-                   'source_guard.json': 4, 'native_file_inputs.json': 5,
-                   'error.json': 6, 'measurement_error.json': 7,
-                   'reader_status.json': 6, 'reader_request.json': 7,
+    first_names = {_contract_text('preparation_failure.json'): 0, _contract_text('native_worker_diagnostics.json'): 1,
+                   _contract_text('capture_diagnostics.json'): 2, _contract_text('execution_diagnostics.json'): 3,
+                   _contract_text('source_guard.json'): 4, _contract_text('native_file_inputs.json'): 5,
+                   _contract_text('error.json'): 6, _contract_text('measurement_error.json'): 7,
+                   _contract_text('reader_status.json'): 6, _contract_text('reader_request.json'): 7,
                    'reader_progress.tsv': 7, 'read_point_parameters.il': 7, 'parameters.tsv': 7,
                    'ocean.stdout': 8, 'ocean.stderr': 9}
     files.sort(key=lambda path: first_names.get(os.path.basename(path), 10))
@@ -1951,7 +1965,7 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
                 return False
             native_inline_used += size
             return True
-        states = [path for path in files if os.path.basename(path) == 'native_baseline_state.json'
+        states = [path for path in files if os.path.basename(path) == _contract_text('native_baseline_state.json')
                   and os.path.basename(os.path.dirname(path)) == 'native_baseline']
         for state_path in states:
             candidate_root = os.path.dirname(os.path.dirname(state_path))
@@ -2073,10 +2087,10 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
                     continue
                 document = json.loads(text)
                 parsed[relative] = document
-                if name in ('native_baseline_state.json', 'native_storage_readback.json') and isinstance(document, dict):
+                if name in (_contract_text('native_baseline_state.json'), _contract_text('native_storage_readback.json')) and isinstance(document, dict):
                     add('native_baseline_runtime', {'path': relative, 'identity': metadata,
                         'operation_budgets': document.get('operation_budgets'),
-                        'native_storage_readback': document if name == 'native_storage_readback.json' else None,
+                        'native_storage_readback': document if name == _contract_text('native_storage_readback.json') else None,
                         'diagnostic_only': True,
                         'scope': 'producer timing and storage readback; not completion or stop proof'})
                 for report in native_worker_reports(document):
@@ -2094,7 +2108,7 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
                             'scope': 'producer-recorded source/file metadata; not native execution, solver or completion proof'}
                         if not _would_truncate(payload, depth=0) and add(kind, payload):
                             input_reports_seen.add((kind, digest))
-                if name == 'capture_diagnostics.json' and not metadata.get('read_truncated'):
+                if name == _contract_text('capture_diagnostics.json') and not metadata.get('read_truncated'):
                     native_captures[relative] = (document, metadata)
                     skill = document.get('skill') if isinstance(document, dict) else None
                     if isinstance(skill, dict) and skill.get('ok') is False:
@@ -2109,26 +2123,26 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
                         _worker_report_references(document, worker_reports_seen), input_reports_seen))
                     if failure_index:
                         add('producer_failure', {'path': relative, 'identity': metadata, 'data': failure_index})
-                if name == 'result_reader_capability.json':
+                if name == _contract_text('result_reader_capability.json'):
                     add('result_reader_capability', _reader_capability_summary(document, relative))
-                if name == 'corner_identity.json' and isinstance(document, dict):
+                if name == _contract_text('corner_identity.json') and isinstance(document, dict):
                     for field in ('saved_source', 'private_setup'):
                         value = document.get(field) or {}
                         if isinstance(value, dict) and value.get('path'):
                             declared_sdb_paths.add(os.path.abspath(value['path']))
-                capture = parsed.get(os.path.join(os.path.dirname(relative), 'capture_diagnostics.json')) or {}
+                capture = parsed.get(os.path.join(os.path.dirname(relative), _contract_text('capture_diagnostics.json'))) or {}
                 projection = document
-                if name == 'private_netlist_candidate.json':
+                if name == _contract_text('private_netlist_candidate.json'):
                     projection = _candidate_manifest_summary(document)
-                if name in ('execution_pipeline.json', 'cli_results.json', 'completion_evidence.json'):
+                if name in (_contract_text('execution_pipeline.json'), _contract_text('cli_results.json'), _contract_text('completion_evidence.json')):
                     projection = _pipeline_artifact_summary(document)
-                if name == 'private_netlist.json' and isinstance(document, dict):
+                if name == _contract_text('private_netlist.json') and isinstance(document, dict):
                     projection = _template_qualification_summary(document)
-                if name == 'command.json' and capture.get('capture_only') is True and (capture.get('skill') or {}).get('ok') is True:
+                if name == _contract_text('command.json') and capture.get('capture_only') is True and (capture.get('skill') or {}).get('ok') is True:
                     projection = dict((key, document.get(key)) for key in
                         ('argv', 'cwd', 'returncode', 'timed_out', 'cancelled', 'termination_failed', 'duration_seconds', 'guardian_cleanup'))
                     projection['capture_stdout_scope'] = 'expected wrapper failure; first successful capture Ocean context is inline'
-                if name == 'corner_identity.json' or metadata['bytes'] > 160 * 1024:
+                if name == _contract_text('corner_identity.json') or metadata['bytes'] > 160 * 1024:
                     # Expand large artifacts after owned logs and scripts.
                     deferred_artifacts.append((projection, relative, metadata))
                 else:
@@ -2142,7 +2156,7 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
                         'reason': 'zero-byte native simulation result placeholder; not declared source/private SetupDB'})
                 else:
                     add('settings', dict(_settings_xml(path, data, metadata), path=relative))
-            elif name == 'input.scs':
+            elif name == _contract_text('input.scs'):
                 netlist_rows.append(dict(_netlist_identity(text), path=relative, sha256=metadata['sha256'],
                                          read_truncated=metadata['read_truncated']))
                 if any(isinstance(value, dict) and value.get('capture_only') is True
@@ -2186,7 +2200,7 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
     locations = []
     unexpected_error = any(isinstance(value, dict) and value.get('skill', {}).get('ok') is False for value in parsed.values())
     successful_capture_phases = set(os.path.dirname(path) for path, value in parsed.items()
-        if path.endswith('capture_diagnostics.json') and isinstance(value, dict)
+        if path.endswith(_contract_text('capture_diagnostics.json')) and isinstance(value, dict)
         and value.get('capture_only') is True and (value.get('skill') or {}).get('ok') is True)
     expected_capture_context_recorded = False
     read_scripts = set(row[0] for row in scripts)
@@ -2195,7 +2209,7 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
             omitted.append({'reason': stopped(), 'phase': 'text processing'})
             break
         if os.path.basename(relative) in ('ocean.stdout', 'ocean.stderr'):
-            capture_path = os.path.join(os.path.dirname(relative), 'capture_diagnostics.json')
+            capture_path = os.path.join(os.path.dirname(relative), _contract_text('capture_diagnostics.json'))
             capture, capture_identity = native_captures.get(capture_path, ({}, {}))
             callbacks = _native_capture_cdf_failures(capture, capture_path, relative, root, read_scripts)
             native_scan = bool(callbacks)
@@ -2215,7 +2229,7 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
             add('native_schedule', {'path': relative, 'identity': metadata,
                                     'rows': text.splitlines()[:MAX_ROWS],
                                     'rows_truncated': max(0, len(text.splitlines()) - MAX_ROWS)})
-        elif os.path.basename(relative) == 'native_dispatch.jsonl':
+        elif os.path.basename(relative) == _contract_text('native_dispatch.jsonl'):
             rows = []
             for line in text.splitlines()[:MAX_ROWS]:
                 try:
@@ -2224,7 +2238,7 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
                     rows.append({'parse_status': 'INVALID', 'text': line})
             add('native_dispatch', {'path': relative, 'identity': metadata, 'rows': rows,
                                     'rows_truncated': max(0, len(text.splitlines()) - MAX_ROWS)})
-        elif os.path.basename(relative) == 'crescendo.log':
+        elif os.path.basename(relative) == _contract_text('crescendo.log'):
             add('log_context', {'path': relative, 'identity': metadata, 'context': _event_log_context(text)})
         elif os.path.basename(relative) in ('effective_job_policy.tsv', 'startup.tsv', 'persistent_worker_status.tsv',
                                            'started.receipt', 'terminal.receipt', 'compute_metadata.tsv'):
@@ -2252,16 +2266,16 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
                     expected_capture_context_recorded = True
                 continue
             from .solver_artifacts import log_context
-            failed_capture = parsed.get(os.path.join(os.path.dirname(relative), 'capture_diagnostics.json')) or {}
+            failed_capture = parsed.get(os.path.join(os.path.dirname(relative), _contract_text('capture_diagnostics.json'))) or {}
             add('log_context', {'path': relative, 'identity': metadata,
                 'capture_wrapper_failures_expected': capture_only and 'ocean' in relative.lower(),
                 'context': log_context(text) if os.path.basename(relative).endswith('.warn') else
                     _windows(text, radius=8 if 'ocean' in os.path.basename(relative) and
                              (failed_capture.get('skill') or {}).get('ok') is False else 4,
                              console_source=relative)})
-        if os.path.basename(relative) != 'crescendo.log':
+        if os.path.basename(relative) != _contract_text('crescendo.log'):
             locations.extend(_error_locations(text, relative))
-        if os.path.basename(relative) != 'crescendo.log' and any(ERROR.search(line) and 'ASSEMBLER-5031' not in line for line in text.splitlines()):
+        if os.path.basename(relative) != _contract_text('crescendo.log') and any(ERROR.search(line) and 'ASSEMBLER-5031' not in line for line in text.splitlines()):
             unexpected_error = True
     # A Cadence load failure can name a parameter patch instead of capture.il.
     # Read only that owned reported patch; all ordinary patches remain unscanned.
@@ -2303,7 +2317,7 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
             omitted.append({'reason': stopped(), 'phase': 'script processing'})
             break
         script_paths = {os.path.abspath(os.path.join(root, relative))}
-        capture = parsed.get(os.path.join(os.path.dirname(relative), 'capture_diagnostics.json')) or {}
+        capture = parsed.get(os.path.join(os.path.dirname(relative), _contract_text('capture_diagnostics.json'))) or {}
         if isinstance(capture, dict) and capture.get('script_path'):
             script_paths.add(os.path.abspath(capture['script_path']))
         attributed, other = [], []
@@ -2336,7 +2350,7 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
             # producer path to a new file, adjacent candidate or external PDK.
             retained = capture.get('failure_inputs') or {}
             retained_root = os.path.join(root, phase, 'failure_inputs') + os.sep
-            if (isinstance(retained, dict) and retained.get('schema_version') == 'crescendo.failed_capture_inputs.v1'
+            if (isinstance(retained, dict) and retained.get('schema_version') == _contract_text('crescendo.failed_capture_inputs.v1')
                     and retained.get('status') == 'retained' and retained.get('qualification') == 'diagnostic_only'):
                 retained_paths = retained.get('retained_scs_paths') or []
                 for path in retained_paths[:512] if isinstance(retained_paths, list) else []:
@@ -2390,7 +2404,7 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
                 if (os.path.dirname(source) != os.path.dirname(relative)
                         or os.path.basename(source) not in ('ocean.stdout', 'ocean.stderr')):
                     continue
-                for message in re.findall(r'^\s*\*Error\*\s+Crescendo[^\r\n]+', value[0], re.M):
+                for message in re.findall(_contract_text(r'^\s*\*Error\*\s+Crescendo[^\r\n]+'), value[0], re.M):
                     association = generated_guard_context(text, message.strip())
                     if association and association not in guards and len(guards) < 8:
                         guards.append(association)
@@ -2415,10 +2429,10 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
         if stopped():
             omitted.append({'path': relative, 'phase': 'artifact processing', 'reason': stopped()})
             continue
-        if artifact_sections(projection, relative, metadata) and relative.endswith('corner_identity.json'):
+        if artifact_sections(projection, relative, metadata) and relative.endswith(_contract_text('corner_identity.json')):
             retained_contracts.add(relative)
     complete_contract = next((document for path, document in parsed.items()
-        if path in retained_contracts and path.endswith('corner_identity.json') and isinstance(document, dict)
+        if path in retained_contracts and path.endswith(_contract_text('corner_identity.json')) and isinstance(document, dict)
         and isinstance(document.get('saved_source'), dict)
         and 'execution_settings' in document['saved_source'] and 'global_variables' in document['saved_source']), None)
     source = (prepared.get('setup') or {}).get('source') or {}
@@ -2446,8 +2460,8 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
     add('causal_summary', _causal_summary(parsed, texts, stop_proven))
     add('cleanup_readers', _open_reader_evidence(root))
     observed_names = set(os.path.basename(path) for path in files)
-    missing = [name for name in ('corner_identity.json', 'preparation_failure.json',
-               'native_dispatch.jsonl', 'native_corner_schedule.tsv', 'capture.il') if name not in observed_names]
+    missing = [name for name in (_contract_text('corner_identity.json'), _contract_text('preparation_failure.json'),
+               _contract_text('native_dispatch.jsonl'), 'native_corner_schedule.tsv', 'capture.il') if name not in observed_names]
     add('collection', {'status': 'PARTIAL' if omitted else 'COLLECTED', 'bytes_inlined': used,
         'limit_bytes': MAX_TOTAL, 'read_bytes': read_bytes, 'read_limit_bytes': MAX_READ_BYTES,
         'files_read': read_files, 'discovered_file_count': len(files), 'deadline_seconds': COLLECTION_SECONDS,
@@ -2489,7 +2503,20 @@ def failure_summary(status, candidates, timed_out=False):
     """Keep the native producer's first cause separate from secondary cleanup."""
     status = status or {}
     primary = status.get('primary_failure')
-    failed = next((row for row in candidates or [] if row.get('status') != 'completed' and row.get('error')), None)
+    failures = [row for row in candidates or [] if row.get('status') != 'completed' and row.get('error')]
+    # Candidate lists are normally sorted by index, not failure time. Prefer
+    # the adapter's latched cause; older runs lack it, so keep an actual error
+    # ahead of cancellation fallout without inferring its underlying cause.
+    def cancellation(cause):
+        return bool(cause.get('cancelled') or re.search(r'\bcancelled\b', str(cause.get('error') or ''), re.I))
+    failed = next((row for row in failures if isinstance(row.get('primary_failure'), dict)
+                   and not cancellation(row['primary_failure'])), None)
+    if failed is None:
+        failed = next((row for row in failures if not row.get('secondary_failure')
+                       and row.get('failure_stage') != 'peer_cancellation'
+                       and not re.search(r'\bcancelled\b', str(row.get('error') or ''), re.I)), None)
+    if failed is None:
+        failed = next(iter(failures), None)
     aggregate = bool(isinstance(primary, dict) and (
         primary.get('failure_stage') == 'optimization' or
         re.search(r'all\s+\d+\s+candidates?\s+failed|inspect candidate errors|systemic infrastructure failure',
@@ -2534,8 +2561,8 @@ def retained_artifact_index(root, maximum=4096):
         return result
     count, deadline = 0, time.monotonic() + 2
     capture_names = {'ocean.stdout', 'ocean.stderr', 'capture.il', 'bootstrap.il',
-                     'capture_diagnostics.json', 'capture_generation.json', 'preparation_failure.json',
-                     'execution_diagnostics.json', 'error.json'}
+                     _contract_text('capture_diagnostics.json'), _contract_text('capture_generation.json'), _contract_text('preparation_failure.json'),
+                     _contract_text('execution_diagnostics.json'), _contract_text('error.json')}
     def inaccessible(error):
         result.update(index_complete=False, retention_status='index_partial_original_files_retained')
         result['artifacts'].append({'path':getattr(error,'filename',None) or root,
@@ -2593,7 +2620,7 @@ def concise_success_records(records, case, checks=(), full=False):
     for record in records:
         kind, payload = record.get('observation'), record.get('payload') or {}
         if (kind in keep or (kind == 'diagnostic.artifact'
-                and os.path.basename(payload.get('path') or '') == 'native_generation_required.json')):
+                and os.path.basename(payload.get('path') or '') == _contract_text('native_generation_required.json'))):
             # A retained hash reference cannot point to a suppressed record.
             # Keep this entire case detailed if its core proof is interned.
             if '"same_as"' in _serialized(payload):

@@ -10,6 +10,9 @@ import threading
 import time
 import uuid
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .cadence import (
     CommandCancelled, build_guardian_command, check_command_cancellation,
     child_environment, guardian_environment,
@@ -33,7 +36,7 @@ class ResidentValidationSession(object):
         self.session_root = os.path.abspath(session_root)
         self.workspace_root = os.path.join(self.session_root, "workspace")
         self.control_root = ensure_dir(os.path.join(self.session_root, "control"))
-        self.guardian_state_path = os.path.join(self.control_root, "guardian_state.json")
+        self.guardian_state_path = os.path.join(self.control_root, _contract_text("guardian_state.json"))
         self.stdout_path = os.path.join(self.control_root, "ocean.stdout")
         self.stderr_path = os.path.join(self.control_root, "ocean.stderr")
         self.token = "validation-%s-%s" % (self.prepared_id, uuid.uuid4().hex)
@@ -93,7 +96,7 @@ class ResidentValidationSession(object):
             environment = guardian_environment(child_environment(
                 self.config, self.workspace["root"], include_runtime_ld=True,
             ))
-            environment["CRESCENDO_LEGACY_GUARDIAN_TOKEN"] = self.token
+            environment[_contract_text("CRESCENDO_LEGACY_GUARDIAN_TOKEN")] = self.token
             self.process = self._popen(
                 command, cwd=self.workspace["root"], env=environment,
                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -113,7 +116,7 @@ class ResidentValidationSession(object):
                 self.close(timeout_seconds=5)
                 raise RuntimeError("resident validation Cadence session startup timed out")
             ping = os.path.join(self.control_root, "startup_ping.il")
-            atomic_write_text(ping, 'printf("CRESCENDO_RESIDENT_VALIDATION_READY\\n")\n')
+            atomic_write_text(ping, _contract_text('printf("CRESCENDO_RESIDENT_VALIDATION_READY\\n")\n'))
             result = self.execute(
                 ping, "startup", timeout_seconds=max(0.0, startup_deadline - self._clock()),
                 cancel_check=cancel_check,
@@ -132,10 +135,10 @@ class ResidentValidationSession(object):
             marker = os.path.join(self.control_root, "%s_%s.status" % (operation, nonce))
             request = os.path.join(self.control_root, "%s_%s.il" % (operation, nonce))
             lines = [
-                'crescResidentResult = errset(load("%s") t)' % _skill_quote(os.path.abspath(payload_path)),
-                'crescResidentPort = outfile("%s" "w")' % _skill_quote(marker),
-                'if(crescResidentResult then fprintf(crescResidentPort "OK\\n") else fprintf(crescResidentPort "ERROR\\n"))',
-                'close(crescResidentPort)',
+                _contract_text('crescResidentResult = errset(load("%s") t)') % _skill_quote(os.path.abspath(payload_path)),
+                _contract_text('crescResidentPort = outfile("%s" "w")') % _skill_quote(marker),
+                _contract_text('if(crescResidentResult then fprintf(crescResidentPort "OK\\n") else fprintf(crescResidentPort "ERROR\\n"))'),
+                _contract_text('close(crescResidentPort)'),
             ]
             atomic_write_text(request, "\n".join(lines) + "\n")
             started = self._clock()
@@ -185,7 +188,7 @@ class ResidentValidationSession(object):
         )
         ensure_dir(destination)
         manifest = {
-            "schema_version": "crescendo.resident_validation_diagnostics.v1",
+            "schema_version": _contract_text("crescendo.resident_validation_diagnostics.v1"),
             "prepared_id": self.prepared_id,
             "token": self.token,
             "files": [],
@@ -209,7 +212,7 @@ class ResidentValidationSession(object):
                 "saved_size_bytes": len(payload),
                 "tail_truncated": len(payload) < size,
             })
-        atomic_write_json(os.path.join(destination, "manifest.json"), manifest)
+        atomic_write_json(os.path.join(destination, _contract_text("manifest.json")), manifest)
         return manifest
 
     def close(self, timeout_seconds=30, preserve_on_error=False):

@@ -1,4 +1,7 @@
 """Single-Test projection with the complete saved catalogue retained for guards."""
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 import copy
 
 
@@ -81,9 +84,9 @@ def native_selection_lines(plan):
     lines = lines[:-len(reduced['available']) - 1]
     quote = lambda value: json.dumps(value, ensure_ascii=True)
     for name in plan['available']:
-        lines.append('unless(maeSetSetup(?tests list(%s) ?enabled %s ?session session) error("Crescendo Test selection setter failed\\n"))' % (quote(name), 't' if name in plan['selected'] else 'nil'))
+        lines.append(_contract_text('unless(maeSetSetup(?tests list(%s) ?enabled %s ?session session) error("Crescendo Test selection setter failed\\n"))') % (quote(name), 't' if name in plan['selected'] else 'nil'))
     expected = 'list(%s)' % ' '.join(quote(name) for name in plan['selected'])
-    lines.append('unless(equal(sort(copy(maeGetSetup(?typeName "tests" ?enabled t ?session session)) \'alphalessp) sort(%s \'alphalessp)) error("Crescendo final enabled Test set differs\\n"))' % expected)
+    lines.append(_contract_text('unless(equal(sort(copy(maeGetSetup(?typeName "tests" ?enabled t ?session session)) \'alphalessp) sort(%s \'alphalessp)) error("Crescendo final enabled Test set differs\\n"))') % expected)
     return lines
 
 
@@ -172,7 +175,7 @@ def project_native_files(setup_path, selected, manifest_path=None, selected_corn
                     if deps is not None and id(deps) in emptied_dependencies:
                         record('setup', 'unselected_scoped_var', _name(var), var)
                         variables.remove(var)
-        fd, temporary = tempfile.mkstemp(prefix='.crescendo-projection-', dir=os.path.dirname(path))
+        fd, temporary = tempfile.mkstemp(prefix=_contract_text('.crescendo-projection-'), dir=os.path.dirname(path))
         os.close(fd)
         try:
             tree.write(temporary, encoding='utf-8', xml_declaration=True)
@@ -187,7 +190,7 @@ def project_native_files(setup_path, selected, manifest_path=None, selected_corn
                             'after_sha256': after_hash})
     if manifest_path:
         with open(manifest_path, 'w') as stream:
-            json.dump({'schema_version': 'crescendo.native_test_projection.v1', 'selected_test': selected,
+            json.dump({'schema_version': _contract_text('crescendo.native_test_projection.v1'), 'selected_test': selected,
                        'selected_corners': selected_corners,
                        'removed': removed, 'files': file_hashes}, stream, indent=2, sort_keys=True)
     return removed

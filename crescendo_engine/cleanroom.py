@@ -18,13 +18,16 @@ import tempfile
 import time
 import uuid
 
+from crescendo_engine.runtime import config_home as _config_home, bind_text
+_contract_text = bind_text()
+
 from .pdk import parse_cds_lib
 
 
-SCHEMA_MANIFEST = "crescendo.cleanroom_manifest.v1"
-SCHEMA_PLAN = "crescendo.cleanroom_plan.v1"
-SCHEMA_REPORT = "crescendo.cleanroom_report.v1"
-TOKEN_ENVIRONMENT = "CRESCENDO_CLEANROOM_TOKEN"
+SCHEMA_MANIFEST = _contract_text("crescendo.cleanroom_manifest.v1")
+SCHEMA_PLAN = _contract_text("crescendo.cleanroom_plan.v1")
+SCHEMA_REPORT = _contract_text("crescendo.cleanroom_report.v1")
+TOKEN_ENVIRONMENT = _contract_text("CRESCENDO_CLEANROOM_TOKEN")
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 DEFAULT_WORK_PARENTS = ("/var/tmp", "/tmp")
 SETUP_DATABASE_NAMES = {
@@ -359,7 +362,7 @@ def normalize_manifest(document, manifest_path):
 
 def _default_work_root():
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
-    return os.path.join("/var/tmp", "crescendo-cleanroom-%s-%s" % (stamp, uuid.uuid4().hex[:8]))
+    return os.path.join("/var/tmp", _contract_text("crescendo-cleanroom-%s-%s") % (stamp, uuid.uuid4().hex[:8]))
 
 
 def validate_work_root(path, source_roots, allowed_parents=None):
@@ -371,8 +374,8 @@ def validate_work_root(path, source_roots, allowed_parents=None):
     allowed = tuple(os.path.realpath(value) for value in (allowed_parents or DEFAULT_WORK_PARENTS))
     if not any(_is_under(path, root) for root in allowed):
         raise CleanroomError("clean-room work root must be beneath: %s" % ", ".join(allowed))
-    if not os.path.basename(path).startswith("crescendo-cleanroom-"):
-        raise CleanroomError("clean-room work root basename must start with crescendo-cleanroom-")
+    if not os.path.basename(path).startswith(_contract_text("crescendo-cleanroom-")):
+        raise CleanroomError(_contract_text("clean-room work root basename must start with crescendo-cleanroom-"))
     for source in source_roots:
         if _is_under(path, source) or _is_under(source, path):
             raise CleanroomError("clean-room work root overlaps protected source: %s" % source)
@@ -423,13 +426,13 @@ def build_plan(manifest, wheel_path, work_root=None):
         "commands": [
             [sys.executable, "-m", "venv", paths["venv"]],
             [os.path.join(paths["venv"], "bin", "python"), "-m", "pip", "install", "--no-index", "--no-deps", os.path.join(paths["input"], os.path.basename(wheel_path))],
-            [os.path.join(paths["venv"], "bin", "crescendo"), "doctor"],
+            [os.path.join(paths["venv"], "bin", _contract_text("crescendo")), "doctor"],
         ],
     }
 
 
 def _case_command(plan, case, stage):
-    executable = os.path.join(plan["paths"]["venv"], "bin", "crescendo")
+    executable = os.path.join(plan["paths"]["venv"], "bin", _contract_text("crescendo"))
     if stage == "inspect":
         return [
             executable, "inspect-setup", case["relocated_setup"],
@@ -546,7 +549,7 @@ def _write_runtime_files(plan):
             stream.write("DEFINE %s %s\n" % (library, _cds_path(library_paths[library])))
     os.chmod(cds_lib, 0o444)
 
-    config_path = os.path.join(paths["input"], "optimizer.json")
+    config_path = os.path.join(paths["input"], _contract_text("optimizer.json"))
     config = {
         "cadence": {
             "setup_mode": "auto",
@@ -687,15 +690,16 @@ def _clean_environment(plan, token):
         "XDG_CACHE_HOME": paths["xdg_cache"],
         "XDG_CONFIG_HOME": paths["xdg_config"],
         "XDG_STATE_HOME": paths["xdg_state"],
-        "CRESCENDO_RUN_ROOT": paths["run_root"],
-        "CRESCENDO_CDS_LIB": plan["generated"]["cds_lib"],
-        "CRESCENDO_USER_CONFIG": os.path.join(paths["xdg_config"], "crescendo", "config.json"),
+        _contract_text("CRESCENDO_RUN_ROOT"): paths["run_root"],
+        _contract_text("CRESCENDO_CDS_LIB"): plan["generated"]["cds_lib"],
+        _contract_text("CRESCENDO_USER_CONFIG"): os.path.join(paths["xdg_config"], _config_home(), _contract_text("config.json")),
         TOKEN_ENVIRONMENT: token,
     }
     license_value = plan["manifest"]["cadence"].get("license_file")
     if license_value:
-        environment["CRESCENDO_LICENSE_FILE"] = str(license_value)
-    return environment
+        environment[_contract_text("CRESCENDO_LICENSE_FILE")] = str(license_value)
+    from .runtime import child_environment as runtime_environment
+    return runtime_environment(environment)
 
 
 def _cadence_runtime_preflight(doctor, environment):
@@ -849,7 +853,7 @@ def execute_plan(plan, stage="prepare", timeout_seconds=1800):
     before = dict((path, _tree_fingerprint(path, include_mode=True)) for path in sorted(set(source_paths)))
     report["source_fingerprints_before"] = before
     failure = None
-    token = "crescendo-cleanroom-%s" % uuid.uuid4().hex
+    token = _contract_text("crescendo-cleanroom-%s") % uuid.uuid4().hex
     try:
         _write_runtime_files(plan)
         relocated_paths = [
@@ -900,7 +904,7 @@ def execute_plan(plan, stage="prepare", timeout_seconds=1800):
         command_index += 1
         doctor_metadata = _run_owned(
             [
-                os.path.join(plan["paths"]["venv"], "bin", "crescendo"),
+                os.path.join(plan["paths"]["venv"], "bin", _contract_text("crescendo")),
                 "--config", plan["generated"]["config"], "doctor",
             ],
             plan["paths"]["cwd"], environment, evidence, command_index, 180,
@@ -985,7 +989,7 @@ def execute_plan(plan, stage="prepare", timeout_seconds=1800):
             failure = CleanroomError(report["error"])
         report["finished_at"] = time.time()
         report["elapsed_seconds"] = report["finished_at"] - report["started_at"]
-        _atomic_write_json(os.path.join(root, "cleanroom-report.json"), report)
+        _atomic_write_json(os.path.join(root, _contract_text("cleanroom-report.json")), report)
     if failure:
         raise failure
     return report
@@ -1013,7 +1017,7 @@ def main(argv=None):
         print(json.dumps({
             "schema_version": SCHEMA_REPORT,
             "status": report["status"], "root": report["root"],
-            "report": os.path.join(report["root"], "cleanroom-report.json"),
+            "report": os.path.join(report["root"], _contract_text("cleanroom-report.json")),
             "case_count": len(report["cases"]),
         }, indent=2, sort_keys=True))
         return 0

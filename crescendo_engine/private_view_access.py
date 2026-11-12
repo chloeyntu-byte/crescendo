@@ -6,6 +6,9 @@ have stopped before restoring read-only permissions. No source library/cell
 directory and no Cadence lock is changed by this module.
 """
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 
 import contextlib
 import os
@@ -22,8 +25,8 @@ class PrivateViewBusy(RuntimeError):
         self.lock_paths = [row["path"] for row in self.locks]
         self.view_paths = sorted(set(row["view_path"] for row in self.locks))
         RuntimeError.__init__(self,
-            "CRESCENDO-SUITE-LOCK: Private view is in use: %s. Close its private Maestro/config/schematic "
-            "editor and retry; Load and Inspect is not required. Native locks were retained."
+            _contract_text("CRESCENDO-SUITE-LOCK: Private view is in use: %s. Close its private Maestro/config/schematic "
+            "editor and retry; Load and Inspect is not required. Native locks were retained.")
             % ", ".join(self.view_paths))
 
 

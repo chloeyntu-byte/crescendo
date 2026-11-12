@@ -22,6 +22,9 @@ from tests import test_runner as checkpoint_fixture
 
 
 class NativeQualificationRevisionTests(unittest.TestCase):
+    def test_lexical_alias_rules_require_v5_authority(self):
+        self.assertEqual(NATIVE_QUALIFICATION_REVISION, 'crescendo.native_point_qualification.v5')
+
     def manifest(self):
         return {'netlist_generation': {'generation_protocol': GENERATION_PROTOCOL,
                     'qualification_revision': NATIVE_QUALIFICATION_REVISION},
@@ -43,7 +46,8 @@ class NativeQualificationRevisionTests(unittest.TestCase):
     def test_each_native_evidence_requires_its_own_current_revision(self):
         for section, key in (('netlist_generation', 'qualification_revision'),
                              ('qualification', 'revision')):
-            for revision in (None, 'crescendo.native_point_qualification.v1', ''):
+            for revision in (None, 'crescendo.native_point_qualification.v1',
+                             'crescendo.native_point_qualification.v4', ''):
                 manifest = self.manifest()
                 manifest[section][key] = revision
                 with self.subTest(section=section, revision=revision):
@@ -69,13 +73,15 @@ class NativeQualificationRevisionTests(unittest.TestCase):
     def test_checkpoint_rejects_old_completed_failed_and_penalty_history(self):
         for backend in ('maestro_netlist', 'private_netlist'):
             for status in ('completed', 'failed', 'infrastructure_failed'):
-                checkpoint = {'spec': {'evaluator': 'real', 'execution_backend': backend,
-                    'netlist_generation_protocol': GENERATION_PROTOCOL}}
-                with self.subTest(backend=backend, status=status), mock.patch(
-                        'crescendo_engine.runner.validate_checkpoint_integrity',
-                        return_value=[{'status': status, 'metrics': {'merit': 100}}]):
-                    with self.assertRaisesRegex(ValueError, 'older point-qualification'):
-                        validate_checkpoint(checkpoint, {})
+                for revision in (None, 'crescendo.native_point_qualification.v4'):
+                    checkpoint = {'spec': {'evaluator': 'real', 'execution_backend': backend,
+                        'netlist_generation_protocol': GENERATION_PROTOCOL,
+                        'native_qualification_revision': revision}}
+                    with self.subTest(backend=backend, status=status, revision=revision), mock.patch(
+                            'crescendo_engine.runner.validate_checkpoint_integrity',
+                            return_value=[{'status': status, 'metrics': {'merit': 100}}]):
+                        with self.assertRaisesRegex(ValueError, 'older point-qualification'):
+                            validate_checkpoint(checkpoint, {})
 
     def test_current_checkpoint_continues_to_source_checks_and_mock_stays_compatible(self):
         checkpoint = {'spec': {'evaluator': 'real', 'execution_backend': 'maestro_netlist',
@@ -100,6 +106,37 @@ class NativeQualificationRevisionTests(unittest.TestCase):
         checkpoint['manifest']['native_qualification_revision'] = 'crescendo.native_point_qualification.v1'
         with self.assertRaisesRegex(ValueError, 'native_qualification_revision identities disagree'):
             runner.validate_checkpoint_integrity(checkpoint)
+
+    def test_v4_checkpoint_results_read_and_portable_export_without_resume_authority(self):
+        from crescendo_engine.exports import candidates_csv_text
+        from crescendo_engine.utils import atomic_write_json, load_json
+        for backend in ('maestro_netlist', 'private_netlist'):
+            checkpoint = checkpoint_fixture._minimal_checkpoint()
+            checkpoint['spec'].update(evaluator='real', execution_backend=backend,
+                netlist_generation_protocol=GENERATION_PROTOCOL,
+                native_qualification_revision='crescendo.native_point_qualification.v4')
+            checkpoint['manifest'] = {key: checkpoint['spec'][key] for key in
+                ('netlist_generation_protocol', 'native_qualification_revision')}
+            checkpoint['spec']['objectives'] = [{'output_key': 'T::gain'}]
+            checkpoint['candidates'][0][5] = runner._pack_metrics({'objectives': [{'output_key': 'T::gain', 'value': 2.5}],
+                                            'constraints': [], 'feasible': True})
+            checkpoint['payload_sha256'] = runner._checkpoint_checksum(checkpoint)
+            with self.subTest(backend=backend), tempfile.TemporaryDirectory() as root:
+                path = os.path.join(root, 'old.json')
+                atomic_write_json(path, checkpoint)
+                loaded = load_json(path)
+                rows = runner.checkpoint_candidates(loaded)
+                self.assertEqual(rows[0]['metrics']['objectives'][0]['value'], 2.5)
+                csv = candidates_csv_text(rows)
+                self.assertIn('g000_c0000', csv)
+                self.assertIn('2.5', csv)
+                portable = runner.self_contained_checkpoint(loaded)
+                atomic_write_json(os.path.join(root, 'portable.json'), portable)
+                reloaded = load_json(os.path.join(root, 'portable.json'))
+                self.assertEqual(runner.checkpoint_candidates(reloaded), rows)
+                self.assertEqual(reloaded['payload_sha256'], loaded['payload_sha256'])
+                with self.assertRaisesRegex(ValueError, 'older point-qualification'):
+                    runner.validate_checkpoint(reloaded, {})
 
     def test_candidate_execution_rejects_old_native_proof_before_launch(self):
         fixture = execution_fixture.NetlistExecutionTests('test_local_owned_wrapper_completion_and_scalar_identity')

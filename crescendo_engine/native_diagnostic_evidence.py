@@ -1,5 +1,8 @@
 """Bounded, diagnostic-only reads from an owned native baseline storage root."""
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 
 import json
 import math
@@ -8,8 +11,8 @@ import re
 import stat
 import time
 
-_SCHEMA = 'crescendo.native_storage_evidence.v1'
-_STATE = 'crescendo.maestro_baseline.v1'
+_SCHEMA = _contract_text('crescendo.native_storage_evidence.v1')
+_STATE = _contract_text('crescendo.maestro_baseline.v1')
 _TOKEN = re.compile(r'^[0-9a-f]{32}$')
 # Traversal limits apply even if no interesting files exist.
 _MAX_ENTRIES = 4096
@@ -18,7 +21,7 @@ _MAX_DEPTH = 20
 _METADATA_LIMIT = 65536
 _REGISTRY_LIMIT = 2 * 1024 * 1024
 _LOG_LIMIT = 128 * 1024
-_SOLVER_TEXT = frozenset(('spectre.out', 'spectre.log', 'alps.out', 'psf.log', 'psf.warn'))
+_SOLVER_TEXT = frozenset(('spectre.out', _contract_text('spectre.log'), 'alps.out', _contract_text('psf.log'), 'psf.warn'))
 
 
 def _json_file(path, remaining, limit=_METADATA_LIMIT):
@@ -39,8 +42,8 @@ def _json_file(path, remaining, limit=_METADATA_LIMIT):
 
 def _interesting(name):
     name = name.lower()
-    return (name in _SOLVER_TEXT or name.endswith('.log') or name in ('stdout', 'stderr', 'submit', 'submit.txt',
-            'stdout.txt', 'stderr.txt', 'run.stdout', 'run.stderr', 'submit.log'))
+    return (name in _SOLVER_TEXT or name.endswith('.log') or name in ('stdout', 'stderr', 'submit', _contract_text('submit.txt'),
+            _contract_text('stdout.txt'), _contract_text('stderr.txt'), 'run.stdout', 'run.stderr', _contract_text('submit.log')))
 
 
 def collect_native_storage_evidence(candidate_root, max_bytes, max_files, deadline, cancelled=None):
@@ -79,8 +82,8 @@ def collect_native_storage_evidence(candidate_root, max_bytes, max_files, deadli
             if not isinstance(obj, dict):
                 raise ValueError('identity file is not an object')
             return obj
-        manifest = read_identity(os.path.join(control, 'native_storage_evidence.json'))
-        state = read_identity(os.path.join(control, 'native_baseline_state.json'))
+        manifest = read_identity(os.path.join(control, _contract_text('native_storage_evidence.json')))
+        state = read_identity(os.path.join(control, _contract_text('native_baseline_state.json')))
         result['manifest'] = manifest
         if manifest.get('schema_version') != _SCHEMA or state.get('schema_version') != _STATE:
             raise ValueError('schema mismatch')
@@ -103,10 +106,10 @@ def collect_native_storage_evidence(candidate_root, max_bytes, max_files, deadli
             raise ValueError('unsafe storage root')
         # Same durable ownership and capture registration checks as
         # preparation_session_reference, with all identity reads budgeted.
-        ref = read_identity(os.path.join(candidate_root, 'setup_private_session_reference.json'))
+        ref = read_identity(os.path.join(candidate_root, _contract_text('setup_private_session_reference.json')))
         session_root = ref.get('root')
         session_id = ref.get('session_id')
-        if (ref.get('schema_version') != 'crescendo.setup_private_session.v1'
+        if (ref.get('schema_version') != _contract_text('crescendo.setup_private_session.v1')
                 or not isinstance(session_root, str) or not os.path.isabs(session_root)
                 or not isinstance(session_id, str) or not _TOKEN.match(session_id)
                 or os.path.basename(session_root) != session_id
@@ -115,13 +118,13 @@ def collect_native_storage_evidence(candidate_root, max_bytes, max_files, deadli
                 or ref.get('capture_root') != candidate_root
                 or ref.get('capture_kind') != 'native_baseline'):
             raise ValueError('private session reference mismatch')
-        owner = read_identity(os.path.join(session_root, 'session_owner.json'))
+        owner = read_identity(os.path.join(session_root, _contract_text('session_owner.json')))
         keys = ('schema_version', 'session_id', 'root', 'workspace_root', 'owner_uid')
         if (any(ref.get(key) != owner.get(key) for key in keys)
                 or owner.get('workspace_root') != os.path.join(session_root, 'workspace')
                 or owner.get('workspace_root') != workspace or owner.get('owner_uid') != os.getuid()):
             raise ValueError('private session owner mismatch')
-        registry = read_identity(os.path.join(session_root, 'session_state.json'), _REGISTRY_LIMIT)
+        registry = read_identity(os.path.join(session_root, _contract_text('session_state.json')), _REGISTRY_LIMIT)
         if registry.get('session_id') != session_id or candidate_root not in registry.get('capture_roots', []):
             raise ValueError('capture is absent from private session registry')
         if expired():
@@ -207,8 +210,8 @@ def collect_native_storage_evidence(candidate_root, max_bytes, max_files, deadli
                 omit('no_log_files_observed', 'native_storage')
             def priority(item):
                 name = item[0][-1].lower()
-                return (0 if name == 'run.log' or (name.startswith('job') and name.endswith('.log'))
-                        or name == 'icrp.log' or name.startswith('submit') else 1, '/'.join(item[0]))
+                return (0 if name == _contract_text('run.log') or (name.startswith('job') and name.endswith('.log'))
+                        or name == _contract_text('icrp.log') or name.startswith('submit') else 1, '/'.join(item[0]))
             for parts, observed in sorted(candidates, key=priority):
                 path = 'native_storage/' + '/'.join(parts)
                 if expired():

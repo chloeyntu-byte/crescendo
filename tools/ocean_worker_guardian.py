@@ -15,7 +15,22 @@ import tempfile
 import time
 
 
-SCHEMA_VERSION = "crescendo.ocean_worker_guardian.v1"
+# Source and installed resource layouts are explicit; inherited PYTHONPATH
+# cannot choose another runtime. Standalone default remains dependency-free.
+_guardian_file = os.path.abspath(__file__)
+for _root in (os.path.dirname(os.path.dirname(_guardian_file)),
+              os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(_guardian_file))))):
+    if os.path.isfile(os.path.join(_root, 'crescendo_engine', 'runtime.py')):
+        sys.path.insert(0, _root)
+        break
+if 'CRESCENDO_ENGINE_RUNTIME' in os.environ:
+    from crescendo_engine.runtime import bind_text
+    _contract_text = bind_text()
+else:
+    _contract_text = lambda value: value
+
+
+SCHEMA_VERSION = _contract_text("crescendo.ocean_worker_guardian.v1")
 PR_SET_PDEATHSIG = 1
 PR_SET_CHILD_SUBREAPER = 36
 # This file also runs outside the installed package; keep the bridge contract
@@ -24,8 +39,8 @@ CHILD_ENVIRONMENT_KEYS = (
     "LD_LIBRARY_PATH", "LD_PRELOAD", "PYTHONHOME", "PYTHONPATH",
     "TCL_LIBRARY", "TK_LIBRARY", "QT_PLUGIN_PATH",
 )
-CHILD_ENVIRONMENT_PREFIX = "CRESCENDO_GUARDIAN_CHILD_"
-LAUNCH_TOKEN_ENVIRONMENT = "CRESCENDO_LEGACY_GUARDIAN_TOKEN"
+CHILD_ENVIRONMENT_PREFIX = _contract_text("CRESCENDO_GUARDIAN_CHILD_")
+LAUNCH_TOKEN_ENVIRONMENT = _contract_text("CRESCENDO_LEGACY_GUARDIAN_TOKEN")
 _signal_reason = None
 
 

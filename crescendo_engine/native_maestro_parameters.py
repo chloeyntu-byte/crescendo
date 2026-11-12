@@ -17,11 +17,14 @@ import re
 import sqlite3
 from urllib.parse import quote
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .hierarchy import parse_physical_number
 
 
-SCHEMA = "crescendo.native_device_parameter_plan.v1"
-GENERATION_PROTOCOL = "crescendo.native_run_device_parameters.v1"
+SCHEMA = _contract_text("crescendo.native_device_parameter_plan.v1")
+GENERATION_PROTOCOL = _contract_text("crescendo.native_run_device_parameters.v1")
 MAX_SELECTED = 512
 MAX_CORNERS = 1024
 MAX_SETTINGS = 16384
@@ -74,7 +77,7 @@ def build_native_parameter_plan(parameter_rows, corners, inherited_parameters=No
         raise ValueError("Native parameter selection/corner count is invalid")
     selected, paths, identifiers = [], set(), set()
     symbols = set(allowed_symbols or [])
-    if any(not re.match(r"^CRESCENDO_NL_[A-Za-z0-9_]+$", name) for name in symbols):
+    if any(not re.match(_contract_text(r"^CRESCENDO_NL_[A-Za-z0-9_]+$"), name) for name in symbols):
         raise ValueError("Only exact owned template symbols are permitted")
     for row in rows:
         identifier = _text(row.get("parameter_id"), "identity")
@@ -155,56 +158,56 @@ def native_parameter_skill_lines(plan, verification_path,
     owned = " ".join(_quote(path) for path in verified["owned_paths"])
     s, db = session_expr, main_sdb_expr
     return [
-        "let((crescNpOut crescNpRows crescNpCorners crescNpOwned crescNpExisting crescNpBound",
-        "     crescNpCallbacks crescNpDisabled crescNpEntry crescNpPath crescNpValue",
-        "     crescNpHandle crescNpCorner crescNpActual)",
+        _contract_text("let((crescNpOut crescNpRows crescNpCorners crescNpOwned crescNpExisting crescNpBound"),
+        _contract_text("     crescNpCallbacks crescNpDisabled crescNpEntry crescNpPath crescNpValue"),
+        _contract_text("     crescNpHandle crescNpCorner crescNpActual)"),
         "  unless(isCallable('maeSetParameter) && isCallable('maeGetParameter) &&",
         "         isCallable('maeSetSetup) && isCallable('maeGetSetup) &&",
         "         isCallable('axlGetParameter) && isCallable('axlGetEnabled) &&",
         "         isCallable('axlGetAllParametersDisabled) && isCallable('axlSetAllParametersDisabled)",
-        '    error("Crescendo native device parameter APIs unavailable; no override applied\\n"))',
-        '  crescNpOut=outfile(%s)' % _quote(verification_path),
-        '  unless(crescNpOut error("Crescendo native parameter records unavailable\\n"))',
+        _contract_text('    error("Crescendo native device parameter APIs unavailable; no override applied\\n"))'),
+        _contract_text('  crescNpOut=outfile(%s)') % _quote(verification_path),
+        _contract_text('  unless(crescNpOut error("Crescendo native parameter records unavailable\\n"))'),
         '  unwindProtect(progn(',
-        '    fprintf(crescNpOut "CRESCENDO_NATIVE_PARAMETERS_2\\n")',
-        "    crescNpBound=boundp('axlExecuteCallbacks)",
-        "    crescNpCallbacks=if(crescNpBound then axlExecuteCallbacks else t)",
-        "    crescNpDisabled=axlGetAllParametersDisabled(%s)" % db,
-        '    fprintf(crescNpOut "POLICY\\t%L\\t%L\\t%L\\n" crescNpBound crescNpCallbacks crescNpDisabled)',
-        '    unless(crescNpCallbacks==t error("Crescendo native device callbacks disabled/unqualified\\n"))',
-        '    unless(crescNpDisabled==t || null(crescNpDisabled) error("Crescendo Parameters status unqualified\\n"))',
-        "    crescNpRows=list(%s)" % entries,
-        "    crescNpCorners=list(%s)" % corners,
-        "    crescNpOwned=list(%s)" % owned,
-        '    crescNpExisting=maeGetSetup(?typeName "parameters" ?session %s)' % s,
-        '    foreach(crescNpPath crescNpExisting',
-        '      unless(stringp(crescNpPath) && member(crescNpPath crescNpOwned)',
-        '        error("Crescendo existing native Device Parameters need explicit remapping: %L\\n" crescNpPath)))',
-        '    when(crescNpDisabled',
-        '      unless(axlSetAllParametersDisabled(%s 0) error("Crescendo cannot enable owned Parameters\\n")))' % db,
-        '    foreach(crescNpEntry crescNpRows',
-        '      crescNpPath=cadr(crescNpEntry)',
-        '      crescNpValue=caddr(crescNpEntry)',
-        '      unless(maeSetParameter(crescNpPath crescNpValue ?typeName "test" ?session %s)' % s,
-        '        error("Crescendo native global override rejected: %s\\n" crescNpPath))',
-        '      crescNpActual=maeGetParameter(crescNpPath ?typeName "test" ?session %s)' % s,
-        '      fprintf(crescNpOut "SETTING\\t%L\\t%L\\t%L\\t%L\\t%L\\t%L\\n" car(crescNpEntry) crescNpPath "test" nil crescNpActual type(crescNpActual))',
-        '      unless(maeSetSetup(?parameters list(crescNpPath) ?enabled t ?session %s)' % s,
-        '        error("Crescendo selected device parameter enable rejected: %s\\n" crescNpPath))',
-        '      crescNpHandle=axlGetParameter(%s crescNpPath)' % db,
-        '      unless(crescNpHandle && crescNpHandle!=0 && axlGetEnabled(crescNpHandle)',
-        '        error("Crescendo selected device parameter is disabled: %s\\n" crescNpPath))',
-        '      foreach(crescNpCorner crescNpCorners',
-        '        unless(maeSetParameter(crescNpPath crescNpValue ?typeName "corner" ?typeValue list(crescNpCorner) ?session %s)' % s,
-        '          error("Crescendo native corner override rejected: %s/%s\\n" crescNpCorner crescNpPath))',
-        '        crescNpActual=maeGetParameter(crescNpPath ?typeName "corner" ?typeValue crescNpCorner ?session %s)' % s,
-        '        fprintf(crescNpOut "SETTING\\t%L\\t%L\\t%L\\t%L\\t%L\\t%L\\n" car(crescNpEntry) crescNpPath "corner" crescNpCorner crescNpActual type(crescNpActual))',
+        _contract_text('    fprintf(crescNpOut "CRESCENDO_NATIVE_PARAMETERS_2\\n")'),
+        _contract_text("    crescNpBound=boundp('axlExecuteCallbacks)"),
+        _contract_text("    crescNpCallbacks=if(crescNpBound then axlExecuteCallbacks else t)"),
+        _contract_text("    crescNpDisabled=axlGetAllParametersDisabled(%s)") % db,
+        _contract_text('    fprintf(crescNpOut "POLICY\\t%L\\t%L\\t%L\\n" crescNpBound crescNpCallbacks crescNpDisabled)'),
+        _contract_text('    unless(crescNpCallbacks==t error("Crescendo native device callbacks disabled/unqualified\\n"))'),
+        _contract_text('    unless(crescNpDisabled==t || null(crescNpDisabled) error("Crescendo Parameters status unqualified\\n"))'),
+        _contract_text("    crescNpRows=list(%s)") % entries,
+        _contract_text("    crescNpCorners=list(%s)") % corners,
+        _contract_text("    crescNpOwned=list(%s)") % owned,
+        _contract_text('    crescNpExisting=maeGetSetup(?typeName "parameters" ?session %s)') % s,
+        _contract_text('    foreach(crescNpPath crescNpExisting'),
+        _contract_text('      unless(stringp(crescNpPath) && member(crescNpPath crescNpOwned)'),
+        _contract_text('        error("Crescendo existing native Device Parameters need explicit remapping: %L\\n" crescNpPath)))'),
+        _contract_text('    when(crescNpDisabled'),
+        _contract_text('      unless(axlSetAllParametersDisabled(%s 0) error("Crescendo cannot enable owned Parameters\\n")))') % db,
+        _contract_text('    foreach(crescNpEntry crescNpRows'),
+        _contract_text('      crescNpPath=cadr(crescNpEntry)'),
+        _contract_text('      crescNpValue=caddr(crescNpEntry)'),
+        _contract_text('      unless(maeSetParameter(crescNpPath crescNpValue ?typeName "test" ?session %s)') % s,
+        _contract_text('        error("Crescendo native global override rejected: %s\\n" crescNpPath))'),
+        _contract_text('      crescNpActual=maeGetParameter(crescNpPath ?typeName "test" ?session %s)') % s,
+        _contract_text('      fprintf(crescNpOut "SETTING\\t%L\\t%L\\t%L\\t%L\\t%L\\t%L\\n" car(crescNpEntry) crescNpPath "test" nil crescNpActual type(crescNpActual))'),
+        _contract_text('      unless(maeSetSetup(?parameters list(crescNpPath) ?enabled t ?session %s)') % s,
+        _contract_text('        error("Crescendo selected device parameter enable rejected: %s\\n" crescNpPath))'),
+        _contract_text('      crescNpHandle=axlGetParameter(%s crescNpPath)') % db,
+        _contract_text('      unless(crescNpHandle && crescNpHandle!=0 && axlGetEnabled(crescNpHandle)'),
+        _contract_text('        error("Crescendo selected device parameter is disabled: %s\\n" crescNpPath))'),
+        _contract_text('      foreach(crescNpCorner crescNpCorners'),
+        _contract_text('        unless(maeSetParameter(crescNpPath crescNpValue ?typeName "corner" ?typeValue list(crescNpCorner) ?session %s)') % s,
+        _contract_text('          error("Crescendo native corner override rejected: %s/%s\\n" crescNpCorner crescNpPath))'),
+        _contract_text('        crescNpActual=maeGetParameter(crescNpPath ?typeName "corner" ?typeValue crescNpCorner ?session %s)') % s,
+        _contract_text('        fprintf(crescNpOut "SETTING\\t%L\\t%L\\t%L\\t%L\\t%L\\t%L\\n" car(crescNpEntry) crescNpPath "corner" crescNpCorner crescNpActual type(crescNpActual))'),
         '      )',
         '    )',
-        '    when(axlGetAllParametersDisabled(%s) error("Crescendo native Parameters still globally disabled\\n"))' % db,
-        '    fprintf(crescNpOut "DONE\\t%L\\n" "native_override_settings_only")',
+        _contract_text('    when(axlGetAllParametersDisabled(%s) error("Crescendo native Parameters still globally disabled\\n"))') % db,
+        _contract_text('    fprintf(crescNpOut "DONE\\t%L\\n" "native_override_settings_only")'),
         '    t',
-        '  ) close(crescNpOut))',
+        _contract_text('  ) close(crescNpOut))'),
         ')',
     ]
 
@@ -216,7 +219,7 @@ def parse_native_parameter_settings(path, plan):
         raise ValueError("Native device override records unavailable or unsafe")
     with open(path, encoding='utf-8') as stream:
         lines = stream.read().splitlines()
-    if not lines or lines[0] != "CRESCENDO_NATIVE_PARAMETERS_2" or lines[-1] != 'DONE\t"native_override_settings_only"':
+    if not lines or lines[0] != _contract_text("CRESCENDO_NATIVE_PARAMETERS_2") or lines[-1] != 'DONE\t"native_override_settings_only"':
         raise ValueError("Native device override readback did not finish")
     expected = {}
     for row in plan["selected"]:
@@ -292,6 +295,7 @@ def read_native_parameter_points(parameter_rows, tasks, setup=None, parsed=None)
     """
     from .private_netlist import _logical_statements, _assignments, _expression_value, top_level_native_parameters
     from .workspace import _effective_property_names
+    from .netlist_scope import NetlistScope, BindingError
     tests = dict((row["name"], row) for row in (setup or {}).get("tests") or [])
     result = []
     for row in parameter_rows:
@@ -307,10 +311,12 @@ def read_native_parameter_points(parameter_rows, tasks, setup=None, parsed=None)
                 raise ValueError("Native selected-parameter SCS unavailable: " + path)
             with open(path, encoding="utf-8") as stream:
                 text = stream.read()
-            statements = [statement for library, cell, statement, view in _logical_statements(text, include_view=True)
+            lexical = NetlistScope(text)
+            matches = [(index, statement) for index, (library, cell, statement, view) in enumerate(lexical.statements)
                           if library == row["library"] and cell == row["cell"]
                           and (not row.get("view") or view == row["view"])
                           and re.match(r"^%s\s*\(" % re.escape(row["instance"]), statement)]
+            statements = [statement for index, statement in matches]
             if len(statements) != 1:
                 raise ValueError("Native private instance is absent/ambiguous for %s in %s" % (row["parameter_id"], path))
             aliases = _effective_property_names(row)
@@ -323,7 +329,7 @@ def read_native_parameter_points(parameter_rows, tasks, setup=None, parsed=None)
                     tuple(item.get(key) for key in ("library", "cell", "view", "instance")) ==
                     tuple(row.get(key) for key in ("library", "cell", "view", "instance"))]
                 dpar_names = sorted(set(symbol for _name, value, _a, _b in all_assignments
-                    for symbol in re.findall(r"\bDPAR_[A-Za-z0-9_]+\b", value)))
+                    for _scope, symbol in lexical.trace(value, lexical.scopes[matches[0][0]])[2]))
                 if len(same_instance) == 1 and len(dpar_names) == 1:
                     name, expression = "$native_device_parameter", dpar_names[0]
                 else:
@@ -337,16 +343,23 @@ def read_native_parameter_points(parameter_rows, tasks, setup=None, parsed=None)
                 name, expression = assignments[0]
             else:
                 raise ValueError("Native selected property/alias is ambiguous for %s in %s" % (row["parameter_id"], path))
-            native = task.get("native_parameters") or top_level_native_parameters(text)
-            numbers = dict((item["name"], item["value"]) for item in native if item.get("value") is not None)
-            try:
-                effective = _expression_value(expression, numbers)
-            except (ValueError, SyntaxError, TypeError, ZeroDivisionError, OverflowError):
-                raise ValueError("Native selected property has no proven point value: %s expression=%s" %
-                                 (row["parameter_id"], expression))
-            dpars = sorted(set(re.findall(r"\bDPAR_[A-Za-z0-9_]+\b", expression)))
-            if any(symbol not in numbers for symbol in dpars):
-                raise ValueError("Native DPAR binding lacks an exact point value")
+            scope = lexical.scopes[matches[0][0]]
+            effective, dependencies, bindings = lexical.trace(expression, scope)
+            lexical.validate_instance_bindings(lexical.last_references)
+            if effective is None:
+                raise BindingError("unsupported_expression", expression,
+                    "Native selected property has no proven point value: " + row["parameter_id"])
+            dpars = sorted(set(name for binding_scope, name in bindings))
+            if len(dpars) != len(bindings):
+                raise BindingError("scope_shadow", expression, "DPAR name resolves to several lexical declarations")
+            numbers = {}
+            scoped_bindings = []
+            for binding_scope, symbol in sorted(bindings):
+                value, unused, nested = lexical.trace(symbol, binding_scope)
+                if value is None:
+                    raise BindingError("binding_unresolved", expression, "Native DPAR binding lacks an exact point value")
+                numbers[symbol] = value
+                scoped_bindings.append({"name": symbol, "scope": list(binding_scope)})
             points.append({"test": task["test"], "point_id": task["point_id"],
                 "corner": task["corner"], "effective": effective,
                 "scs_path": path, "netlist_property": name,
@@ -355,6 +368,7 @@ def read_native_parameter_points(parameter_rows, tasks, setup=None, parsed=None)
                 "statement_sha256": hashlib.sha256(statements[0].encode("utf-8")).hexdigest(),
                 "dpar_status": "bound_in_generated_point_scs" if dpars else "not_used",
                 "dpar_values": dict((symbol, numbers[symbol]) for symbol in dpars),
+                "dpar_bindings": scoped_bindings, "lexical_scope": list(scope),
                 "effective_kind": "native_device_parameter_value" if inferred_dpar else "netlisted_property_value",
                 "callback_adjustment_proven": not inferred_dpar,
                 "proof_source": ("full_identity_native_RDB_input" if native_input else

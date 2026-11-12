@@ -1,8 +1,8 @@
-# Crescendo 1.0.3
+# Crescendo 1.1.0
 
 Crescendo is a guided circuit optimizer for Cadence Maestro. Each release contains the window, the optimization engine, the Virtuoso menu loader and a synthetic demo.
 
-This maintenance release makes the test suite pass on Python 3.6 to 3.13 with Tk 8.5 or 8.6, also when run as a normal user, and reports oversized integers in range checks as non-finite on every Python version. See CHANGELOG.md.
+This release evaluates a whole generation at once instead of one candidate at a time. On local real-EDA runs with identical results, Maestro Baseline became 4.3x faster and Private Maestro 2.1x faster; Private Netlist needs batching only when it falls back to native netlist generation (1.5x there). Pro mode adds Local solver slots, reader workers and a batching selector; old checkpoints keep their original behaviour. Per-candidate and per-generation timings show where the time goes. Batch schedulers, complex process models and large-scale throughput still need qualification on your own site. See CHANGELOG.md.
 
 Try it without any EDA tools:
 

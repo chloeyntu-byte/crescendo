@@ -1,8 +1,11 @@
 """Per-run corner choices; source Maestro definitions remain immutable."""
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 import copy
 import json
 
-SCHEMA = 'crescendo.run_corner_selection.v1'
+SCHEMA = _contract_text('crescendo.run_corner_selection.v1')
 DEFAULT = '_default'
 
 
@@ -123,14 +126,14 @@ def selection_skill_lines(plan):
             continue
         enabled = name in plan['selected']
         lines += [
-            'unless(member(%s cadr(axlGetCorners(mainSDB))) error("Crescendo selected corner is unavailable\\n"))' % quote(name),
-            'unless(maeSetSetup(?corners list(%s) ?enabled %s ?session session) error("Crescendo corner selection setter failed\\n"))' % (quote(name), 't' if enabled else 'nil'),
-            '%s(axlGetEnabled(axlGetCorner(mainSDB %s)) error("Crescendo corner selection readback differs\\n"))' % ('unless' if enabled else 'when', quote(name)),
+            _contract_text('unless(member(%s cadr(axlGetCorners(mainSDB))) error("Crescendo selected corner is unavailable\\n"))') % quote(name),
+            _contract_text('unless(maeSetSetup(?corners list(%s) ?enabled %s ?session session) error("Crescendo corner selection setter failed\\n"))') % (quote(name), 't' if enabled else 'nil'),
+            _contract_text('%s(axlGetEnabled(axlGetCorner(mainSDB %s)) error("Crescendo corner selection readback differs\\n"))') % ('unless' if enabled else 'when', quote(name)),
         ]
     nominal = DEFAULT in plan['selected']
     lines += [
-        'unless(axlSetNominalCornerEnabled(mainSDB %d) error("Crescendo nominal corner selection failed\\n"))' % int(nominal),
-        '%s(axlGetNominalCornerEnabled(mainSDB) error("Crescendo nominal corner selection readback differs\\n"))' % ('unless' if nominal else 'when'),
+        _contract_text('unless(axlSetNominalCornerEnabled(mainSDB %d) error("Crescendo nominal corner selection failed\\n"))') % int(nominal),
+        _contract_text('%s(axlGetNominalCornerEnabled(mainSDB) error("Crescendo nominal corner selection readback differs\\n"))') % ('unless' if nominal else 'when'),
     ]
     return lines
 

@@ -12,7 +12,7 @@ Crescendo is a guided circuit optimizer that runs inside Cadence Maestro. Pick t
 - **Simple and Pro modes**: the default view keeps only the main flow. Pro mode adds private suites, history, optional PDK range checks, algorithm parameters, run/submit commands, EDA overrides and three-stage link diagnostics. Switching modes changes what is shown, never the settings.
 - **Search**: NSGA-II (automatic for two or more objectives), differential evolution and Bayesian optimization; per-corner objectives and constraints with `max` / `mean` aggregation.
 - **Execution**: Spectre or ALPS, locally or on a batch cluster; a private copy of the Maestro setup is used for every run, and a checkpoint is written after every candidate so runs can be stopped and resumed.
-- **Live results**: KPI tiles, best-so-far convergence per objective, a candidate table, Pareto plots that jump to a candidate on click, CSV and full-dataset export.
+- **Live results**: KPI tiles, best-so-far convergence per objective, a candidate table, Pareto plots that jump to a candidate on click, CSV and full-dataset export. **Timing details...** shows generation and selected-candidate phases, with solver evidence, coverage and parallel limits explained in the [execution timing guide](docs/EXECUTION_TIMING.md).
 - **Large projects**: on a synthetic project with 4,000 blocks and 50,726 parameters the parameter tree renders without freezing the window for more than 74 ms.
 
 ## Requirements
@@ -44,6 +44,17 @@ The demo service generates synthetic op-amp-like metrics (a seeded, analytic two
 3. Restart Virtuoso and open **Maestro → Plug-in → Open Crescendo Optimizer** (or the **Crescendo** menu when the Plug-in menu is unavailable).
 
 Crescendo reads the Maestro window it was opened from. Tools, model directories and simulators are detected from that window's environment and can be overridden in **Settings → EDA** (Pro mode).
+
+Pro execution settings include the following resource controls, frozen in each new run:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `native_candidate_batching` | `generation` for new configurations | One owned native Run per generation; `serial` runs candidates individually. Existing configurations without this key and old checkpoints retain serial behavior. Private Netlist templates continue to materialize directly. |
+| `local_solver_max_jobs` | `1` | Explicit Local solver slots; effective concurrency also obeys Global and Test limits. |
+| `measurement_jobs` | `null`, automatic `min(2, G)` | Local reader workers; explicit values are capped by Global capacity `G`. |
+| `progress_flush_interval_seconds` | `0.5` | Minimum display snapshot interval; terminal events, ownership and checkpoint acknowledgements remain immediate. |
+
+These controls appear only in Pro mode. See [native batching](docs/NATIVE_BATCHING.md) and [execution timings](docs/EXECUTION_TIMING.md).
 
 Cluster execution uses **Settings → EDA → Solver / Submission Commands** (Pro mode),
 or `runtime.execution_commands` in JSON. `submission_template` is the complete

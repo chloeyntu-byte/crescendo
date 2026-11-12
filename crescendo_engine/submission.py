@@ -18,17 +18,20 @@ import subprocess
 import time
 import uuid
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .utils import atomic_write_json, ensure_dir, utc_timestamp
 
 
-REQUEST_SCHEMA = "crescendo.simulation_request.v1"
-RESULT_SCHEMA = "crescendo.simulation_result.v1"
-TOOLCHAIN_SCHEMA = "crescendo.simulation_toolchain.v1"
+REQUEST_SCHEMA = _contract_text("crescendo.simulation_request.v1")
+RESULT_SCHEMA = _contract_text("crescendo.simulation_result.v1")
+TOOLCHAIN_SCHEMA = _contract_text("crescendo.simulation_toolchain.v1")
 SUPPORTED_ACTIONS = ("probe", "plan", "run")
 SUPPORTED_BACKENDS = ("maestro", "adexl", "local_spectre")
 PATH_FIELDS = (
     "cadence_root", "spectre_root", "virtuoso_bin", "ocean_bin", "spectre_bin",
-    "cds_lib", "pdk_dir", "alps_bin", "alps_root", "alps_model_dir", "spectre_model_dir",
+    "cds_lib", _contract_text("pdk_dir"), "alps_bin", "alps_root", "alps_model_dir", "spectre_model_dir",
 )
 
 
@@ -153,21 +156,21 @@ def discover_toolchain(request, environ=None):
         )
         sources.append({"type": "request", "path": None})
     environment_names = {
-        "virtuoso_bin": "CRESCENDO_VIRTUOSO_BIN",
-        "ocean_bin": "CRESCENDO_OCEAN_BIN",
-        "spectre_bin": "CRESCENDO_SPECTRE_BIN",
-        "alps_bin": "CRESCENDO_ALPS_BIN",
-        "alps_root": "CRESCENDO_ALPS_ROOT",
-        "cadence_root": "CRESCENDO_CADENCE_ROOT",
-        "spectre_root": "CRESCENDO_SPECTRE_ROOT",
-        "cds_lib": "CRESCENDO_CDS_LIB",
+        "virtuoso_bin": _contract_text("CRESCENDO_VIRTUOSO_BIN"),
+        "ocean_bin": _contract_text("CRESCENDO_OCEAN_BIN"),
+        "spectre_bin": _contract_text("CRESCENDO_SPECTRE_BIN"),
+        "alps_bin": _contract_text("CRESCENDO_ALPS_BIN"),
+        "alps_root": _contract_text("CRESCENDO_ALPS_ROOT"),
+        "cadence_root": _contract_text("CRESCENDO_CADENCE_ROOT"),
+        "spectre_root": _contract_text("CRESCENDO_SPECTRE_ROOT"),
+        "cds_lib": _contract_text("CRESCENDO_CDS_LIB"),
     }
     for key, env_name in environment_names.items():
         if not toolchain.get(key) and environ.get(env_name):
             toolchain[key] = _absolute(environ[env_name])
             sources.append({"type": "environment:%s" % env_name, "field": key})
     if not toolchain.get("license_file"):
-        license_value = environ.get("CRESCENDO_LICENSE_FILE") or environ.get("CDS_LIC_FILE") or environ.get("LM_LICENSE_FILE")
+        license_value = environ.get(_contract_text("CRESCENDO_LICENSE_FILE")) or environ.get("CDS_LIC_FILE") or environ.get("LM_LICENSE_FILE")
         if license_value:
             toolchain["license_file"] = _resolve_license(license_value)
             sources.append({"type": "environment", "field": "license_file"})

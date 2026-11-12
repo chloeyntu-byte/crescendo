@@ -5,12 +5,15 @@ All locations identify the responsible implementation, not a proven traceback.
 Reading this presentation never qualifies a solver, result or stopped process.
 """
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 import collections
 import hashlib
 import json
 import os
 
-SCHEMA = 'crescendo.diagnosis.presentation.v1'
+SCHEMA = _contract_text('crescendo.diagnosis.presentation.v1')
 ENGINE_NAMES = {'maestro_netlist': '私有 Maestro 生成网表', 'private_netlist': '私有网表改参', 'maestro_baseline': '私有 Maestro（Baseline）'}
 STATUS_NAMES = {'PASS': '通过', 'FAIL': '失败', 'BLOCKED': '前置阻塞', 'WARN': '需要关注',
                 'NOT_TESTED': '尚未验证', 'CANCELLED': '已停止'}
@@ -83,7 +86,7 @@ CATALOG = [
  ('python', 'environment', 'Python 与界面运行环境', 'environment_probes.py', 'run_environment_probes'),
  ('native', 'environment', 'Virtuoso 启动环境与工具', 'environment_probes.py', 'run_environment_probes'),
  ('dependencies', 'environment', '运行依赖', 'environment_probes.py', 'run_environment_probes'),
- ('package', 'environment', 'Crescendo 安装包与插件资源', 'environment_probes.py', 'run_environment_probes'),
+ ('package', 'environment', _contract_text('Crescendo 安装包与插件资源'), 'environment_probes.py', 'run_environment_probes'),
  ('storage', 'environment', '仿真与工作目录', 'environment_probes.py', 'run_environment_probes'),
  ('setup', 'environment', '当前 Maestro 设置', 'environment_probes.py', 'run_environment_probes'),
  ('pdk', 'models', 'PDK 与器件参数配置', 'environment_probes.py', 'run_environment_probes'),
@@ -109,36 +112,36 @@ _CODE_STAGE_KEYS = ('execution.native_corner_coverage', 'execution.native_captur
 _PRODUCER_CODE_KEYS = ('coverage.corner_mask', 'coverage.identity', 'coverage.parameters', 'coverage.points', 'coverage.test_selection', 'coverage.unknown', 'deadline', 'dependencies.alps_bin', 'dependencies.ocean_bin', 'dependencies.python', 'dependencies.spectre_bin', 'dependencies.tkinter', 'dependencies.virtuoso_bin', 'diagnostics.collection', 'environment.probe_join', 'environment.probes', 'execution', 'execution.not_reached', 'execution.pipeline', 'files', 'host.runtime', 'identity_numeric_verification', 'launch', 'log.capacity', 'native.environment_isolation', 'native.probe_home_cleanup', 'native.version.alps_bin', 'native.version.ocean_bin', 'native.version.spectre_bin', 'native.version.virtuoso_bin', 'package.resources', 'pdk.cdf_metadata', 'python.dependencies_and_tk', 'reader.output_observations', 'reader.parameter_metadata', 'request', 'runtime.summary', 'scheduler.auth_context', 'scheduler.cli_capability', 'scheduler.context', 'scheduler.current_policy', 'scheduler.id_capacity', 'scheduler.invalid_job_ids', 'scheduler.jobs', 'scheduler.observe_capacity', 'scheduler.observe_deadline', 'scheduler.probe_home_cleanup', 'scheduler.query', 'scheduler.query_capability', 'scheduler.query_capacity', 'setup.snapshot', 'simulator.readiness', 'simulator_log_read', 'statistics_and_dataset', 'stop_request', 'storage.filesystem.local_cache', 'storage.filesystem.run', 'storage.filesystem.simulation', 'storage.filesystem.state', 'storage.filesystem.work', 'storage.policy', 'storage.requested', 'termination', 'termination_and_cleanup', 'test.scope', 'test.summary')
 _CODE_KEYS = tuple(sorted(set(row[0] for row in CATALOG) | set(_PRODUCER_CODE_KEYS) | set(_CODE_STAGE_KEYS) | set(('other',))))
 def _code_for_key(key):
-    return 'CRESCENDO-' + hashlib.sha256(key.encode('utf-8')).hexdigest()[:10].upper()
+    return _contract_text('CRESCENDO-') + hashlib.sha256(key.encode('utf-8')).hexdigest()[:10].upper()
 
 _COVERAGE_CODES = {
-    'coverage.points.missing': 'CRESCENDO-COV-101',
-    'coverage.points.duplicate': 'CRESCENDO-COV-102',
-    'coverage.points.unexpected': 'CRESCENDO-COV-103',
-    'coverage.points.rdb_missing': 'CRESCENDO-COV-111',
-    'coverage.points.rdb_duplicate': 'CRESCENDO-COV-112',
-    'coverage.points.rdb_unexpected': 'CRESCENDO-COV-113',
-    'coverage.identity.mapping': 'CRESCENDO-COV-201',
-    'coverage.identity.corner': 'CRESCENDO-COV-202',
-    'coverage.parameters.variable': 'CRESCENDO-COV-301',
-    'coverage.parameters.sweep': 'CRESCENDO-COV-302',
-    'coverage.parameters.plan': 'CRESCENDO-COV-303',
-    'coverage.test_selection.unexpected': 'CRESCENDO-COV-401',
-    'coverage.test_selection.duplicate_corner': 'CRESCENDO-COV-402',
-    'coverage.corner_mask.group': 'CRESCENDO-COV-501',
-    'coverage.corner_mask.nominal': 'CRESCENDO-COV-502',
-    'coverage.corner_mask.unreadable': 'CRESCENDO-COV-503',
-    'coverage.unknown.numeric': 'CRESCENDO-COV-601',
-    'coverage.unknown.members_unavailable': 'CRESCENDO-COV-602',
+    'coverage.points.missing': _contract_text('CRESCENDO-COV-101'),
+    'coverage.points.duplicate': _contract_text('CRESCENDO-COV-102'),
+    'coverage.points.unexpected': _contract_text('CRESCENDO-COV-103'),
+    'coverage.points.rdb_missing': _contract_text('CRESCENDO-COV-111'),
+    'coverage.points.rdb_duplicate': _contract_text('CRESCENDO-COV-112'),
+    'coverage.points.rdb_unexpected': _contract_text('CRESCENDO-COV-113'),
+    'coverage.identity.mapping': _contract_text('CRESCENDO-COV-201'),
+    'coverage.identity.corner': _contract_text('CRESCENDO-COV-202'),
+    'coverage.parameters.variable': _contract_text('CRESCENDO-COV-301'),
+    'coverage.parameters.sweep': _contract_text('CRESCENDO-COV-302'),
+    'coverage.parameters.plan': _contract_text('CRESCENDO-COV-303'),
+    'coverage.test_selection.unexpected': _contract_text('CRESCENDO-COV-401'),
+    'coverage.test_selection.duplicate_corner': _contract_text('CRESCENDO-COV-402'),
+    'coverage.corner_mask.group': _contract_text('CRESCENDO-COV-501'),
+    'coverage.corner_mask.nominal': _contract_text('CRESCENDO-COV-502'),
+    'coverage.corner_mask.unreadable': _contract_text('CRESCENDO-COV-503'),
+    'coverage.unknown.numeric': _contract_text('CRESCENDO-COV-601'),
+    'coverage.unknown.members_unavailable': _contract_text('CRESCENDO-COV-602'),
 }
 _SUITE_CODES = {
-    'suite.lease': 'CRESCENDO-SUITE-LEASE',
-    'suite.lock': 'CRESCENDO-SUITE-LOCK',
-    'suite.snapshot': 'CRESCENDO-SUITE-SNAPSHOT',
-    'suite.recovery': 'CRESCENDO-SUITE-RECOVERY',
-    'suite.rollback': 'CRESCENDO-SUITE-ROLLBACK',
-    'suite.permission': 'CRESCENDO-SUITE-PERMISSION',
-    'suite.release': 'CRESCENDO-SUITE-RELEASE',
+    'suite.lease': _contract_text('CRESCENDO-SUITE-LEASE'),
+    'suite.lock': _contract_text('CRESCENDO-SUITE-LOCK'),
+    'suite.snapshot': _contract_text('CRESCENDO-SUITE-SNAPSHOT'),
+    'suite.recovery': _contract_text('CRESCENDO-SUITE-RECOVERY'),
+    'suite.rollback': _contract_text('CRESCENDO-SUITE-ROLLBACK'),
+    'suite.permission': _contract_text('CRESCENDO-SUITE-PERMISSION'),
+    'suite.release': _contract_text('CRESCENDO-SUITE-RELEASE'),
 }
 _SUITE_EXPLANATIONS = {
     'suite.lease': '另一进程持有套件租约；等待其释放后重试。',
@@ -314,7 +317,7 @@ def _current_cdf_failures(value, output=None, depth=0, _state=None):
         rows = value.get('cdf_callback_failures')
         if isinstance(rows, list):
             for row in rows[:8]:
-                if (isinstance(row, dict) and row.get('schema_version') == 'crescendo.cdf_callback_failure.v1'
+                if (isinstance(row, dict) and row.get('schema_version') == _contract_text('crescendo.cdf_callback_failure.v1')
                         and row.get('callback_error') and row.get('property') and row not in output):
                     output.append(row)
                     if len(output) >= 8:
@@ -341,7 +344,7 @@ def _cdf_display_value(value):
 
 def _native_worker_explanation(reports):
     """Display producer-reported worker locations, never scan/qualify logs."""
-    if reports and all(isinstance(report, dict) and report.get('schema_version') == 'crescendo.native_worker_diagnostics.v1'
+    if reports and all(isinstance(report, dict) and report.get('schema_version') == _contract_text('crescendo.native_worker_diagnostics.v1')
                        and report.get('logs') == [] and not (report.get('parent_capture_failed') is True
                            and report.get('expected_wrapper_aftermath_samples')) for report in reports):
         return '尚无原生 worker 日志；采集完成不代表 worker 或网表生成已通过。'
@@ -415,7 +418,7 @@ def _cdf_failure_explanation(row):
         lines.append('失败现场的未选参数字符串：' + '；'.join(
             '%s=%s%s' % (str(field.get('name'))[:64], _cdf_display_value(field.get('value')),
                          '（已截断）' if field.get('value_truncated') else '')
-            for field in fields) + '。这些字段未被 Crescendo 替换成常数。')
+            for field in fields) + _contract_text('。这些字段未被 Crescendo 替换成常数。'))
     if row.get('native_error'):
         lines.append('本轮原始错误：' + str(row['native_error'])[:2048])
     matching = [str(field.get('name'))[:64] for field in fields
@@ -600,7 +603,7 @@ def describe_check(check, case_context=None):
     result = {'diagnostic_code': code, 'schema_version': SCHEMA, 'check_id': check.get('id') or identifier, 'case_id': case_id,
               'group_id': group, 'group_label': group_label, 'section_id': section, 'section_label': SECTIONS[section],
               'title': title, 'status_label': status_label, 'summary': summary, 'explanation': explanation,
-              'component': {'label': title, 'file': 'crescendo_engine/' + filename, 'function': function,
+              'component': {'label': title, 'file': _contract_text('crescendo_engine/') + filename, 'function': function,
                             'scope': '功能实现归属；只有原始错误明确给出文件/行号才构成故障定位证据'},
               'evidence': evidence}
     if blocked_by:
@@ -616,19 +619,19 @@ def observation_section(record):
         primary = value.get('first_cause') or value.get('data') or value
         return stage_section(primary.get('detail') or primary)
     name = os.path.basename(path)
-    if '/native_point_parameters/' in '/' + path or name in ('reader_request.json', 'reader_status.json'):
+    if '/native_point_parameters/' in '/' + path or name in (_contract_text('reader_request.json'), _contract_text('reader_status.json')):
         return 'results'
-    if kind.endswith(('source_settings', 'settings', 'netlist_points', 'capture_semantics', 'identity_coverage', 'script_context', 'native_run_context', 'setup_private_session', 'cdf_callback_failure', 'native_worker_diagnostics', 'source_guard', 'native_file_inputs')) or name in ('corner_identity.json','capture_diagnostics.json','capture_generation.json','private_netlist.json','private_netlist_candidate.json','netlist_generation.json','capture.il','bootstrap.il','source_guard.json','native_file_inputs.json'):
+    if kind.endswith(('source_settings', 'settings', 'netlist_points', 'capture_semantics', 'identity_coverage', 'script_context', 'native_run_context', 'setup_private_session', 'cdf_callback_failure', 'native_worker_diagnostics', 'source_guard', 'native_file_inputs')) or name in (_contract_text('corner_identity.json'),_contract_text('capture_diagnostics.json'),_contract_text('capture_generation.json'),_contract_text('private_netlist.json'),_contract_text('private_netlist_candidate.json'),_contract_text('netlist_generation.json'),'capture.il','bootstrap.il',_contract_text('source_guard.json'),_contract_text('native_file_inputs.json')):
         return 'netlist'
-    if kind.endswith('missing_output_source') or 'reader' in kind or name in ('result_reader_capability.json','measurement_error.json','measurement.json','completion_evidence.json','cli_results.json'):
+    if kind.endswith('missing_output_source') or 'reader' in kind or name in (_contract_text('result_reader_capability.json'),_contract_text('measurement_error.json'),_contract_text('measurement.json'),_contract_text('completion_evidence.json'),_contract_text('cli_results.json')):
         return 'results'
-    if 'cleanup' in kind or name in ('worker_shutdown.json','cleanup_failure.json','cleanup_diagnostics.json','guardian_state.json'):
+    if 'cleanup' in kind or name in (_contract_text('worker_shutdown.json'),_contract_text('cleanup_failure.json'),_contract_text('cleanup_diagnostics.json'),_contract_text('guardian_state.json')):
         return 'cleanup'
-    if 'scheduler' in kind or name in ('native_submission.json','submission.json','native_dispatch.jsonl') or name.startswith('scheduler.'):
+    if 'scheduler' in kind or name in (_contract_text('native_submission.json'),_contract_text('submission.json'),_contract_text('native_dispatch.jsonl')) or name.startswith('scheduler.'):
         return 'scheduler'
     if name.startswith(('ocean.', 'capture.')):
         return 'netlist'
-    if name.startswith(('spectre.', 'alps.', 'simulator.')) or name.endswith(('.psf.log', '.psf.warn')):
+    if name.startswith(('spectre.', 'alps.', 'simulator.')) or name.endswith((_contract_text('.psf.log'), '.psf.warn')):
         return 'solver'
     if kind.endswith(('collection','scope','identity','matrix_basis')):
         return 'report'
@@ -665,7 +668,7 @@ def brief_success(value):
     if value.get('proof_kind') == 'native_run_device_parameters':
         return value
     scalars = {key: item for key, item in value.items() if item is None or isinstance(item, (str, bool, int, float))}
-    if value.get('schema_version') == 'crescendo.native_worker_diagnostics.v1' and value.get('logs') == []:
+    if value.get('schema_version') == _contract_text('crescendo.native_worker_diagnostics.v1') and value.get('logs') == []:
         scalars['worker_evidence_status'] = 'no_worker_logs_observed; worker/netlist success not proven'
     for key, item in value.items():
         if key == 'python_version':
@@ -719,7 +722,7 @@ def worker_error_observation(context):
     if not isinstance(reports, list):
         return None
     for report in reports[:8]:
-        if not isinstance(report, dict) or report.get('schema_version') != 'crescendo.native_worker_diagnostics.v1' or report.get('ok') is not False:
+        if not isinstance(report, dict) or report.get('schema_version') != _contract_text('crescendo.native_worker_diagnostics.v1') or report.get('ok') is not False:
             continue
         owner, logs = report.get('owned_workspace'), report.get('logs')
         if (not isinstance(owner, str) or not os.path.isabs(owner) or len(owner) > 4096 or
@@ -895,7 +898,7 @@ def _compact_section(checks, context, evidence_seen):
     scope, section = presentation['group_id'], presentation['section_id']
     lines = ['=== SECTION BEGIN %s/%s ===' % (scope, section),
              '%s / %s' % (presentation['group_label'], presentation['section_label']),
-             'report_format crescendo.diagnosis.compact.v1']
+             _contract_text('report_format crescendo.diagnosis.compact.v1')]
     concise = context.get('report_detail_mode') == 'concise'
     not_reached_groups = {}
     for check in checks:
@@ -956,7 +959,7 @@ def format_evidence_section(scope, section, records, evidence_seen):
     """Emit observed evidence even when no check produced a problem section."""
     lines = ['=== SECTION BEGIN %s/%s ===' % (scope, section),
              '%s / %s' % (scope, SECTIONS.get(section, section)),
-             'report_format crescendo.diagnosis.compact.v1']
+             _contract_text('report_format crescendo.diagnosis.compact.v1')]
     for record in records:
         if observation_section(record) != section:
             continue
@@ -1087,7 +1090,7 @@ def read_section(log_path, group_id, section_id, max_bytes=8 * 1024 * 1024):
             if (not os.path.samestat(before, after) or not os.path.samestat(after, current)
                     or stat.S_ISLNK(current.st_mode) or current.st_nlink != 1):
                 return None
-            if latest is not None and b'report_format crescendo.diagnosis.compact.v1' in latest:
+            if latest is not None and _contract_text('report_format crescendo.diagnosis.compact.v1').encode('utf-8') in latest:
                 # A copied section remains self-contained although the one
                 # physical report stores its shared context and first cause once.
                 prefix = shared_context or b''

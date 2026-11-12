@@ -9,6 +9,9 @@ import shutil
 import subprocess
 import sys
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .resources import cadence_resource_path
 
 
@@ -74,32 +77,32 @@ def install_maestro_menu(loader_path, python=None):
     parent = os.path.dirname(loader)
     if not os.path.isdir(parent):
         raise ValueError("the loader's parent directory must already exist")
-    launcher = os.path.splitext(loader)[0] + ".crescendo_launch"
+    launcher = os.path.splitext(loader)[0] + _contract_text(".crescendo_launch")
     if loader == launcher:
         raise ValueError("loader and launcher paths must differ")
     for path in (loader, launcher):
         if os.path.lexists(path):
             raise ValueError("refusing to overwrite an existing plugin file: %s" % path)
     executable = _selected_python(python)
-    resource_launcher = cadence_resource_path("crescendo_launch")
-    menu = cadence_resource_path("crescendo_maestro_menu.il")
+    resource_launcher = cadence_resource_path(_contract_text("crescendo_launch"))
+    menu = cadence_resource_path(_contract_text("crescendo_maestro_menu.il"))
     if not os.access(resource_launcher, os.X_OK):
         raise ValueError("the packaged Maestro launcher is not executable")
     wrapper = (
-        "#!/bin/bash\n"
+        _contract_text("#!/bin/bash\n"
         "set -euo pipefail\n"
         "# The install-time interpreter is an automatic-selection hint.\n"
         "# An explicitly inherited CRESCENDO_PYTHON remains authoritative.\n"
         "if [[ ! ${CRESCENDO_PREFERRED_PYTHON+x} ]]; then\n"
         "  export CRESCENDO_PREFERRED_PYTHON=%s\n"
         "fi\n"
-        "exec %s \"$@\"\n"
+        "exec %s \"$@\"\n")
     ) % (shlex.quote(executable), shlex.quote(resource_launcher))
     skill = (
-        "; Generated for this machine; regenerate after moving Crescendo.\n"
+        _contract_text("; Generated for this machine; regenerate after moving Crescendo.\n"
         "; Load this file from the project's .cdsinit; other plugins are preserved.\n"
         "crescPluginLauncher = %s\n"
-        "load(%s)\n"
+        "load(%s)\n")
     ) % (json.dumps(launcher, ensure_ascii=False), json.dumps(menu, ensure_ascii=False))
     _create_private_file(launcher, wrapper, 0o700)
     try:

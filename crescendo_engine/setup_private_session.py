@@ -20,12 +20,16 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
+from .diagnostic_timing import timing_tick, elapsed_seconds, phase_seconds
 from .utils import atomic_write_json, atomic_write_text, ensure_dir
 from .private_view_access import PrivateViewBusy, check_private_view_edit_locks, write_private_views, restore_private_views
 
-SCHEMA = "crescendo.setup_private_session.v1"
-REFERENCE = "setup_private_session_reference.json"
-OWNER = "session_owner.json"
+SCHEMA = _contract_text("crescendo.setup_private_session.v1")
+REFERENCE = _contract_text("setup_private_session_reference.json")
+OWNER = _contract_text("session_owner.json")
 _SESSIONS = {}
 _CLOSED = set()
 _QUARANTINED = set()
@@ -66,7 +70,7 @@ def _owner(reference):
     return owner
 
 
-QUARANTINE = "suite_quarantine.json"
+QUARANTINE = _contract_text("suite_quarantine.json")
 
 
 def detach_setup_private_session(reference, reason):
@@ -79,7 +83,7 @@ def detach_setup_private_session(reference, reason):
     path = os.path.join(owner["root"], QUARANTINE)
     errors = []
     try:
-        atomic_write_json(path, {"schema_version": "crescendo.suite_quarantine.v1",
+        atomic_write_json(path, {"schema_version": _contract_text("crescendo.suite_quarantine.v1"),
                                  "session_id": owner["session_id"], "root": owner["root"],
                                  "reason": reason[:4096], "time": time.time()})
     except Exception as error:
@@ -95,10 +99,10 @@ def _quarantine(owner):
     if not os.path.lexists(path):
         return {"reason": "in-process isolation; durable record unavailable"} if in_memory else None
     document = _load(path)
-    if (document.get("schema_version") != "crescendo.suite_quarantine.v1" or
+    if (document.get("schema_version") != _contract_text("crescendo.suite_quarantine.v1") or
             document.get("session_id") != owner["session_id"] or
             document.get("root") != owner["root"]):
-        raise ValueError("CRESCENDO-SUITE-RECOVERY: Invalid suite isolation record")
+        raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Invalid suite isolation record"))
     return document
 
 
@@ -107,7 +111,7 @@ def _controller(reference):
     with _REGISTRY_LOCK:
         controller = _SESSIONS.get(owner["session_id"])
     if controller is None or controller.owner != owner or controller.closed:
-        raise ValueError("Private setup session is no longer owned by this Crescendo window; Load and Inspect again")
+        raise ValueError(_contract_text("Private setup session is no longer owned by this Crescendo window; Load and Inspect again"))
     return controller
 
 
@@ -124,7 +128,7 @@ def owned_setup_private_sessions():
 def write_session_reference(root, reference, kind=None):
     controller = _controller(reference)
     if _quarantine(controller.owner):
-        raise RuntimeError("CRESCENDO-SUITE-RECOVERY: Suite is isolated")
+        raise RuntimeError(_contract_text("CRESCENDO-SUITE-RECOVERY: Suite is isolated"))
     root = os.path.abspath(root)
     if os.path.realpath(root) != root or not os.path.isdir(root):
         raise ValueError("Private setup capture root is unsafe")
@@ -145,7 +149,7 @@ def _reconcile_owned_capture(root, request_cancel, timeout_seconds=12):
     reference = _load(os.path.join(root, REFERENCE))
     owner = preparation_session_reference(root)  # Exact owner and append-only root registration.
     kind = reference.get("capture_kind")
-    state = _load(os.path.join(owner["root"], "session_state.json"), max_bytes=128 * 1024 * 1024)
+    state = _load(os.path.join(owner["root"], _contract_text("session_state.json")), max_bytes=128 * 1024 * 1024)
     if (state.get("capture_kinds") or {}).get(root) != kind:
         raise ValueError("Private session capture kind does not match durable registry")
     if kind == "native_baseline":
@@ -167,7 +171,7 @@ def preparation_session_reference(root):
     if reference.get("capture_root") != os.path.abspath(root):
         raise ValueError("Private setup capture reference belongs to another preparation")
     # The owner's append-only list binds this otherwise arbitrary capture path.
-    state = _load(os.path.join(owner["root"], "session_state.json"), max_bytes=128 * 1024 * 1024)
+    state = _load(os.path.join(owner["root"], _contract_text("session_state.json")), max_bytes=128 * 1024 * 1024)
     if (state.get("session_id") != owner["session_id"]
             or os.path.abspath(root) not in state.get("capture_roots", [])):
         raise ValueError("Private setup capture is absent from its session registry")
@@ -220,7 +224,7 @@ def _acquire_lease(root):
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            raise RuntimeError("CRESCENDO-SUITE-LEASE: Private suite is in use by another process")
+            raise RuntimeError(_contract_text("CRESCENDO-SUITE-LEASE: Private suite is in use by another process"))
         return fd
     except BaseException:
         os.close(fd)
@@ -245,13 +249,13 @@ def _pending_creation_stages(owner, workspace):
         stage = intent.get("stage") or ""
         path = row.get("path") or ""
         key = hashlib.sha256(path.encode("utf-8")).hexdigest()
-        if (intent.get("schema_version") != "crescendo.suite_view_create.v1" or
+        if (intent.get("schema_version") != _contract_text("crescendo.suite_view_create.v1") or
                 intent.get("owner") != owner or name != "suite_create_" + key + ".json" or
                 row not in (workspace.get("same_library_registry") or []) or
                 os.path.dirname(stage) != os.path.dirname(path) or
-                not os.path.basename(stage).startswith(".crescendo-create-") or
-                not _TOKEN.fullmatch(os.path.basename(stage)[len(".crescendo-create-"):])):
-            raise ValueError("CRESCENDO-SUITE-RECOVERY: Creation staging identity invalid")
+                not os.path.basename(stage).startswith(_contract_text(".crescendo-create-")) or
+                not _TOKEN.fullmatch(os.path.basename(stage)[len(_contract_text(".crescendo-create-")):])):
+            raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Creation staging identity invalid"))
         if os.path.lexists(stage):
             pending.append(stage)
     return pending
@@ -268,21 +272,21 @@ def _deletion_access_workspace(workspace):
 
 def _read_suite(reference, deep=True, require_snapshot=True, allow_missing=False):
     owner = _owner(reference)
-    state_path = os.path.join(owner["root"], "session_state.json")
+    state_path = os.path.join(owner["root"], _contract_text("session_state.json"))
     state = _load(state_path, max_bytes=128 * 1024 * 1024) if os.path.lexists(state_path) else {}
-    workspace_path = os.path.join(owner["workspace_root"], "workspace.json")
-    registry_path = os.path.join(owner["workspace_root"], "same_library_views.json")
-    intent_path = os.path.join(owner["workspace_root"], "suite_registry_intent.json")
+    workspace_path = os.path.join(owner["workspace_root"], _contract_text("workspace.json"))
+    registry_path = os.path.join(owner["workspace_root"], _contract_text("same_library_views.json"))
+    intent_path = os.path.join(owner["workspace_root"], _contract_text("suite_registry_intent.json"))
     workspace = _load(workspace_path, max_bytes=128 * 1024 * 1024) if os.path.lexists(workspace_path) else None
-    commit_path = os.path.join(owner["root"], "suite_metadata_commit.json")
+    commit_path = os.path.join(owner["root"], _contract_text("suite_metadata_commit.json"))
     if os.path.lexists(commit_path):
         commit = _load(commit_path, max_bytes=256 * 1024 * 1024)
-        if (commit.get("schema_version") != "crescendo.suite_metadata_commit.v1" or
+        if (commit.get("schema_version") != _contract_text("crescendo.suite_metadata_commit.v1") or
                 commit.get("owner") != owner or not isinstance(commit.get("state"), dict) or
                 not isinstance(commit.get("workspace"), dict) or not _TOKEN.fullmatch(commit.get("revision") or "") or
                 commit["state"].get("_suite_revision") != commit["revision"] or
                 commit["workspace"].get("_suite_revision") != commit["revision"]):
-            raise ValueError("CRESCENDO-SUITE-RECOVERY: Invalid metadata commit")
+            raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Invalid metadata commit"))
         if (state.get("_suite_revision") != commit["revision"] or
                 not workspace or workspace.get("_suite_revision") != commit["revision"]):
             state, workspace = commit["state"], commit["workspace"]
@@ -294,7 +298,7 @@ def _read_suite(reference, deep=True, require_snapshot=True, allow_missing=False
         intent = _load(intent_path, max_bytes=128 * 1024 * 1024)
         candidate = intent.get("workspace") or {}
         old, new = intent.get("old_views"), candidate.get("same_library_registry")
-        if (intent.get("schema_version") != "crescendo.suite_registry_intent.v1" or
+        if (intent.get("schema_version") != _contract_text("crescendo.suite_registry_intent.v1") or
                 intent.get("owner") != owner or candidate.get("setup_private_session") != owner or
                 candidate.get("root") != owner["workspace_root"] or not isinstance(old, list) or
                 not isinstance(new, list) or len(new) != len(old) + 1 or new[:-1] != old or
@@ -308,7 +312,7 @@ def _read_suite(reference, deep=True, require_snapshot=True, allow_missing=False
             raise ValueError("Private suite registry intent ownership is invalid")
         # Existing workspace may contain later valid fields; only reconcile registry.
         workspace = dict(workspace or candidate, same_library_registry=new)
-        registry = {"schema_version": "crescendo.same_library_views.v1", "token": candidate["same_library_token"], "views": new}
+        registry = {"schema_version": _contract_text("crescendo.same_library_views.v1"), "token": candidate["same_library_token"], "views": new}
     if state.get("session_id") != owner["session_id"] or workspace.get("root") != owner["workspace_root"]:
         raise ValueError("Private suite workspace identity differs from registry")
     if workspace.get("setup_private_session") != owner:
@@ -316,7 +320,7 @@ def _read_suite(reference, deep=True, require_snapshot=True, allow_missing=False
     if deep:
         pending_stages = _pending_creation_stages(owner, workspace)
         if pending_stages:
-            raise ValueError("CRESCENDO-SUITE-RECOVERY: Incomplete creation staging retained: " + ", ".join(pending_stages))
+            raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Incomplete creation staging retained: ") + ", ".join(pending_stages))
         from .private_view_access import _inventory
         _inventory(_deletion_access_workspace(workspace) if allow_missing else workspace)
         for row in workspace.get("same_library_registry") or []:
@@ -325,18 +329,18 @@ def _read_suite(reference, deep=True, require_snapshot=True, allow_missing=False
     snapshot_hash = state.get("prepared_hash")
     if snapshot_hash:
         if not re.fullmatch(r"[a-f0-9]{64}", snapshot_hash):
-            raise ValueError("CRESCENDO-SUITE-SNAPSHOT: Private suite snapshot identity is invalid")
+            raise ValueError(_contract_text("CRESCENDO-SUITE-SNAPSHOT: Private suite snapshot identity is invalid"))
         if require_snapshot:
             path = os.path.join(owner["root"], "prepared-" + snapshot_hash + ".json")
             try:
                 snapshot = _load(path, max_bytes=128 * 1024 * 1024)
             except (OSError, ValueError) as error:
-                raise ValueError("CRESCENDO-SUITE-SNAPSHOT: Private suite snapshot unavailable or invalid: " + str(error))
+                raise ValueError(_contract_text("CRESCENDO-SUITE-SNAPSHOT: Private suite snapshot unavailable or invalid: ") + str(error))
             if _snapshot_hash(snapshot) != snapshot_hash:
-                raise ValueError("CRESCENDO-SUITE-SNAPSHOT: Private suite snapshot changed")
+                raise ValueError(_contract_text("CRESCENDO-SUITE-SNAPSHOT: Private suite snapshot changed"))
             state["prepared"] = snapshot
     if require_snapshot and not isinstance(state.get("prepared"), dict):
-        raise ValueError("CRESCENDO-SUITE-SNAPSHOT: Legacy suite has no persisted inspected snapshot; cannot safely reopen")
+        raise ValueError(_contract_text("CRESCENDO-SUITE-SNAPSHOT: Legacy suite has no persisted inspected snapshot; cannot safely reopen"))
     return owner, state, workspace
 
 
@@ -367,7 +371,7 @@ def list_setup_private_sessions(config):
         if counts.get(row.get("suite_id"), 0) > 1:
             row["status"] = "unavailable"
             row["can_load"] = row["can_delete"] = False
-            row.setdefault("warnings", []).append("CRESCENDO-SUITE-RECOVERY: Duplicate suite identifier across storage roots")
+            row.setdefault("warnings", []).append(_contract_text("CRESCENDO-SUITE-RECOVERY: Duplicate suite identifier across storage roots"))
     return result
 
 
@@ -381,16 +385,16 @@ def _list_setup_private_base(base):
         root = os.path.join(base, token)
         try:
             owner = _owner(_load(os.path.join(root, OWNER)))
-            index_path = os.path.join(root, "suite_index.json")
+            index_path = os.path.join(root, _contract_text("suite_index.json"))
             item = None
-            if (not os.path.lexists(os.path.join(root, "suite_metadata_commit.json"))
-                    and os.path.isfile(index_path) and os.path.isfile(os.path.join(root, "session_state.json"))
-                    and os.path.isfile(os.path.join(owner["workspace_root"], "workspace.json"))
-                    and os.path.isfile(os.path.join(owner["workspace_root"], "same_library_views.json"))):
+            if (not os.path.lexists(os.path.join(root, _contract_text("suite_metadata_commit.json")))
+                    and os.path.isfile(index_path) and os.path.isfile(os.path.join(root, _contract_text("session_state.json")))
+                    and os.path.isfile(os.path.join(owner["workspace_root"], _contract_text("workspace.json")))
+                    and os.path.isfile(os.path.join(owner["workspace_root"], _contract_text("same_library_views.json")))):
                 index = _load(index_path)
-                state_stat = os.stat(os.path.join(root, "session_state.json"))
-                workspace_stat = os.stat(os.path.join(owner["workspace_root"], "workspace.json"))
-                registry_stat = os.stat(os.path.join(owner["workspace_root"], "same_library_views.json"))
+                state_stat = os.stat(os.path.join(root, _contract_text("session_state.json")))
+                workspace_stat = os.stat(os.path.join(owner["workspace_root"], _contract_text("workspace.json")))
+                registry_stat = os.stat(os.path.join(owner["workspace_root"], _contract_text("same_library_views.json")))
                 if (index.get("session_id") == token and index.get("root") == root and
                         index.get("state_stat") == [state_stat.st_mtime_ns, state_stat.st_size] and
                         index.get("workspace_stat") == [workspace_stat.st_mtime_ns, workspace_stat.st_size] and
@@ -402,7 +406,7 @@ def _list_setup_private_base(base):
             quarantine = _quarantine(owner)
             if quarantine:
                 item.update(status="quarantined", can_load=False, can_delete=False, can_recover=False)
-                item.setdefault("warnings", []).append("CRESCENDO-SUITE-RECOVERY: Isolated suite; " + str(quarantine.get("reason") or "recovery required"))
+                item.setdefault("warnings", []).append(_contract_text("CRESCENDO-SUITE-RECOVERY: Isolated suite; ") + str(quarantine.get("reason") or "recovery required"))
             try:
                 lease = _acquire_lease(root)
                 _release_lease(lease)
@@ -435,23 +439,23 @@ def _suite_summary(owner, state, workspace):
                     and state.get("status") in ("ready", "released", "closed"),
                 can_delete=state.get("status") != "deleted" and not state.get("refresh_pending"),
                 can_recover=isinstance(state.get("refresh_pending"), dict) and
-                    state["refresh_pending"].get("schema_version") == "crescendo.suite_refresh_pending.v1")
+                    state["refresh_pending"].get("schema_version") == _contract_text("crescendo.suite_refresh_pending.v1"))
     if not (state.get("prepared_hash") or isinstance(state.get("prepared"), dict)):
-        item["warnings"].append("CRESCENDO-SUITE-SNAPSHOT: Legacy suite has no saved inspected snapshot; delete only")
+        item["warnings"].append(_contract_text("CRESCENDO-SUITE-SNAPSHOT: Legacy suite has no saved inspected snapshot; delete only"))
     stages = _pending_creation_stages(owner, workspace)
     if stages:
         item.update(status="recovery_required", can_load=False, can_delete=False, can_recover=False)
-        item["warnings"].append("CRESCENDO-SUITE-RECOVERY: Incomplete creation staging retained: " + ", ".join(stages))
+        item["warnings"].append(_contract_text("CRESCENDO-SUITE-RECOVERY: Incomplete creation staging retained: ") + ", ".join(stages))
     if state.get("refresh_pending"):
         item["status"] = "recovery_required"
     if state.get("unsafe") or state.get("refresh_pending"):
-        item["warnings"].append("CRESCENDO-SUITE-RECOVERY: Suite has unresolved native or refresh state")
+        item["warnings"].append(_contract_text("CRESCENDO-SUITE-RECOVERY: Suite has unresolved native or refresh state"))
     return item
 
 def reopen_setup_private_session(reference, config, for_delete=False):
     owner = _owner(reference)
     if _quarantine(owner):
-        raise ValueError("CRESCENDO-SUITE-RECOVERY: Suite is isolated; retained for recovery")
+        raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Suite is isolated; retained for recovery"))
     lease = _acquire_lease(owner["root"])
     try:
         owner, state, workspace = _read_suite(owner, require_snapshot=not for_delete, allow_missing=for_delete)
@@ -465,7 +469,7 @@ def reopen_setup_private_session(reference, config, for_delete=False):
             if os.path.isdir(root) and not _reconcile_owned_capture(root, request_cancel=False).get("cleanup_proven"):
                 raise ValueError("Private suite prior native activity is not proven stopped")
         for control in state.get("operations") or []:
-            if os.path.lexists(os.path.join(control, "legacy_guardian_launch.json")):
+            if os.path.lexists(os.path.join(control, _contract_text("legacy_guardian_launch.json"))):
                 proof = quiesce_legacy_guardian_attempt(control, expected_workspace_root=owner["workspace_root"],
                                                         timeout_seconds=0, terminate_owned=False)
                 if proof.get("state") != "dead":
@@ -473,11 +477,11 @@ def reopen_setup_private_session(reference, config, for_delete=False):
         # Under the exclusive lease, reconcile an interrupted metadata/registry mirror.
         mirror_state = dict(state)
         mirror_state.pop("prepared", None)
-        atomic_write_json(os.path.join(owner["root"], "session_state.json"), mirror_state)
-        atomic_write_json(os.path.join(owner["workspace_root"], "same_library_views.json"), {
-            "schema_version": "crescendo.same_library_views.v1", "token": workspace["same_library_token"],
+        atomic_write_json(os.path.join(owner["root"], _contract_text("session_state.json")), mirror_state)
+        atomic_write_json(os.path.join(owner["workspace_root"], _contract_text("same_library_views.json")), {
+            "schema_version": _contract_text("crescendo.same_library_views.v1"), "token": workspace["same_library_token"],
             "views": workspace.get("same_library_registry") or []})
-        atomic_write_json(os.path.join(owner["workspace_root"], "workspace.json"), workspace)
+        atomic_write_json(os.path.join(owner["workspace_root"], _contract_text("workspace.json")), workspace)
         controller = _PrivateSession.__new__(_PrivateSession)
         controller.owner, controller.lease = owner, lease
         controller.prepared, controller.config, controller.workspace = state.get("prepared") or {}, copy.deepcopy(config), workspace
@@ -541,14 +545,14 @@ def update_setup_private_session_snapshot(reference, prepared):
 def _backup_legacy_metadata_once(owner, workspace, allow_missing_snapshot=False):
     """Retain pre-migration metadata; the backup is published without replacement."""
     from .utils import _fsync_directory
-    path = os.path.join(owner["root"], "suite_legacy_metadata_backup.json")
+    path = os.path.join(owner["root"], _contract_text("suite_legacy_metadata_backup.json"))
     if os.path.lexists(path):
         existing = _load(path, max_bytes=384 * 1024 * 1024)
-        if existing.get("schema_version") != "crescendo.suite_legacy_backup.v1" or existing.get("owner") != owner:
-            raise ValueError("CRESCENDO-SUITE-RECOVERY: Existing legacy backup identity is invalid")
+        if existing.get("schema_version") != _contract_text("crescendo.suite_legacy_backup.v1") or existing.get("owner") != owner:
+            raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Existing legacy backup identity is invalid"))
         return
-    state_path = os.path.join(owner["root"], "session_state.json")
-    workspace_path = os.path.join(owner["workspace_root"], "workspace.json")
+    state_path = os.path.join(owner["root"], _contract_text("session_state.json"))
+    workspace_path = os.path.join(owner["workspace_root"], _contract_text("workspace.json"))
     if not os.path.isfile(state_path) or not os.path.isfile(workspace_path):
         # A newly creating suite has no legacy workspace to migrate.
         return
@@ -557,22 +561,22 @@ def _backup_legacy_metadata_once(owner, workspace, allow_missing_snapshot=False)
     if (prior_state.get("session_id") != owner["session_id"] or
             prior_workspace.get("setup_private_session") != owner or
             prior_workspace.get("root") != owner["workspace_root"]):
-        raise ValueError("CRESCENDO-SUITE-RECOVERY: Legacy metadata identity is invalid")
+        raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Legacy metadata identity is invalid"))
     snapshot = None
     snapshot_hash = prior_state.get("prepared_hash")
     if snapshot_hash:
         if not re.fullmatch(r"[a-f0-9]{64}", snapshot_hash):
-            raise ValueError("CRESCENDO-SUITE-RECOVERY: Legacy snapshot hash is invalid")
+            raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Legacy snapshot hash is invalid"))
         snapshot_path = os.path.join(owner["root"], "prepared-" + snapshot_hash + ".json")
         if not os.path.lexists(snapshot_path) and allow_missing_snapshot:
             snapshot = None
         else:
             snapshot = _load(snapshot_path, max_bytes=128 * 1024 * 1024)
             if _snapshot_hash(snapshot) != snapshot_hash:
-                raise ValueError("CRESCENDO-SUITE-RECOVERY: Legacy snapshot identity changed")
+                raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Legacy snapshot identity changed"))
     elif isinstance(prior_state.get("prepared"), dict):
         snapshot = prior_state["prepared"]
-    backup = {"schema_version": "crescendo.suite_legacy_backup.v1", "owner": owner,
+    backup = {"schema_version": _contract_text("crescendo.suite_legacy_backup.v1"), "owner": owner,
               "state": prior_state, "workspace": prior_workspace, "prepared": snapshot,
               "snapshot_missing": bool(snapshot_hash and snapshot is None)}
     fd, tmp = tempfile.mkstemp(prefix=".suite-legacy-backup-", suffix=".tmp", dir=owner["root"])
@@ -586,8 +590,8 @@ def _backup_legacy_metadata_once(owner, workspace, allow_missing_snapshot=False)
             os.link(tmp, path)
         except FileExistsError:
             existing = _load(path, max_bytes=384 * 1024 * 1024)
-            if existing.get("schema_version") != "crescendo.suite_legacy_backup.v1" or existing.get("owner") != owner:
-                raise ValueError("CRESCENDO-SUITE-RECOVERY: Existing legacy backup identity is invalid")
+            if existing.get("schema_version") != _contract_text("crescendo.suite_legacy_backup.v1") or existing.get("owner") != owner:
+                raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Existing legacy backup identity is invalid"))
         _fsync_directory(owner["root"])
     finally:
         if os.path.lexists(tmp):
@@ -658,25 +662,25 @@ class _PrivateSession(object):
             "label": self.label, "prepared_hash": snapshot_hash,
             "metadata_warnings": list(getattr(self, "metadata_warnings", []))}
         if self.workspace:
-            if not os.path.lexists(os.path.join(self.owner["root"], "suite_metadata_commit.json")):
+            if not os.path.lexists(os.path.join(self.owner["root"], _contract_text("suite_metadata_commit.json"))):
                 _backup_legacy_metadata_once(self.owner, self.workspace,
                                              allow_missing_snapshot=self.deletion_only)
             revision = uuid.uuid4().hex
             state["_suite_revision"] = revision
             self.workspace["_suite_revision"] = revision
-            atomic_write_json(os.path.join(self.owner["root"], "suite_metadata_commit.json"), {
-                "schema_version": "crescendo.suite_metadata_commit.v1", "owner": self.owner,
+            atomic_write_json(os.path.join(self.owner["root"], _contract_text("suite_metadata_commit.json")), {
+                "schema_version": _contract_text("crescendo.suite_metadata_commit.v1"), "owner": self.owner,
                 "revision": revision, "state": state, "workspace": self.workspace})
-        atomic_write_json(os.path.join(self.owner["root"], "session_state.json"), state)
+        atomic_write_json(os.path.join(self.owner["root"], _contract_text("session_state.json")), state)
         if self.workspace:
-            workspace_path = os.path.join(self.workspace["root"], "workspace.json")
+            workspace_path = os.path.join(self.workspace["root"], _contract_text("workspace.json"))
             atomic_write_json(workspace_path, self.workspace)
-            state_path = os.path.join(self.owner["root"], "session_state.json")
+            state_path = os.path.join(self.owner["root"], _contract_text("session_state.json"))
             state = _load(state_path, max_bytes=128 * 1024 * 1024)
             summary = _suite_summary(self.owner, state, self.workspace)
             state_stat, workspace_stat = os.stat(state_path), os.stat(workspace_path)
-            registry_stat = os.stat(os.path.join(self.workspace["root"], "same_library_views.json"))
-            atomic_write_json(os.path.join(self.owner["root"], "suite_index.json"), {
+            registry_stat = os.stat(os.path.join(self.workspace["root"], _contract_text("same_library_views.json")))
+            atomic_write_json(os.path.join(self.owner["root"], _contract_text("suite_index.json")), {
                 "session_id": self.owner["session_id"], "root": self.owner["root"],
                 "state_stat": [state_stat.st_mtime_ns, state_stat.st_size],
                 "workspace_stat": [workspace_stat.st_mtime_ns, workspace_stat.st_size],
@@ -731,7 +735,7 @@ class _PrivateSession(object):
                     # Never chmod a view while an owned native writer may live.
                     from .legacy_guardian import quiesce_legacy_guardian_attempt
                     for control in self.operations[first_operation:]:
-                        if not os.path.lexists(os.path.join(control, "legacy_guardian_launch.json")):
+                        if not os.path.lexists(os.path.join(control, _contract_text("legacy_guardian_launch.json"))):
                             continue
                         try:
                             proof = quiesce_legacy_guardian_attempt(control,
@@ -801,27 +805,27 @@ class _PrivateSession(object):
         from .private_netlist import native_corner_schedule_skill, parse_native_corner_schedule
         from .storage_policy import native_storage_readback_lines, load_native_storage_readback
         corner_metadata = os.path.join(control, "source_corner_schedule.tsv")
-        metadata_lines = ['crescSetupMetadataRead=errset(progn('] + native_corner_schedule_skill(
+        metadata_lines = [_contract_text('crescSetupMetadataRead=errset(progn(')] + native_corner_schedule_skill(
             workspace["setup"], corner_metadata, include_disabled_tests=True, masks_only=True) + ['t) nil)']
-        storage_lines = ['crescSetupStorageRead=errset(progn('] + native_storage_readback_lines(workspace) + ['t) nil)']
+        storage_lines = [_contract_text('crescSetupStorageRead=errset(progn(')] + native_storage_readback_lines(workspace) + ['t) nil)']
         from .single_test import native_selection, native_selection_lines
         selected_plan = native_selection(workspace['setup'])
         body = _workspace_startup_load_lines(workspace) + aliases + [
-            'unless(errset(load("%s") t) error("Crescendo Setup private config creation failed\\n"))' % _skill_quote(patch),
-            'unless(crescSchematicPatchResult error("Crescendo Setup private binding incomplete\\n"))',
+            _contract_text('unless(errset(load("%s") t) error("Crescendo Setup private config creation failed\\n"))') % _skill_quote(patch),
+            _contract_text('unless(crescSchematicPatchResult error("Crescendo Setup private binding incomplete\\n"))'),
             'session=maeOpenSetup("%s" "%s" "%s" ?mode "a")' % tuple(
                 _skill_quote(workspace[key]) for key in ("primary_library", "setup_cell", "setup_view")),
-            'unless(session error("Crescendo Setup private Maestro could not open\\n"))',
+            _contract_text('unless(session error("Crescendo Setup private Maestro could not open\\n"))'),
             'mainSDB=axlGetMainSetupDB(session)'] + policies + workspace_test_design_lines(workspace) + native_selection_lines(selected_plan) + metadata_lines + storage_lines + [
-            'unless(maeSaveSetup(?session session) error("Crescendo Setup private Maestro save rejected\\n"))',
-            'unless(maeCloseSession(?session session ?forceClose t) error("Crescendo Setup private Maestro close rejected\\n"))',
-            'printf("CRESCENDO_SETUP_PRIVATE_BINDING_DONE\\n")']
+            _contract_text('unless(maeSaveSetup(?session session) error("Crescendo Setup private Maestro save rejected\\n"))'),
+            _contract_text('unless(maeCloseSession(?session session ?forceClose t) error("Crescendo Setup private Maestro close rejected\\n"))'),
+            _contract_text('printf("CRESCENDO_SETUP_PRIVATE_BINDING_DONE\\n")')]
         script, ready = os.path.join(control, "setup.il"), os.path.join(control, "ready")
-        body.insert(0, 'crescReady=outfile("%s") when(crescReady close(crescReady))' % _skill_quote(ready))
-        lines, generation = bounded_skill_body_lines(body, "crescSetupPrivateResult")
-        lines.append('if(crescSetupPrivateResult then exit(0) else exit(1))')
+        body.insert(0, _contract_text('crescReady=outfile("%s") when(crescReady close(crescReady))') % _skill_quote(ready))
+        lines, generation = bounded_skill_body_lines(body, _contract_text("crescSetupPrivateResult"))
+        lines.append(_contract_text('if(crescSetupPrivateResult then exit(0) else exit(1))'))
         atomic_write_text(script, "\n".join(lines) + "\n")
-        atomic_write_json(os.path.join(control, "setup_generation.json"), generation)
+        atomic_write_json(os.path.join(control, _contract_text("setup_generation.json")), generation)
         def guarded(arguments, **kwargs):
             return run_command(arguments, startup_lock=CADENCE_STARTUP_LOCK, ready_path=ready, **kwargs)
         command = run_owned_command([config["cadence"]["ocean_bin"], "-nograph", "-restore", script],
@@ -829,7 +833,7 @@ class _PrivateSession(object):
             timeout_seconds=float(config.get("runtime", {}).get("command_timeout_seconds", 180)),
             control_root=control, token="setup-private-" + uuid.uuid4().hex,
             cancel_check=cancel_check, command_runner=guarded)
-        atomic_write_json(os.path.join(control, "command.json"), command)
+        atomic_write_json(os.path.join(control, _contract_text("command.json")), command)
         if (command.get("returncode") != 0 or command.get("timed_out") or command.get("cancelled")
                 or command.get("termination_failed") or command.get("guardian_cleanup", {}).get("state") != "dead"):
             self.unsafe = command.get("guardian_cleanup", {}).get("state") != "dead"
@@ -890,7 +894,7 @@ class _PrivateSession(object):
         def ignore(directory, names):
             return list(set(copy_ignore(directory, names)) | {name for name in names if name == MARKER or name.endswith("~") or ".bak" in name})
         os.mkdir(stage, 0o700)
-        atomic_write_json(os.path.join(stage, MARKER), {"schema_version": "crescendo.same_library_views.v1",
+        atomic_write_json(os.path.join(stage, MARKER), {"schema_version": _contract_text("crescendo.same_library_views.v1"),
             "token": record["token"], "target": record["target"]})
         for name in os.listdir(source):
             if name in ignore(source, [name]):
@@ -904,7 +908,7 @@ class _PrivateSession(object):
             from .single_test import project_native_files
             project_native_files(os.path.join(stage, os.path.basename(workspace["setup_sdb"])),
                                  prepared["setup"]["selected_test"],
-                                 os.path.join(self.owner["root"], "native_test_projection.json"))
+                                 os.path.join(self.owner["root"], _contract_text("native_test_projection.json")))
         _make_private_tree_owner_writable(stage)
         from .setup_baseline import _files
         staged_files = _files(stage)
@@ -925,7 +929,7 @@ class _PrivateSession(object):
         workspace.pop("native_parameter_last_values", None)
         workspace.pop("_native_corner_selection_applied", None)
         workspace.pop("_native_execution_selection_applied", None)
-        workspace.pop("_cr_selected_corners", None)
+        workspace.pop(_contract_text("_cr_selected_corners"), None)
         from .model_paths import remap_workspace_setup_paths
         from .cadence import detect_pdk_context
         workspace["model_paths"] = remap_workspace_setup_paths(workspace, config,
@@ -999,7 +1003,7 @@ def create_setup_private_session(prepared, config, cancel_check=None, label=None
             from .single_test import project_native_files
             if prepared["setup"].get("selected_test"):
                 project_native_files(controller.workspace["setup_sdb"], prepared["setup"]["selected_test"],
-                                     os.path.join(controller.owner["root"], "native_test_projection.json"))
+                                     os.path.join(controller.owner["root"], _contract_text("native_test_projection.json")))
             controller.workspace["inherited_history_entries_removed"] = _clear_inherited_history(controller.workspace)
             controller._native_bind([], config, cancel_check)
         prepared["setup"]["test_corner_masks"] = copy.deepcopy(controller.prepared["setup"].get("test_corner_masks") or {})
@@ -1071,7 +1075,8 @@ def apply_setup_private_cells(reference, prepared, config, cancel_check=None):
 
 
 @contextlib.contextmanager
-def borrow_setup_private_session(prepared, config, root, cancel_check=None, completion_reconciler=None):
+def borrow_setup_private_session(prepared, config, root, cancel_check=None,
+                                 completion_reconciler=None, phase_timings=None):
     reference = (prepared or {}).get("setup_private_session")
     if not reference:
         yield None
@@ -1080,7 +1085,20 @@ def borrow_setup_private_session(prepared, config, root, cancel_check=None, comp
     if controller.deletion_only:
         raise ValueError("Legacy suite is open for deletion only")
     _require_matching_test(controller, prepared)
-    controller._lock(cancel_check)
+    if phase_timings is None:
+        controller._lock(cancel_check)
+        acquired_at = None
+    else:
+        lock_started = timing_tick()
+        acquired = False
+        try:
+            controller._lock(cancel_check)
+            acquired = True
+        finally:
+            acquired_at = timing_tick()
+            phase_timings["shared_setup_wait"] = phase_seconds(
+                elapsed_seconds(lock_started, acquired_at) if acquired_at is not None else None,
+                boundary="owned Maestro suite lock acquisition", completed=acquired)
     try:
         from .setup_baseline import verify_setup_baseline
         expected = verify_setup_baseline(controller.prepared["setup"])
@@ -1100,6 +1118,9 @@ def borrow_setup_private_session(prepared, config, root, cancel_check=None, comp
             body_error = None
             try:
                 controller.reset_maestro(prepared, config)
+                if phase_timings is not None:
+                    phase_timings["shared_setup"] = phase_seconds(elapsed_seconds(acquired_at),
+                        boundary="owned Maestro suite identity, writable views and reset", completed=True)
                 yield controller.workspace
             except BaseException as error:
                 body_error = error
@@ -1138,6 +1159,9 @@ def borrow_setup_private_session(prepared, config, root, cancel_check=None, comp
                         detail["reconciliation_proof"] = copy.deepcopy(error.detail)
     finally:
         controller.lock.release()
+        if phase_timings is not None and "shared_setup" not in phase_timings:
+            phase_timings["shared_setup"] = phase_seconds(elapsed_seconds(acquired_at),
+                boundary="owned Maestro suite identity, writable views and reset", completed=False)
 
 
 def close_setup_private_session(reference, timeout_seconds=12):
@@ -1147,7 +1171,7 @@ def close_setup_private_session(reference, timeout_seconds=12):
     if controller is None or controller.owner != owner:
         if owner["session_id"] in _CLOSED:
             return {"cleanup_proven": True, "state": "released", "session_id": owner["session_id"], "removed": [], "warnings": []}
-        raise ValueError("Private setup session is not owned by this Crescendo process")
+        raise ValueError(_contract_text("Private setup session is not owned by this Crescendo process"))
     if controller.closed:
         return {"cleanup_proven": True, "state": "closed", "session_id": owner["session_id"], "removed": []}
     deadline = time.monotonic() + max(0.0, float(timeout_seconds))
@@ -1166,7 +1190,7 @@ def close_setup_private_session(reference, timeout_seconds=12):
         operations = [quiesce_legacy_guardian_attempt(control,
             expected_workspace_root=controller.owner["workspace_root"], timeout_seconds=max(0.0, deadline-time.monotonic()),
             terminate_owned=True) for control in controller.operations
-            if os.path.lexists(os.path.join(control, "legacy_guardian_launch.json"))]
+            if os.path.lexists(os.path.join(control, _contract_text("legacy_guardian_launch.json")))]
         if not all(row.get("cleanup_proven") for row in proofs) or any(row.get("state") != "dead" for row in operations):
             return {"cleanup_proven": False, "state": "private_setup_native_stop_unproven",
                     "preparations": proofs, "operations": operations}
@@ -1258,12 +1282,12 @@ def refresh_setup_private_session(reference, prepared, config, cancel_check=None
         from .workspace import tree_content_fingerprint
         for row in rows:
             row["fingerprint"] = tree_content_fingerprint(row["backup"])["fingerprint"]
-        recovery = {"schema_version": "crescendo.suite_refresh_recovery.v1", "owner": controller.owner,
+        recovery = {"schema_version": _contract_text("crescendo.suite_refresh_recovery.v1"), "owner": controller.owner,
                     "backup_root": backup_root, "views": rows, "old_state": saved_state,
                     "old_workspace": saved_workspace, "old_prepared": old_prepared,
                     "init_sha256": hashlib.sha256(old_init.encode("utf-8")).hexdigest()}
-        atomic_write_json(os.path.join(backup_root, "recovery.json"), recovery)
-        controller.refresh_pending = {"schema_version": "crescendo.suite_refresh_pending.v1",
+        atomic_write_json(os.path.join(backup_root, _contract_text("recovery.json")), recovery)
+        controller.refresh_pending = {"schema_version": _contract_text("crescendo.suite_refresh_pending.v1"),
             "backup_root": backup_root, "views": rows, "recovery_hash": _snapshot_hash(recovery)}
         controller.status = "refreshing"
         controller.persist()
@@ -1326,7 +1350,7 @@ def refresh_setup_private_session(reference, prepared, config, cancel_check=None
                 except BaseException as rollback_error:
                     controller.unsafe, controller.status = True, "unsafe"
                     controller.persist()
-                    raise RuntimeError("CRESCENDO-SUITE-ROLLBACK: Refresh rollback failed; evidence retained: " + str(rollback_error)) from rollback_error
+                    raise RuntimeError(_contract_text("CRESCENDO-SUITE-ROLLBACK: Refresh rollback failed; evidence retained: ") + str(rollback_error)) from rollback_error
                 raise
         from .workspace import _make_private_tree_owner_writable
         _make_private_tree_owner_writable(backup_root)
@@ -1341,13 +1365,13 @@ def _recovery_tree_identity(path):
     from .private_view_access import _object_identity
     root = _object_identity(path)
     if not stat.S_ISDIR(root.st_mode) or os.path.realpath(path) != path or os.path.ismount(path):
-        raise ValueError("CRESCENDO-SUITE-RECOVERY: Unsafe recovery directory")
+        raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Unsafe recovery directory"))
     for directory, dirs, files in os.walk(path, followlinks=False):
         for name in dirs + files:
             child = os.path.join(directory, name)
             info = _object_identity(child)
             if info.st_dev != root.st_dev or os.path.ismount(child) or ".cdslck" in name:
-                raise ValueError("CRESCENDO-SUITE-RECOVERY: Lock or filesystem boundary in recovery directory")
+                raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Lock or filesystem boundary in recovery directory"))
     return root
 
 
@@ -1367,10 +1391,10 @@ def _recovery_move(source, target, receipt_path):
         return hashlib.sha256(json.dumps(manifest, ensure_ascii=True, separators=(",", ":")).encode("utf-8")).hexdigest()
     if os.path.lexists(receipt_path):
         record = _load(receipt_path)
-        if (record.get("schema_version") != "crescendo.recovery_move.v1" or
+        if (record.get("schema_version") != _contract_text("crescendo.recovery_move.v1") or
                 record.get("source") != source or record.get("target") != target or
                 record.get("state") not in ("copying", "copied", "complete")):
-            raise ValueError("CRESCENDO-SUITE-RECOVERY: Invalid compatibility move receipt")
+            raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Invalid compatibility move receipt"))
     else:
         try:
             _rename_noreplace(source, target)
@@ -1379,8 +1403,8 @@ def _recovery_move(source, target, receipt_path):
         except RenameNoReplaceUnavailable:
             info = _recovery_tree_identity(source)
             if os.path.lexists(target):
-                raise ValueError("CRESCENDO-SUITE-RECOVERY: Recovery target became occupied")
-            record = {"schema_version": "crescendo.recovery_move.v1", "source": source,
+                raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Recovery target became occupied"))
+            record = {"schema_version": _contract_text("crescendo.recovery_move.v1"), "source": source,
                       "target": target, "source_dev": info.st_dev, "source_ino": info.st_ino,
                       "fingerprint": fingerprint(source), "state": "copying"}
             atomic_write_json(receipt_path, record)
@@ -1388,24 +1412,24 @@ def _recovery_move(source, target, receipt_path):
         info = _recovery_tree_identity(source)
         if ((info.st_dev, info.st_ino) != (record.get("source_dev"), record.get("source_ino")) or
                 fingerprint(source) != record.get("fingerprint")):
-            raise ValueError("CRESCENDO-SUITE-RECOVERY: Recovery source changed; copies retained")
-        copy_tree_exclusive(source, target, receipt_path + ".copy.json")
+            raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Recovery source changed; copies retained"))
+        copy_tree_exclusive(source, target, receipt_path + _contract_text(".copy.json"))
         target_info = _recovery_tree_identity(target)
         if fingerprint(target) != record["fingerprint"]:
-            raise ValueError("CRESCENDO-SUITE-RECOVERY: Recovery copy verification failed")
+            raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Recovery copy verification failed"))
         record.update(state="copied", target_dev=target_info.st_dev, target_ino=target_info.st_ino)
         atomic_write_json(receipt_path, record)
     info = _recovery_tree_identity(target)
     if ((info.st_dev, info.st_ino) != (record.get("target_dev"), record.get("target_ino")) or
             fingerprint(target) != record.get("fingerprint")):
-        raise ValueError("CRESCENDO-SUITE-RECOVERY: Completed recovery copy changed")
+        raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Completed recovery copy changed"))
     if record["state"] == "complete":
         # A later move may legitimately reuse the former source name.
         return
     if os.path.lexists(source):
         info = _recovery_tree_identity(source)
         if (info.st_dev, info.st_ino) != (record.get("source_dev"), record.get("source_ino")):
-            raise ValueError("CRESCENDO-SUITE-RECOVERY: Recovery source inode changed")
+            raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Recovery source inode changed"))
         _make_private_tree_owner_writable(source)
         shutil.rmtree(source)
         _fsync_directory(os.path.dirname(source))
@@ -1425,31 +1449,31 @@ def recover_setup_private_session(reference, config):
     from .utils import _fsync_directory
     owner = _owner(reference)
     if _quarantine(owner):
-        raise ValueError("CRESCENDO-SUITE-RECOVERY: Suite is isolated")
+        raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Suite is isolated"))
     with _REGISTRY_LOCK:
         controller = _SESSIONS.get(owner["session_id"])
     if controller is not None and not controller.closed:
-        raise RuntimeError("CRESCENDO-SUITE-RECOVERY: This Crescendo process still owns the suite lease; release the suite after proving its native work stopped, then reopen to recover")
+        raise RuntimeError(_contract_text("CRESCENDO-SUITE-RECOVERY: This Crescendo process still owns the suite lease; release the suite after proving its native work stopped, then reopen to recover"))
     lease = _acquire_lease(owner["root"])
     try:
         owner, state, workspace = _read_suite(owner, deep=False, require_snapshot=False)
         pending = state.get("refresh_pending") or {}
-        if pending.get("schema_version") != "crescendo.suite_refresh_pending.v1":
-            raise ValueError("CRESCENDO-SUITE-RECOVERY: Legacy or missing refresh recovery record")
+        if pending.get("schema_version") != _contract_text("crescendo.suite_refresh_pending.v1"):
+            raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Legacy or missing refresh recovery record"))
         backup_root = pending.get("backup_root") or ""
         name = os.path.basename(backup_root)
         if (os.path.dirname(backup_root) != owner["root"] or not name.startswith("refresh_backup_") or
                 not _TOKEN.fullmatch(name[len("refresh_backup_"):]) or os.path.realpath(backup_root) != backup_root):
-            raise ValueError("CRESCENDO-SUITE-RECOVERY: Invalid refresh backup root")
+            raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Invalid refresh backup root"))
         info = _object_identity(backup_root)
         if not stat.S_ISDIR(info.st_mode):
-            raise ValueError("CRESCENDO-SUITE-RECOVERY: Invalid refresh backup")
-        recovery = _load(os.path.join(backup_root, "recovery.json"), max_bytes=128 * 1024 * 1024)
+            raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Invalid refresh backup"))
+        recovery = _load(os.path.join(backup_root, _contract_text("recovery.json")), max_bytes=128 * 1024 * 1024)
         old_workspace = recovery.get("old_workspace") or {}
         old_state = recovery.get("old_state") or {}
         old_prepared = recovery.get("old_prepared")
         rows = recovery.get("views")
-        if (recovery.get("schema_version") != "crescendo.suite_refresh_recovery.v1" or
+        if (recovery.get("schema_version") != _contract_text("crescendo.suite_refresh_recovery.v1") or
                 recovery.get("owner") != owner or recovery.get("backup_root") != backup_root or
                 _snapshot_hash(recovery) != pending.get("recovery_hash") or rows != pending.get("views") or
                 not isinstance(rows, list) or old_workspace.get("setup_private_session") != owner or
@@ -1457,12 +1481,12 @@ def recover_setup_private_session(reference, config):
                 old_workspace.get("same_library_registry") != workspace.get("same_library_registry") or
                 old_state.get("session_id") != owner["session_id"] or not isinstance(old_prepared, dict) or
                 _snapshot_hash(old_prepared) != old_state.get("prepared_hash") or state.get("restore_pending")):
-            raise ValueError("CRESCENDO-SUITE-RECOVERY: Refresh recovery identity is incomplete or changed")
+            raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Refresh recovery identity is incomplete or changed"))
         if state.get("unsafe") and not (state.get("capture_roots") or state.get("operations")):
-            raise ValueError("CRESCENDO-SUITE-RECOVERY: Unsafe state has no recorded stop evidence")
+            raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Unsafe state has no recorded stop evidence"))
         # Publish the committed state mirror so capture reconciliation reads the
         # same durable state selected above. No ownership/stop gate is bypassed.
-        atomic_write_json(os.path.join(owner["root"], "session_state.json"), state)
+        atomic_write_json(os.path.join(owner["root"], _contract_text("session_state.json")), state)
         for root in state.get("capture_roots") or []:
             if not os.path.isdir(root):
                 if ((state.get("capture_kinds") or {}).get(root) == "native_baseline" and
@@ -1472,9 +1496,9 @@ def recover_setup_private_session(reference, config):
                 raise ValueError("Private suite prior native activity is not proven stopped")
         from .legacy_guardian import quiesce_legacy_guardian_attempt
         for control in state.get("operations") or []:
-            if state.get("unsafe") and not os.path.lexists(os.path.join(control, "legacy_guardian_launch.json")):
-                raise ValueError("CRESCENDO-SUITE-RECOVERY: Unsafe operation has no guardian launch evidence")
-            if os.path.lexists(os.path.join(control, "legacy_guardian_launch.json")):
+            if state.get("unsafe") and not os.path.lexists(os.path.join(control, _contract_text("legacy_guardian_launch.json"))):
+                raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Unsafe operation has no guardian launch evidence"))
+            if os.path.lexists(os.path.join(control, _contract_text("legacy_guardian_launch.json"))):
                 proof = quiesce_legacy_guardian_attempt(control, expected_workspace_root=owner["workspace_root"],
                                                         timeout_seconds=0, terminate_owned=False)
                 if proof.get("state") != "dead":
@@ -1486,40 +1510,40 @@ def recover_setup_private_session(reference, config):
                 _recovery_tree_identity(member["path"])
         registry = workspace.get("same_library_registry") or []
         if len(rows) != len(registry):
-            raise ValueError("CRESCENDO-SUITE-RECOVERY: Backup member count differs")
+            raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Backup member count differs"))
         nonce = name[len("refresh_backup_"):]
         evidence = []
         def inspect_tree(path, member, expected_hash=None):
             st = _object_identity(path)
             if not stat.S_ISDIR(st.st_mode) or os.path.realpath(path) != path or os.path.ismount(path):
-                raise ValueError("CRESCENDO-SUITE-RECOVERY: Unsafe recovery tree")
+                raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Unsafe recovery tree"))
             marker = _load(os.path.join(path, MARKER))
             if marker.get("token") != member.get("token") or marker.get("target") != member.get("target"):
-                raise ValueError("CRESCENDO-SUITE-RECOVERY: Recovery marker differs")
+                raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Recovery marker differs"))
             for directory, dirs, files in os.walk(path, followlinks=False):
                 for child_name in dirs + files:
                     child = os.path.join(directory, child_name)
                     child_st = _object_identity(child)
                     if child_st.st_dev != st.st_dev or os.path.ismount(child) or ".cdslck" in child_name:
-                        raise ValueError("CRESCENDO-SUITE-RECOVERY: Lock or filesystem boundary in recovery tree")
+                        raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Lock or filesystem boundary in recovery tree"))
             if expected_hash and tree_content_fingerprint(path)["fingerprint"] != expected_hash:
-                raise ValueError("CRESCENDO-SUITE-RECOVERY: Backup fingerprint changed")
+                raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Backup fingerprint changed"))
             return st
         init_path = os.path.join(backup_root, "cdsinit.backup")
         init_info = _object_identity(init_path)
         if not stat.S_ISREG(init_info.st_mode):
-            raise ValueError("CRESCENDO-SUITE-RECOVERY: Invalid startup backup")
+            raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Invalid startup backup"))
         with open(init_path, "r") as stream:
             old_init = stream.read()
         if hashlib.sha256(old_init.encode("utf-8")).hexdigest() != recovery.get("init_sha256"):
-            raise ValueError("CRESCENDO-SUITE-RECOVERY: Startup backup changed")
+            raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Startup backup changed"))
         for index, (row, member) in enumerate(zip(rows, registry)):
             live = member.get("path")
             backup = os.path.join(backup_root, str(index))
             if row.get("path") != live or row.get("backup") != backup or not owns_view(workspace, member.get("target") or [], role=member.get("role")):
-                raise ValueError("CRESCENDO-SUITE-RECOVERY: Backup member identity differs")
+                raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Backup member identity differs"))
             inspect_tree(backup, member, row.get("fingerprint"))
-            stage, previous = live + "__cr_recover_" + nonce, live + "__cr_before_" + nonce
+            stage, previous = live + _contract_text("__cr_recover_") + nonce, live + _contract_text("__cr_before_") + nonce
             before_receipt = os.path.join(backup_root, "move_before_%d.json" % index)
             restore_receipt = os.path.join(backup_root, "move_restore_%d.json" % index)
             for src, dst, receipt in ((live, previous, before_receipt), (stage, live, restore_receipt)):
@@ -1531,7 +1555,7 @@ def recover_setup_private_session(reference, config):
                     inspect_tree(path, member)
             if live_exists and previous_exists:
                 if stage_exists or tree_content_fingerprint(live)["fingerprint"] != row.get("fingerprint"):
-                    raise ValueError("CRESCENDO-SUITE-RECOVERY: Ambiguous partially recovered member")
+                    raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Ambiguous partially recovered member"))
             else:
                 if not stage_exists:
                     shutil.copytree(backup, stage)
@@ -1540,11 +1564,11 @@ def recover_setup_private_session(reference, config):
                     inspect_tree(stage, member, row.get("fingerprint"))
                 if live_exists:
                     if previous_exists:
-                        raise ValueError("CRESCENDO-SUITE-RECOVERY: Recovery previous view occupied")
+                        raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Recovery previous view occupied"))
                     _recovery_move(live, previous, before_receipt)
                     _fsync_directory(os.path.dirname(live))
                 elif not previous_exists:
-                    raise ValueError("CRESCENDO-SUITE-RECOVERY: Original live member is missing")
+                    raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Original live member is missing"))
                 _recovery_move(stage, live, restore_receipt)
                 _fsync_directory(os.path.dirname(live))
                 inspect_tree(live, member, row.get("fingerprint"))
@@ -1560,11 +1584,11 @@ def recover_setup_private_session(reference, config):
         revision = uuid.uuid4().hex
         restored_state["_suite_revision"] = revision
         restored_workspace["_suite_revision"] = revision
-        atomic_write_json(os.path.join(owner["root"], "suite_metadata_commit.json"), {
-            "schema_version": "crescendo.suite_metadata_commit.v1", "owner": owner,
+        atomic_write_json(os.path.join(owner["root"], _contract_text("suite_metadata_commit.json")), {
+            "schema_version": _contract_text("crescendo.suite_metadata_commit.v1"), "owner": owner,
             "revision": revision, "state": restored_state, "workspace": restored_workspace})
-        atomic_write_json(os.path.join(owner["root"], "session_state.json"), restored_state)
-        atomic_write_json(os.path.join(owner["workspace_root"], "workspace.json"), restored_workspace)
+        atomic_write_json(os.path.join(owner["root"], _contract_text("session_state.json")), restored_state)
+        atomic_write_json(os.path.join(owner["workspace_root"], _contract_text("workspace.json")), restored_workspace)
         return {"recovered": True, "state": "released", "session_id": owner["session_id"],
                 "retained_evidence": [backup_root] + evidence}
     finally:
@@ -1574,7 +1598,7 @@ def delete_setup_private_session(reference, timeout_seconds=12):
     """Delete exactly registered views after proving all owned writers stopped."""
     controller = _controller(reference)
     if _quarantine(controller.owner):
-        raise RuntimeError("CRESCENDO-SUITE-RECOVERY: Suite is isolated")
+        raise RuntimeError(_contract_text("CRESCENDO-SUITE-RECOVERY: Suite is isolated"))
     deadline = time.monotonic() + max(0.0, float(timeout_seconds))
     if not controller.lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
         return {"cleanup_proven": False, "state": "private_setup_generation_active"}
@@ -1589,7 +1613,7 @@ def delete_setup_private_session(reference, timeout_seconds=12):
         operations = [quiesce_legacy_guardian_attempt(control,
             expected_workspace_root=controller.owner["workspace_root"], timeout_seconds=max(0.0, deadline-time.monotonic()),
             terminate_owned=True) for control in controller.operations
-            if os.path.lexists(os.path.join(control, "legacy_guardian_launch.json"))]
+            if os.path.lexists(os.path.join(control, _contract_text("legacy_guardian_launch.json")))]
         if not all(row.get("cleanup_proven") for row in proofs) or any(row.get("state") != "dead" for row in operations):
             return {"cleanup_proven": False, "state": "private_setup_native_stop_unproven",
                     "preparations": proofs, "operations": operations}
@@ -1632,10 +1656,10 @@ def rename_setup_private_session(reference, label, config, cancel_check=None):
                        "previous_root": controller.owner["root"],
                        "replacement_session_id": new_controller.owner["session_id"],
                        "replacement_root": new_controller.owner["root"],
-                       "previous_state": _load(os.path.join(controller.owner["root"], "session_state.json")),
+                       "previous_state": _load(os.path.join(controller.owner["root"], _contract_text("session_state.json"))),
                        "previous_workspace": copy.deepcopy(controller.workspace)}
-        atomic_write_json(os.path.join(new_controller.owner["root"], "replacement.json"), association)
-        atomic_write_json(os.path.join(controller.owner["root"], "replacement.json"), association)
+        atomic_write_json(os.path.join(new_controller.owner["root"], _contract_text("replacement.json")), association)
+        atomic_write_json(os.path.join(controller.owner["root"], _contract_text("replacement.json")), association)
         result = delete_setup_private_session(reference)
         if not result.get("cleanup_proven"):
             raise RuntimeError("New suite was created but retirement of the old suite failed; both registries retained: " + str(result))

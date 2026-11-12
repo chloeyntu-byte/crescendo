@@ -9,24 +9,27 @@ import signal
 import stat
 import time
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .resources import guardian_script_path
 from .utils import atomic_write_json, load_json
 
 
-MANIFEST_SCHEMA_VERSION = "crescendo.legacy_maestro_guardian.v1"
-GUARDIAN_SCHEMA_VERSION = "crescendo.ocean_worker_guardian.v1"
-ORPHAN_RECOVERY_LEGACY_SCHEMA_VERSION = "crescendo.guardian_orphan_recovery.v1"
-ORPHAN_RECOVERY_SCHEMA_VERSION = "crescendo.guardian_orphan_recovery.v2"
-MANIFEST_NAME = "legacy_guardian_launch.json"
-STATE_NAME = "guardian_state.json"
+MANIFEST_SCHEMA_VERSION = _contract_text("crescendo.legacy_maestro_guardian.v1")
+GUARDIAN_SCHEMA_VERSION = _contract_text("crescendo.ocean_worker_guardian.v1")
+ORPHAN_RECOVERY_LEGACY_SCHEMA_VERSION = _contract_text("crescendo.guardian_orphan_recovery.v1")
+ORPHAN_RECOVERY_SCHEMA_VERSION = _contract_text("crescendo.guardian_orphan_recovery.v2")
+MANIFEST_NAME = _contract_text("legacy_guardian_launch.json")
+STATE_NAME = _contract_text("guardian_state.json")
 LAUNCH_LOCK_NAME = MANIFEST_NAME + ".launch_lock.tmp"
-LAUNCH_TOKEN_ENVIRONMENT = "CRESCENDO_LEGACY_GUARDIAN_TOKEN"
-GUARDIAN_TOKEN_IDENTITY_SCHEMA = "crescendo.guardian_token_identity.v2"
+LAUNCH_TOKEN_ENVIRONMENT = _contract_text("CRESCENDO_LEGACY_GUARDIAN_TOKEN")
+GUARDIAN_TOKEN_IDENTITY_SCHEMA = _contract_text("crescendo.guardian_token_identity.v2")
 GUARDIAN_SCOPE_CONFIG_KEY = "_persistent_guardian_scope_token"
 TERMINAL_GUARDIAN_STATES = frozenset(("exited", "cleanup_failed", "launch_failed"))
 _STABLE_SCAN_INTERVAL_SECONDS = 0.05
 _GUARDIAN_SCOPE_TOKEN = re.compile(r"^[0-9a-f]{32}$")
-_SCOPED_GUARDIAN_TOKEN = re.compile(r"^crescendo2-[0-9a-f]{64}$")
+_SCOPED_GUARDIAN_TOKEN = re.compile(_contract_text(r"^crescendo2-[0-9a-f]{64}$"))
 
 
 def legacy_worker_guardian_token(epoch, worker_index):
@@ -45,7 +48,7 @@ def build_guardian_token_identity(scope_token, epoch, worker_index):
     if not epoch or worker_index < 0:
         raise ValueError("guardian token worker identity is malformed")
     payload = "%s\0%s\0%d" % (scope_token, epoch, worker_index)
-    token = "crescendo2-" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    token = _contract_text("crescendo2-") + hashlib.sha256(payload.encode("utf-8")).hexdigest()
     return {
         "schema_version": GUARDIAN_TOKEN_IDENTITY_SCHEMA,
         "scope_token": scope_token,
@@ -572,7 +575,7 @@ def _validated_manifest(attempt_root, expected_workspace_root=None,
             raise ValueError("legacy guardian wrapper command has no Ocean separator")
         if guardian_argv[separator + 1:] != manifest["argv"]:
             raise ValueError("legacy guardian wrapper Ocean command does not match its manifest")
-    manifest['_cr_moved_helper'] = moved_helper
+    manifest[_contract_text('_cr_moved_helper')] = moved_helper
     return manifest_path, manifest
 
 
@@ -1613,7 +1616,7 @@ def inspect_legacy_guardian_attempt(attempt_root, expected_workspace_root=None,
         )
         state_path = manifest["state_path"]
         if not os.path.lexists(state_path):
-            if manifest.get('_cr_moved_helper'):
+            if manifest.get(_contract_text('_cr_moved_helper')):
                 raise ValueError("moved guardian lacks durable terminal state")
             missing = _inspect_missing_guardian_state(manifest_path, manifest)
             if missing.get("retry_with_state"):
@@ -1639,7 +1642,7 @@ def inspect_legacy_guardian_attempt(attempt_root, expected_workspace_root=None,
         launch_boot_id = guardian.get("launch_boot_id") or guardian.get("boot_id")
         prior_boot = bool(current_boot_id and launch_boot_id and current_boot_id != launch_boot_id)
         terminal_proof = _terminal_cleanup_proof(guardian, manifest)
-        if manifest.get('_cr_moved_helper'):
+        if manifest.get(_contract_text('_cr_moved_helper')):
             identity_fields = ('guardian_pid', 'guardian_start_ticks', 'pid', 'pid_start_ticks')
             if (not _has_durable_launch_protocol(manifest) or guardian.get('status') != 'exited' or
                     terminal_proof.get('ok') is not True or not launch_boot_id or
@@ -1703,7 +1706,7 @@ def inspect_legacy_guardian_attempt(attempt_root, expected_workspace_root=None,
                     )
                 return recovered
         if active:
-            if manifest.get('_cr_moved_helper'):
+            if manifest.get(_contract_text('_cr_moved_helper')):
                 return {"state": "ambiguous", "reason": "moved guardian still has a live owned process",
                         "manifest_path": manifest_path, "state_path": state_path,
                         "processes": active, "termination_proof": {"ok": False, "kind": "moved_helper_active"}}

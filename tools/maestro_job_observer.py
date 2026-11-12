@@ -32,6 +32,8 @@ for _parser_root in (_source_root, _installed_root):
     if os.path.isfile(os.path.join(_parser_root, "crescendo_engine", "scheduler_protocol.py")):
         sys.path.insert(0, _parser_root)
         break
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
 from crescendo_engine.scheduler_protocol import (MAX_PROTOCOL_TEXT,
                                                   parse_submit_job_id,
                                                   parse_submit_observation)
@@ -46,19 +48,19 @@ POST_EXIT_DRAIN_SECONDS = 1.0
 def native_environment():
     env = dict(os.environ)
     for name in ENV_NAMES:
-        marker = env.pop("CRESCENDO_JOB_ENV_%s_SET" % name, "")
-        value = env.pop("CRESCENDO_JOB_ENV_%s_VALUE" % name, "")
+        marker = env.pop(_contract_text("CRESCENDO_JOB_ENV_%s_SET") % name, "")
+        value = env.pop(_contract_text("CRESCENDO_JOB_ENV_%s_VALUE") % name, "")
         if marker == "x":
             env[name] = value
         else:
             env.pop(name, None)
     # The submit CLI uses the caller's existing login context. The shell
     # launcher and Ocean retain their private HOME until this boundary.
-    marker = env.pop("CRESCENDO_SCHEDULER_HOME_SET", None)
-    value = env.pop("CRESCENDO_SCHEDULER_HOME_VALUE", "")
+    marker = env.pop(_contract_text("CRESCENDO_SCHEDULER_HOME_SET"), None)
+    value = env.pop(_contract_text("CRESCENDO_SCHEDULER_HOME_VALUE"), "")
     if marker is not None:
-        env["CRESCENDO_SIMULATION_HOME_SET"] = "x" if "HOME" in env else ""
-        env["CRESCENDO_SIMULATION_HOME_VALUE"] = env.get("HOME", "")
+        env[_contract_text("CRESCENDO_SIMULATION_HOME_SET")] = "x" if "HOME" in env else ""
+        env[_contract_text("CRESCENDO_SIMULATION_HOME_VALUE")] = env.get("HOME", "")
     if marker == "x":
         env["HOME"] = value
     elif marker == "":
@@ -76,7 +78,7 @@ def read_config(path):
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
             raise ValueError("Submission observer configuration has invalid ownership")
         value = json.loads(stream.read(128 * 1024))
-    if (value.get("schema_version") != "crescendo.maestro_job_observer.v1"
+    if (value.get("schema_version") != _contract_text("crescendo.maestro_job_observer.v1")
             or not isinstance(value.get("argv"), list) or not value["argv"]
             or any(not isinstance(item, str) for item in value["argv"])
             or not os.path.isabs(value.get("log_path") or "")):
@@ -85,7 +87,7 @@ def read_config(path):
 
 
 def append_event(path, record):
-    value = dict(record, schema_version="crescendo.maestro_submission_event.v1",
+    value = dict(record, schema_version=_contract_text("crescendo.maestro_submission_event.v1"),
                  time=datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
     raw = (json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":")) + "\n").encode("ascii")
     flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
@@ -108,7 +110,8 @@ def scheduler_job_ids(text, complete=True):
         # A job ID token can itself span writes. Publish complete lines only
         # until EOF; the complete terminal record is parsed again below.
         text = text.rsplit("\n", 1)[0] + "\n" if "\n" in text else ""
-    identifier = parse_submit_job_id(text)
+    from crescendo_engine.scheduler_providers import submission
+    identifier = submission(text, "")["job_id"]
     return [identifier] if identifier is not None else []
 
 
@@ -119,7 +122,8 @@ def channel_job_ids(channels, complete=True):
     for text in channels:
         if not complete:
             text = text.rsplit("\n", 1)[0] + "\n" if "\n" in text else ""
-        observation = parse_submit_observation(text)
+        from crescendo_engine.scheduler_providers import submission
+        observation = submission(text, "")
         found.update(observation["observed_job_ids"])
         invalid = invalid or observation["invalid"] or observation["rejected"]
     return sorted(found) if len(found) == 1 and not invalid else []
@@ -134,7 +138,7 @@ def run(config, native_args):
     path = config["log_path"]
     restored_environment = native_environment()
     common["scheduler_context"] = {
-        "caller_home_marker_present": "CRESCENDO_SCHEDULER_HOME_SET" in os.environ,
+        "caller_home_marker_present": _contract_text("CRESCENDO_SCHEDULER_HOME_SET") in os.environ,
         "home_state": "unset" if "HOME" not in restored_environment else (
             "empty" if restored_environment["HOME"] == "" else "set"),
         "home_changed_from_ocean": restored_environment.get("HOME") != os.environ.get("HOME"),

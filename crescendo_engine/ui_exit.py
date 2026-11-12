@@ -6,6 +6,9 @@ import os
 import threading
 import uuid
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .utils import atomic_write_json, utc_timestamp
 
 
@@ -28,7 +31,7 @@ def detach_service(service, reason='User forced UI exit'):
     request_detach(service)
     from .setup_private_session import close_setup_private_session, detach_setup_private_session
     references = copy.deepcopy(list(service.setup_private_sessions.values()))
-    result = {'schema_version': 'crescendo.ui_detach.v1', 'ui_exit_requested': True,
+    result = {'schema_version': _contract_text('crescendo.ui_detach.v1'), 'ui_exit_requested': True,
               'cleanup_confirmed': False, 'artifact_policy': 'retain_and_isolate',
               'pid': os.getpid(), 'owner_uid': os.getuid(), 'reason': str(reason),
               'created_at': utc_timestamp(), 'suites': [], 'runs': [], 'warnings': []}
@@ -84,5 +87,5 @@ def detach_service(service, reason='User forced UI exit'):
                 service.stop(name)
             except Exception:
                 pass
-    threading.Thread(target=request_stops, name='crescendo-detached-stop-request', daemon=True).start()
+    threading.Thread(target=request_stops, name=_contract_text('crescendo-detached-stop-request'), daemon=True).start()
     return result

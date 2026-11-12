@@ -10,12 +10,16 @@ import threading
 import time
 import uuid
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
+from .candidate_timing import elapsed, measure, timestamp
 from .utils import atomic_write_json, ensure_dir
 
-SCHEMA = "crescendo.shared_maestro.v1"
-REFERENCE = "shared_maestro_reference.json"
-OWNER = "owner.json"
-REGISTRY = "epochs.json"
+SCHEMA = _contract_text("crescendo.shared_maestro.v1")
+REFERENCE = _contract_text("shared_maestro_reference.json")
+OWNER = _contract_text("owner.json")
+REGISTRY = _contract_text("epochs.json")
 _TOKEN = re.compile(r"^[a-f0-9]{32}$")
 _CANDIDATE = re.compile(r"^g[0-9]{3,}_c[0-9]{4,}$")
 
@@ -167,13 +171,16 @@ class SharedMaestroProducer(object):
     def _cancelled(self):
         return self.cancelled.is_set() or bool(self.cancel_check and self.cancel_check())
 
-    def generate(self, values, root, candidate_id):
+    def generate(self, values, root, candidate_id, phase_timings=None):
         from .netlist_providers import prepare_maestro_netlists
         from .private_netlist import PrivateNetlistError, reconcile_preparation, _manifest_digest, validate_manifest
         started = time.monotonic()
-        while not self.lock.acquire(timeout=0.05):
-            if self._cancelled():
-                raise PrivateNetlistError("Maestro generation cancelled while waiting for the shared suite")
+        phases = phase_timings if phase_timings is not None else {}
+        with measure(phases, "native_generation_lock_wait"):
+            while not self.lock.acquire(timeout=0.05):
+                if self._cancelled():
+                    raise PrivateNetlistError("Maestro generation cancelled while waiting for the shared suite")
+        acquired = timestamp()
         try:
             if self.closed or self._cancelled():
                 raise PrivateNetlistError("Maestro generation cancelled before private schematic update")
@@ -183,7 +190,7 @@ class SharedMaestroProducer(object):
                 manifest = prepare_maestro_netlists(
                     self.prepared, self.parameters, values, self.config, root, candidate_id,
                     spec=self.spec, cancel_check=self._cancelled, progress_callback=self.progress_callback,
-                    shared_state=self.state)
+                    shared_state=self.state, phase_timings=phases)
                 proof = reconcile_preparation(root, request_cancel=False)
                 if not proof.get("cleanup_proven"):
                     error = PrivateNetlistError("Shared Maestro native generation has not been proven stopped")
@@ -198,8 +205,8 @@ class SharedMaestroProducer(object):
                     "owner_scope": "ui_session" if self.state.get("session_owned") else "run"}
                 manifest["manifest_sha256"] = _manifest_digest(manifest)
                 validate_manifest(manifest)
-                atomic_write_json(os.path.join(root,"private_netlist.json"),manifest)
-                atomic_write_json(os.path.join(root,"private_netlist_candidate.json"),manifest)
+                atomic_write_json(os.path.join(root,_contract_text("private_netlist.json")),manifest)
+                atomic_write_json(os.path.join(root,_contract_text("private_netlist_candidate.json")),manifest)
                 return manifest
             except Exception as error:
                 self.failed = error
@@ -211,6 +218,43 @@ class SharedMaestroProducer(object):
                     if not isinstance(detail, dict):
                         error.detail = detail = {}
                     detail.update(termination_failed=True, preparation_cleanup=proof)
+                raise
+        finally:
+            self.lock.release()
+            phases["native_generation_lock_held"] = {"elapsed_seconds": elapsed(acquired, timestamp())}
+
+    def generate_batch(self, plan):
+        from .generation_batch import BatchUnsupported, SCHEMA as BATCH_SCHEMA
+        from .netlist_providers import prepare_maestro_netlists_batch
+        from .private_netlist import reconcile_preparation
+        if plan.get('schema_version') != BATCH_SCHEMA or plan.get('submitted'):
+            raise ValueError('Invalid or already submitted generation capture plan')
+        root = os.path.join(self.run_root, 'candidates', 'batch_' + plan['batch_epoch'])
+        while not self.lock.acquire(timeout=0.05):
+            if self._cancelled():
+                raise RuntimeError('Generation capture cancelled while waiting for suite')
+        try:
+            if self.closed or self._cancelled():
+                raise RuntimeError('Generation capture cancelled')
+            if self.failed is not None:
+                raise RuntimeError('Shared generation suite is unavailable')
+            try:
+                return prepare_maestro_netlists_batch(self.prepared, self.parameters, self.config,
+                    root, plan, spec=self.spec, cancel_check=self._cancelled,
+                    progress_callback=self.progress_callback)
+            except Exception as error:
+                proof = reconcile_preparation(root, request_cancel=True)
+                if not proof.get('cleanup_proven') or self._cancelled():
+                    self.failed = error
+                    raise
+                # Capture has no real solver submission. Mapping/capability
+                # failures may use scalar capture after owned cleanup.
+                if isinstance(error, (BatchUnsupported, ValueError)):
+                    raise BatchUnsupported(str(error))
+                from .private_netlist import PrivateNetlistUnsupported
+                if isinstance(error, PrivateNetlistUnsupported):
+                    raise BatchUnsupported(str(error))
+                self.failed = error
                 raise
         finally:
             self.lock.release()

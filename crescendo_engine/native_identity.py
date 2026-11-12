@@ -7,6 +7,9 @@ import re
 import sqlite3
 from urllib.parse import quote
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .spectre_values import parse_spectre_number
 
 
@@ -321,7 +324,7 @@ def resolve_task_model_identity(task, config, capture_simulator, setup=None, sna
     from .native_includes import (NativeIncludeError, native_include_environment,
                                   freeze_include_argv, resolve_include_file, expand_native_path)
     cwd = task.get('native_cwd')
-    result = {'schema_version': 'crescendo.native_model_identity.v1', 'native_cwd': cwd,
+    result = {'schema_version': _contract_text('crescendo.native_model_identity.v1'), 'native_cwd': cwd,
               'include_dirs': [], 'references': [], 'source_references': [], 'errors': [],
               'search_order': 'captured_cwd_then_captured_I_then_source_model_dir'}
     try:

@@ -14,10 +14,13 @@ import pwd
 import math
 import tempfile
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .utils import atomic_write_json, atomic_write_text
 
-SCHEMA = "crescendo.same_library_views.v1"
-MARKER = ".crescendo-owned-view.json"
+SCHEMA = _contract_text("crescendo.same_library_views.v1")
+MARKER = _contract_text(".crescendo-owned-view.json")
 
 
 class RenameNoReplaceUnavailable(OSError):
@@ -37,7 +40,7 @@ def _rename_noreplace(source, target):
     number = {"x86_64": 316, "amd64": 316, "aarch64": 276,
               "arm64": 276, "i386": 353, "i686": 353}.get(machine)
     if number is None:
-        raise RenameNoReplaceUnavailable("CRESCENDO-SUITE-RENAME: Atomic no-replace rename is unsupported on architecture " + machine + "; staging and target retained for recovery")
+        raise RenameNoReplaceUnavailable(_contract_text("CRESCENDO-SUITE-RENAME: Atomic no-replace rename is unsupported on architecture ") + machine + "; staging and target retained for recovery")
     libc = ctypes.CDLL(None, use_errno=True)
     result = libc.syscall(ctypes.c_long(number), ctypes.c_int(-100),
                           ctypes.c_char_p(os.fsencode(source)), ctypes.c_int(-100),
@@ -48,9 +51,9 @@ def _rename_noreplace(source, target):
                            getattr(errno, "EOPNOTSUPP", errno.ENOSYS),
                            getattr(errno, "ENOTSUP", errno.ENOSYS)))
         if code in unavailable:
-            raise RenameNoReplaceUnavailable(code, "CRESCENDO-SUITE-RENAME: Atomic no-replace rename is unavailable on this kernel/filesystem; staging and target retained for recovery (%s)" % os.strerror(code), target)
+            raise RenameNoReplaceUnavailable(code, _contract_text("CRESCENDO-SUITE-RENAME: Atomic no-replace rename is unavailable on this kernel/filesystem; staging and target retained for recovery (%s)") % os.strerror(code), target)
         if code == errno.EXDEV:
-            raise OSError(code, "CRESCENDO-SUITE-RENAME: Cross-device rename refused; staging and target retained (%s)" % os.strerror(code), target)
+            raise OSError(code, _contract_text("CRESCENDO-SUITE-RENAME: Cross-device rename refused; staging and target retained (%s)") % os.strerror(code), target)
         raise OSError(code, os.strerror(code), target)
 
 
@@ -109,7 +112,7 @@ def copy_tree_exclusive(source, target, receipt_path):
         raise ValueError("exclusive copy source is not a directory")
     manifest = _copy_tree_manifest(source)
     fingerprint = hashlib.sha256(json.dumps(manifest, ensure_ascii=True, separators=(",", ":")).encode("utf-8")).hexdigest()
-    receipt = {"schema_version": "crescendo.exclusive_tree_copy.v1", "fingerprint": fingerprint, "source": source,
+    receipt = {"schema_version": _contract_text("crescendo.exclusive_tree_copy.v1"), "fingerprint": fingerprint, "source": source,
                "target": target, "source_dev": original.st_dev,
                "source_ino": original.st_ino, "status": "intent"}
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
@@ -293,23 +296,23 @@ def register_view(workspace, source, key, role="working", target_view=None):
     if target_view is None:
         digest = hashlib.sha256((token + "\x1f" + role + "\x1f" + repr(identity)).encode("utf-8")).hexdigest()[:16]
         label = re.sub(r"[^A-Za-z0-9_]+", "_", str(workspace.get("run_display_name") or "optimization")).strip("_")[:32] or "optimization"
-        target_view = "cr_s_%s_%s_%s_%s" % (token[:8], label, role, digest[:10])
+        target_view = _contract_text("cr_s_%s_%s_%s_%s") % (token[:8], label, role, digest[:10])
     path = os.path.join(os.path.realpath(root), cell, target_view)
     if os.path.lexists(path):
-        raise ValueError("new Crescendo view already exists: %s/%s/%s" % (library, cell, target_view))
+        raise ValueError(_contract_text("new Crescendo view already exists: %s/%s/%s") % (library, cell, target_view))
     row = {"key": identity, "role": role, "source": list(source),
            "target": [library, cell, target_view], "path": path,
            "token": token, "existed_before": False}
     old_registry = copy.deepcopy(registry)
     registry.append(row)
     if workspace.get("setup_private_session") and workspace.get("root") and os.path.isdir(workspace["root"]):
-        atomic_write_json(os.path.join(workspace["root"], "suite_registry_intent.json"), {
-            "schema_version": "crescendo.suite_registry_intent.v1", "owner": workspace["setup_private_session"],
+        atomic_write_json(os.path.join(workspace["root"], _contract_text("suite_registry_intent.json")), {
+            "schema_version": _contract_text("crescendo.suite_registry_intent.v1"), "owner": workspace["setup_private_session"],
             "old_views": old_registry, "workspace": workspace})
     if workspace.get("root") and os.path.isdir(workspace["root"]):
-        atomic_write_json(os.path.join(workspace["root"], "same_library_views.json"),
+        atomic_write_json(os.path.join(workspace["root"], _contract_text("same_library_views.json")),
                           {"schema_version": SCHEMA, "token": token, "views": registry})
-        atomic_write_json(os.path.join(workspace["root"], "workspace.json"), workspace)
+        atomic_write_json(os.path.join(workspace["root"], _contract_text("workspace.json")), workspace)
     return row
 
 
@@ -324,7 +327,7 @@ def owns_view(workspace, target, role=None, require_marker=False):
         expected = os.path.join(os.path.realpath(root or ""), cell, view)
         if (not root or row.get("path") != expected or row.get("existed_before") is not False
                 or row.get("token") != workspace.get("same_library_token")
-                or not view.startswith("cr_s_" + row["token"][:8] + "_")
+                or not view.startswith(_contract_text("cr_s_") + row["token"][:8] + "_")
                 or tuple(row.get("source") or ()) == tuple(target)):
             return False
         if require_marker:
@@ -342,9 +345,9 @@ def owns_view(workspace, target, role=None, require_marker=False):
 def ownership_marker_lines(record):
     payload = json.dumps({"schema_version": SCHEMA, "token": record["token"],
                           "target": record["target"]}, sort_keys=True)
-    return ['crescOwnedPort = outfile(%s)' % _quote(os.path.join(record["path"], MARKER)),
-            'unless(crescOwnedPort error("Crescendo cannot persist view ownership\\n"))',
-            'fprintf(crescOwnedPort "%%s" %s)' % _quote(payload), 'close(crescOwnedPort)']
+    return [_contract_text('crescOwnedPort = outfile(%s)') % _quote(os.path.join(record["path"], MARKER)),
+            _contract_text('unless(crescOwnedPort error("Crescendo cannot persist view ownership\\n"))'),
+            _contract_text('fprintf(crescOwnedPort "%%s" %s)') % _quote(payload), _contract_text('close(crescOwnedPort)')]
 
 
 def copy_setup_view(workspace, source, key):
@@ -359,14 +362,14 @@ def copy_setup_view(workspace, source, key):
     # The registered target remains absent until a complete marked copy exists.
     # Stages are never treated as owned views after an interrupted process.
     if workspace.get("setup_private_session"):
-        stage = os.path.join(os.path.dirname(record["path"]), ".crescendo-create-" + uuid.uuid4().hex)
+        stage = os.path.join(os.path.dirname(record["path"]), _contract_text(".crescendo-create-") + uuid.uuid4().hex)
         key = hashlib.sha256(record["path"].encode("utf-8")).hexdigest()
         atomic_write_json(os.path.join(workspace["root"], "suite_create_" + key + ".json"), {
-            "schema_version": "crescendo.suite_view_create.v1", "owner": workspace["setup_private_session"],
+            "schema_version": _contract_text("crescendo.suite_view_create.v1"), "owner": workspace["setup_private_session"],
             "row": record, "stage": stage})
         os.mkdir(stage, 0o700)
     else:
-        stage = tempfile.mkdtemp(prefix=".crescendo-create-", dir=os.path.dirname(record["path"]))
+        stage = tempfile.mkdtemp(prefix=_contract_text(".crescendo-create-"), dir=os.path.dirname(record["path"]))
     try:
         atomic_write_json(os.path.join(stage, MARKER), {
             "schema_version": SCHEMA, "token": record["token"], "target": record["target"]})
@@ -384,7 +387,7 @@ def copy_setup_view(workspace, source, key):
                 _copy_private_file(src, dst)
         _make_private_tree_owner_writable(stage)
         if os.path.lexists(record["path"]):
-            raise ValueError("new Crescendo view became occupied before publication")
+            raise ValueError(_contract_text("new Crescendo view became occupied before publication"))
         try:
             _rename_noreplace(stage, record["path"])
         except RenameNoReplaceUnavailable:
@@ -445,11 +448,11 @@ def build_same_library_clone_plan(workspace, parameters, values, clone_state="ab
                 with open(marker) as stream:
                     owned = json.load(stream)
             except (ValueError, OSError):
-                raise ValueError("existing Crescendo view has no ownership evidence: %s" % record["path"])
+                raise ValueError(_contract_text("existing Crescendo view has no ownership evidence: %s") % record["path"])
             if owned.get("token") != record["token"] or owned.get("target") != record["target"]:
-                raise ValueError("Crescendo view ownership mismatch: %s" % record["path"])
+                raise ValueError(_contract_text("Crescendo view ownership mismatch: %s") % record["path"])
         if clone_state == "existing" and not exists:
-            raise ValueError("expected Crescendo view is absent: %s" % record["path"])
+            raise ValueError(_contract_text("expected Crescendo view is absent: %s") % record["path"])
         chain = parameter.get("occurrence_chain") or []
         occurrence = next((row for row in chain if row.get("hierarchy_path") == path), {})
         if path != "/" and not occurrence:
@@ -468,7 +471,7 @@ def build_same_library_clone_plan(workspace, parameters, values, clone_state="ab
     return [result[key] for key in sorted(result)]
 
 
-def copy_lines(clones, verify_port="crescCloneVerify"):
+def copy_lines(clones, verify_port=_contract_text("crescCloneVerify")):
     lines = []
     for clone in clones:
         if clone.get("clone_preexisting"):
@@ -480,17 +483,17 @@ def copy_lines(clones, verify_port="crescCloneVerify"):
         payload = json.dumps({"schema_version": SCHEMA, "token": record["token"],
                               "target": record["target"]}, sort_keys=True)
         lines.extend([
-            'unless(ddGetObj(%s) == nil error("Crescendo owned destination view already exists\\n"))' % ' '.join(_quote(v) for v in target),
+            _contract_text('unless(ddGetObj(%s) == nil error("Crescendo owned destination view already exists\\n"))') % ' '.join(_quote(v) for v in target),
             'srcCv = dbOpenCellViewByType(%s %s "r")' % (' '.join(_quote(v) for v in source), _quote(clone["source_view_type"])),
-            'unless(srcCv error("Crescendo cannot open selected owner schematic\\n"))',
+            _contract_text('unless(srcCv error("Crescendo cannot open selected owner schematic\\n"))'),
             'dstCv = dbCopyCellView(srcCv %s)' % ' '.join(_quote(v) for v in target),
-            'unless(dstCv error("Crescendo cannot create selected owner view\\n"))',
-            'unless(dbSave(dstCv) error("Crescendo cannot save selected owner view\\n"))',
+            _contract_text('unless(dstCv error("Crescendo cannot create selected owner view\\n"))'),
+            _contract_text('unless(dbSave(dstCv) error("Crescendo cannot save selected owner view\\n"))'),
             'dbClose(srcCv)', 'dbClose(dstCv)',
-            'crescOwnedPort = outfile(%s)' % _quote(marker),
-            'unless(crescOwnedPort error("Crescendo cannot persist view ownership\\n"))',
-            'fprintf(crescOwnedPort "%%s" %s)' % _quote(payload),
-            'close(crescOwnedPort)',
+            _contract_text('crescOwnedPort = outfile(%s)') % _quote(marker),
+            _contract_text('unless(crescOwnedPort error("Crescendo cannot persist view ownership\\n"))'),
+            _contract_text('fprintf(crescOwnedPort "%%s" %s)') % _quote(payload),
+            _contract_text('close(crescOwnedPort)'),
             'fprintf(%s "CLONE\\t%%L\\t%%L\\t%%L\\t%%L\\n" %s)' % (verify_port, ' '.join(_quote(v or "") for v in (clone["occurrence_path"], clone["source_cell"], clone["clone_cell"], clone.get("parent_cell")))),
         ])
     return lines
@@ -591,13 +594,13 @@ def in_place_deletion_active(workspace, row):
         return False
     library, cell, view = row["target"]
     base = (workspace.get("source_libraries") or {}).get(library)
-    tomb = os.path.join(os.path.dirname(path), ".crescendo-delete-" + key[:32])
+    tomb = os.path.join(os.path.dirname(path), _contract_text(".crescendo-delete-") + key[:32])
     if (not base or path != os.path.join(os.path.realpath(base), cell, view) or
             os.path.realpath(os.path.dirname(path)) != os.path.dirname(path) or
             row.get("existed_before") is not False or row.get("token") != workspace.get("same_library_token") or
-            not view.startswith("cr_s_" + str(row.get("token"))[:8] + "_") or
+            not view.startswith(_contract_text("cr_s_") + str(row.get("token"))[:8] + "_") or
             view == row["source"][2] or
-            receipt.get("schema_version") != "crescendo.suite_view_delete.v1" or
+            receipt.get("schema_version") != _contract_text("crescendo.suite_view_delete.v1") or
             receipt.get("row") != row or receipt.get("path") != path or receipt.get("tomb") != tomb or
             os.path.lexists(tomb)):
         raise ValueError("in-place deletion receipt identity mismatch")
@@ -629,11 +632,11 @@ def _delete_transaction(workspace, row):
     expected = os.path.join(os.path.realpath(base or ""), cell, view)
     if (not base or path != expected or row.get("existed_before") is not False or
             row.get("token") != workspace.get("same_library_token") or
-            not view.startswith("cr_s_" + str(row.get("token"))[:8] + "_") or
+            not view.startswith(_contract_text("cr_s_") + str(row.get("token"))[:8] + "_") or
             view == row["source"][2] or os.path.realpath(os.path.dirname(path)) != os.path.dirname(path)):
         raise ValueError("ownership mismatch")
     key = hashlib.sha256(path.encode("utf-8")).hexdigest()
-    tomb = os.path.join(os.path.dirname(path), ".crescendo-delete-" + key[:32])
+    tomb = os.path.join(os.path.dirname(path), _contract_text(".crescendo-delete-") + key[:32])
     receipt_path = os.path.join(workspace["root"], "suite_delete_" + key + ".json")
     receipt = None
     if os.path.lexists(receipt_path):
@@ -643,7 +646,7 @@ def _delete_transaction(workspace, row):
             if not os.path.samestat(before, os.fstat(stream.fileno())):
                 raise ValueError("deletion receipt changed")
             receipt = json.load(stream)
-        if (receipt.get("schema_version") != "crescendo.suite_view_delete.v1" or
+        if (receipt.get("schema_version") != _contract_text("crescendo.suite_view_delete.v1") or
                 receipt.get("row") != row or receipt.get("path") != path or
                 receipt.get("tomb") != tomb):
             raise ValueError("deletion receipt identity mismatch")
@@ -660,7 +663,7 @@ def _delete_transaction(workspace, row):
         if not stat.S_ISDIR(root_stat.st_mode) or os.path.ismount(path):
             raise ValueError("unsafe view directory")
         _reject_unsafe_regular_tree(path, root_stat.st_dev, "suite deletion")
-        receipt = {"schema_version": "crescendo.suite_view_delete.v1", "row": row,
+        receipt = {"schema_version": _contract_text("crescendo.suite_view_delete.v1"), "row": row,
                    "path": path, "tomb": tomb, "dev": root_stat.st_dev,
                    "ino": root_stat.st_ino}
         atomic_write_json(receipt_path, receipt)
@@ -728,7 +731,7 @@ def cleanup_same_library_views(workspace, process_cleanup_proven=False, process_
     """Remove exact owned views through durable same-filesystem tombstones."""
     if not workspace.get("setup_private_session"):
         return _legacy_cleanup_same_library_views(workspace, process_cleanup_proven, process_cleanup_evidence)
-    registry_path = os.path.join(workspace["root"], "same_library_views.json")
+    registry_path = os.path.join(workspace["root"], _contract_text("same_library_views.json"))
     registry = workspace.get("same_library_registry") or []
     if os.path.isfile(registry_path):
         with open(registry_path) as stream:
@@ -746,13 +749,13 @@ def cleanup_same_library_views(workspace, process_cleanup_proven=False, process_
                            "errno": getattr(error, "errno", None)})
     result = {"cleanup_proven": not retained, "removed": removed, "retained": retained,
               "lock_reconciliation": [], "errors": errors}
-    atomic_write_json(os.path.join(workspace["root"], "same_library_cleanup.json"), result)
+    atomic_write_json(os.path.join(workspace["root"], _contract_text("same_library_cleanup.json")), result)
     return result
 
 
 def _legacy_cleanup_same_library_views(workspace, process_cleanup_proven=False, process_cleanup_evidence=None):
     """Remove only exact newly-created view directories after owned processes end."""
-    registry_path = os.path.join(workspace["root"], "same_library_views.json")
+    registry_path = os.path.join(workspace["root"], _contract_text("same_library_views.json"))
     registry = workspace.get("same_library_registry") or []
     if os.path.isfile(registry_path):
         with open(registry_path) as stream:
@@ -775,7 +778,7 @@ def _legacy_cleanup_same_library_views(workspace, process_cleanup_proven=False, 
             if (row.get("existed_before") is not False or path != expected or os.path.realpath(path) != path
                     or os.path.islink(path) or marker.get("token") != row.get("token")
                     or row.get("token") != workspace.get("same_library_token")
-                    or not view.startswith("cr_s_" + str(row.get("token"))[:8] + "_")
+                    or not view.startswith(_contract_text("cr_s_") + str(row.get("token"))[:8] + "_")
                     or marker.get("target") != row["target"] or view == row["source"][2]):
                 raise ValueError("ownership mismatch")
             # A lock requires stronger, exact child identity evidence than the
@@ -786,7 +789,7 @@ def _legacy_cleanup_same_library_views(workspace, process_cleanup_proven=False, 
                               for lock in locks]
             reconciled.extend(row_reconciled)
             if row_reconciled:
-                atomic_write_json(os.path.join(workspace["root"], "same_library_cleanup.json"), {
+                atomic_write_json(os.path.join(workspace["root"], _contract_text("same_library_cleanup.json")), {
                     "cleanup_proven": False, "removed": removed, "retained": retained + [path],
                     "lock_reconciliation": reconciled, "errors": errors})
             shutil.rmtree(path)
@@ -797,5 +800,5 @@ def _legacy_cleanup_same_library_views(workspace, process_cleanup_proven=False, 
                            "errno": getattr(error, "errno", None)})
     result = {"cleanup_proven": not retained, "removed": removed, "retained": retained,
               "lock_reconciliation": reconciled, "errors": errors}
-    atomic_write_json(os.path.join(workspace["root"], "same_library_cleanup.json"), result)
+    atomic_write_json(os.path.join(workspace["root"], _contract_text("same_library_cleanup.json")), result)
     return result

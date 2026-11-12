@@ -152,7 +152,8 @@ class GuideObserverCliTests(unittest.TestCase):
             os.makedirs(helper)
             with open(os.path.join(package, '__init__.py'), 'w') as stream:
                 stream.write('')
-            shutil.copy2(os.path.join(project, 'crescendo_engine', 'scheduler_protocol.py'), package)
+            for name in ('scheduler_protocol.py','runtime.py','scheduler_providers.py'):
+                shutil.copy2(os.path.join(project,'crescendo_engine',name),package)
             script = os.path.join(helper, 'maestro_job_observer.py')
             shutil.copy2(original, script)
         batch_submit = os.path.join(root, 'batch-submit')

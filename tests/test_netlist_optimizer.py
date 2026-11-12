@@ -59,7 +59,7 @@ class ThinAdapterTests(unittest.TestCase):
             adapter = PrivateNetlistOptimizer(root, spec, prepared, prepared['parameters'], config, runner._failure_metrics)
             context, producer = mock.Mock(), mock.Mock()
             context.unsafe.is_set.return_value = False
-            def generate(values, candidate_root, candidate_id):
+            def generate(values, candidate_root, candidate_id, **kwargs):
                 os.makedirs(candidate_root)
                 return {'root': candidate_root, 'candidate_id': candidate_id, 'values': values,
                     'applied_values': values, 'workspace': {}, 'source_guard': {'ok': True},
@@ -151,7 +151,7 @@ class ThinAdapterTests(unittest.TestCase):
             stopped = threading.Event()
             adapter = PrivateNetlistOptimizer(root, spec, prepared, prepared["parameters"], config,
                                              runner._failure_metrics, cancel_check=stopped.is_set)
-            def interrupted():
+            def interrupted(_phases):
                 stopped.set()
                 raise RuntimeError("owned preparation was cancelled")
             with mock.patch.object(adapter, "_prepare_once", side_effect=interrupted):
@@ -242,10 +242,35 @@ class ThinAdapterTests(unittest.TestCase):
                 guard.assert_not_called()
                 self.assertTrue(adapter.close()["cleanup_proven"])
                 guard.assert_called_once()
+            candidate_phases = [row["timing"]["phases"] for row in rows]
+            self.assertEqual(sum("shared_setup" in phases for phases in candidate_phases), 1)
+            self.assertEqual(sum("shared_setup_wait" in phases for phases in candidate_phases), 3)
+            self.assertTrue(all("template_materialization" in phases for phases in candidate_phases))
             for row in rows:
                 candidate_root = os.path.join(root, "candidates", row["candidate_id"])
                 self.assertTrue(load_json(os.path.join(candidate_root, "completion_evidence.json"))["ok"])
                 self.assertTrue(os.path.isfile(os.path.join(candidate_root, "execution_diagnostics.json")))
+                self.assertEqual(load_json(os.path.join(candidate_root, "timing.json")), row["timing"])
+
+    def test_candidate_still_completes_if_timing_sidecar_cannot_be_written(self):
+        with tempfile.TemporaryDirectory() as root:
+            prepared, config, spec = fixtures(root)
+            adapter = PrivateNetlistOptimizer(root, spec, prepared, prepared["parameters"], config, runner._failure_metrics)
+            manifest = {"source_guard": {"ok": True}, "workspace": {}}
+            context = mock.Mock()
+            context.evaluate.return_value = {"parsed": parsed(0.4), "completion": {}, "native_job_state": {}}
+            with mock.patch("crescendo_engine.netlist_optimizer.NetlistExecutionContext", return_value=context), \
+                    mock.patch("crescendo_engine.netlist_optimizer.prepare_private_netlist", return_value=manifest), \
+                    mock.patch("crescendo_engine.netlist_optimizer.compact_preparation_artifacts", return_value={"ok": True}), \
+                    mock.patch("crescendo_engine.netlist_optimizer.materialize_candidate",
+                               return_value={"tasks": [model_task()]}), \
+                    mock.patch("crescendo_engine.candidate_timing.atomic_write_json", side_effect=OSError("timing write failed")):
+                row = adapter.evaluate(0, 0, {"x": 0.4})
+            self.assertEqual(row["status"], "completed")
+            self.assertGreaterEqual(row["timing"]["elapsed_seconds"], 0)
+            candidate = os.path.join(root, "candidates", row["candidate_id"])
+            self.assertEqual(load_json(os.path.join(candidate, "candidate.json"))["status"], "completed")
+            self.assertFalse(os.path.exists(os.path.join(candidate, "timing.json")))
 
     def test_unsupported_mapping_fails_once_without_legacy_fallback(self):
         with tempfile.TemporaryDirectory() as root:

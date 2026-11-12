@@ -10,10 +10,13 @@ import shutil
 import stat
 import uuid
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .utils import atomic_write_json, sha256_file
 
 
-SCHEMA = "crescendo.setup_baseline.v1"
+SCHEMA = _contract_text("crescendo.setup_baseline.v1")
 
 
 def _digest(value):
@@ -75,7 +78,7 @@ def verify_setup_baseline(setup):
             not os.path.isabs(root) or os.path.realpath(root) != root or
             os.path.basename(root) != baseline.get("baseline_id")):
         raise ValueError("Saved Maestro baseline identity is malformed")
-    manifest_path = os.path.join(root, "manifest.json")
+    manifest_path = os.path.join(root, _contract_text("manifest.json"))
     if sha256_file(_regular(manifest_path)) != baseline.get("manifest_sha256"):
         raise ValueError("Saved Maestro baseline manifest changed")
     with open(manifest_path) as stream:
@@ -88,7 +91,7 @@ def verify_setup_baseline(setup):
             manifest.get("files") != _files(os.path.join(root, _view_relative(setup))) or
             _digest(manifest) != baseline.get("fingerprint")):
         raise ValueError("Saved Maestro baseline contents changed")
-    snapshot = os.path.join(root, "setup.json")
+    snapshot = os.path.join(root, _contract_text("setup.json"))
     if sha256_file(_regular(snapshot)) != manifest.get("setup_snapshot_sha256"):
         raise ValueError("Saved Maestro baseline settings snapshot changed")
     expected = os.path.join(root, _view_relative(setup), manifest["setup_filename"])
@@ -144,16 +147,16 @@ def freeze_setup_baseline(prepared, config):
         if any(copied.get(key) != source.get(key) for key in fields):
             raise ValueError("Saved Maestro baseline differs from inspected settings; Load and Inspect again")
         snapshot = {"setup": copy.deepcopy(setup), "job_policy": copy.deepcopy(prepared.get("job_policy"))}
-        atomic_write_json(os.path.join(root, "setup.json"), snapshot)
+        atomic_write_json(os.path.join(root, _contract_text("setup.json")), snapshot)
         manifest = {"schema_version": SCHEMA, "baseline_id": token,
                     "owner_uid": os.getuid(), "origin_canonical_path": os.path.realpath(source_path),
                     "view_relative_path": _view_relative(setup),
                     "origin_setup_path": source_path, "setup_filename": os.path.basename(source_path),
-                    "files": before, "setup_snapshot_sha256": sha256_file(os.path.join(root, "setup.json"))}
-        atomic_write_json(os.path.join(root, "manifest.json"), manifest)
+                    "files": before, "setup_snapshot_sha256": sha256_file(os.path.join(root, _contract_text("setup.json")))}
+        atomic_write_json(os.path.join(root, _contract_text("manifest.json")), manifest)
         baseline = {"schema_version": SCHEMA, "baseline_id": token, "root": root,
                     "setup_path": os.path.join(view, os.path.basename(source_path)),
-                    "manifest_sha256": sha256_file(os.path.join(root, "manifest.json")),
+                    "manifest_sha256": sha256_file(os.path.join(root, _contract_text("manifest.json"))),
                     "fingerprint": _digest(manifest)}
         setup["baseline"] = baseline
         return baseline
@@ -169,7 +172,7 @@ def load_bound_setup(path, config, backend="auto"):
         if os.path.realpath(path) == os.path.realpath(original or ""):
             setup = {"source": {"setup_db": original}, "baseline": binding["baseline"]}
             verify_setup_baseline(setup)
-            with open(os.path.join(binding["baseline"]["root"], "setup.json")) as stream:
+            with open(os.path.join(binding["baseline"]["root"], _contract_text("setup.json"))) as stream:
                 snapshot = json.load(stream)
             setup = snapshot["setup"]
             if backend not in (None, "auto", setup.get("backend")):

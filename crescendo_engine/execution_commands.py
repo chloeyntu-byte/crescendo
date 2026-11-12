@@ -12,12 +12,15 @@ import re
 import shlex
 import string
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .simulators import (build_simulator_argv, ensure_model_include, inherit_native_include_dirs,
                          submission_cpu, validate_execution_contract, SimulatorConfigurationError)
 
 
-SCHEMA = "crescendo.execution_commands.v1"
-PLAN_SCHEMA = "crescendo.execution_command_plan.v1"
+SCHEMA = _contract_text("crescendo.execution_commands.v1")
+PLAN_SCHEMA = _contract_text("crescendo.execution_command_plan.v1")
 FIELDS = frozenset(("simulator", "netlist", "psf", "log", "model_dir", "threads",
                     "ahdl", "job_script", "cwd", "test", "corner", "point_id",
                     "job_id", "scheduler_stdout", "scheduler_stderr"))
@@ -69,6 +72,10 @@ def normalize_execution_commands(config=None, spec=None):
     if override and override.get("schema_version") == SCHEMA:
         validate_execution_commands(override)
         return copy.deepcopy(override)
+    if configured.get("schema_version") == SCHEMA:
+        validate_execution_commands(configured)
+        if not override:
+            return copy.deepcopy(configured)
     result = {"schema_version": SCHEMA, "solver_templates": {}, "submission_template": ""}
     configured_solvers = configured.get("solver_templates") or {}
     override_solvers = (override or {}).get("solver_templates") or {}
@@ -81,7 +88,11 @@ def normalize_execution_commands(config=None, spec=None):
         result["solver_templates"][simulator] = _template(value, simulator.upper() + " solver")
     value = (override or {})["submission_template"] if "submission_template" in (override or {}) else configured.get("submission_template")
     result["submission_template"] = _template(value, "Submission")
-    for key in ("scheduler_query_template", "scheduler_cancel_template"):
+    from .scheduler_providers import get_provider
+    scheduler_keys = ("scheduler_query_template", "scheduler_cancel_template")
+    deferred = (getattr(get_provider(), 'defer_missing_templates', False) is True and
+                all(key not in configured and key not in (override or {}) for key in scheduler_keys))
+    for key in (() if deferred else scheduler_keys):
         value = (override or {})[key] if key in (override or {}) else configured.get(key)
         result[key] = _template(value, key)
         if result[key]:
@@ -112,6 +123,10 @@ def normalize_execution_commands(config=None, spec=None):
 def validate_execution_commands(commands):
     if not isinstance(commands, dict) or commands.get("schema_version") != SCHEMA or commands.get("fingerprint") != _fingerprint(commands):
         raise ExecutionCommandError("Frozen execution command settings changed")
+    required = {"schema_version", "fingerprint", "solver_templates", "submission_template"}
+    scheduler_fields = {"scheduler_query_template", "scheduler_cancel_template"}
+    if set(commands) not in (required, required | scheduler_fields):
+        raise ExecutionCommandError("Frozen command settings contain unknown or incomplete fields")
     templates = commands.get("solver_templates")
     if not isinstance(templates, dict) or set(templates) != {"spectre", "alps"}:
         raise ExecutionCommandError("Frozen solver command settings are incomplete")
@@ -120,7 +135,9 @@ def validate_execution_commands(commands):
     for key in ("scheduler_query_template", "scheduler_cancel_template"):
         plain[key] = commands.get(key)
     normalized = normalize_execution_commands({}, {"execution_commands": plain})
-    if normalized != commands:
+    canonical = {key: normalized[key] for key in commands if key != "fingerprint"}
+    canonical["fingerprint"] = _fingerprint(canonical)
+    if canonical != commands:
         raise ExecutionCommandError("Frozen command settings are not canonical")
     return True
 
@@ -335,6 +352,10 @@ def _build_submission_command(policy, job_script, commands=None, values=None):
                     scheduler_stderr=os.path.join(os.path.dirname(job_script), "scheduler.stderr"))
     template = commands["submission_template"]
     remote = bool(template) or policy.get("distribution") == "command"
+    if remote and os.path.isabs(job_script):
+        from .scheduler_providers import log_artifacts
+        artifacts = log_artifacts(os.path.dirname(job_script))
+        bindings.update(scheduler_stdout=artifacts['stdout'], scheduler_stderr=artifacts['stderr'])
     if template:
         argv = _render(template, bindings)
         if argv.count(job_script) != 1:
@@ -366,11 +387,12 @@ def _build_submission_command(policy, job_script, commands=None, values=None):
             scheduler_io[kind] = path if bound else None
     plan = {"schema_version": PLAN_SCHEMA, "layer": "submit", "argv": argv,
             "remote": remote, "template": template, "commands_fingerprint": commands["fingerprint"],
-            "bindings": bindings, "resource_cpu": submission_cpu(argv) if remote else None}
+            "bindings": bindings, "resource_cpu": _provider_cpu(argv) if remote else None}
     if scheduler_io is not None:
         plan["scheduler_io"] = scheduler_io
     plan["fingerprint"] = _fingerprint(plan)
-    return plan
+    from .scheduler_providers import prepare_submission
+    return prepare_submission(plan)
 
 
 def validate_submission_resources(plan, solver_argv, contract):
@@ -403,7 +425,7 @@ def submission_cpu_hint(commands, policy):
     """Use a literal selected resource to freeze Auto threads, never guess."""
     validate_execution_commands(commands)
     if not commands["submission_template"]:
-        return submission_cpu(policy.get("submit_argv") or []) if policy.get("distribution") == "command" else None
+        return _provider_cpu(policy.get("submit_argv") or []) if policy.get("distribution") == "command" else None
     argv, unused = _split_template(commands["submission_template"])
     if not argv:
         return None
@@ -411,4 +433,9 @@ def submission_cpu_hint(commands, policy):
         resource = argv[index + 1] if argument == "-R" and index + 1 < len(argv) else (argument[2:] if argument.startswith("-R") and len(argument) > 2 else None)
         if resource is not None and re.search(r"(?:^|;)\s*cpu\s*=\s*\{threads\}\s*(?:;|$)", resource):
             return None
-    return submission_cpu(argv)
+    return _provider_cpu(argv)
+
+
+def _provider_cpu(argv):
+    from .scheduler_providers import resource_request
+    return resource_request(argv)['cpu']

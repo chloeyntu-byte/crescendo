@@ -3,6 +3,9 @@
 Empty and explicitly disabled hooks do not impose an execution dependency.
 Every other nonempty payload remains unqualified by the shared CLI pipeline.
 """
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 import hashlib
 import re
 
@@ -164,7 +167,7 @@ def inspect_setup_script_hooks(root):
             visit(child, '%s/%s[%d]' % (path, child_tag, counts[child_tag]), disabled)
 
     visit(active, '/' + _tag(active))
-    return {'schema_version': 'crescendo.saved_script_hooks.v1', 'scope': 'current_saved_active_setup',
+    return {'schema_version': _contract_text('crescendo.saved_script_hooks.v1'), 'scope': 'current_saved_active_setup',
             'checks': checks, 'hook_count': total[0], 'omitted_hooks': max(0, total[0] - len(checks)),
             'blocked': any(row['blocking'] for row in checks) or total[0] > MAX_HOOKS,
             'script_text_included': False, 'execution_authority': False}

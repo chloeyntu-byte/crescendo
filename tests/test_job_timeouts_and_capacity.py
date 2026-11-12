@@ -172,6 +172,36 @@ class ExecutionCapacityAndTimerTests(unittest.TestCase):
         self.assertEqual(peak[0], 3)
         self.assertEqual(limited_peak[0], 2)
 
+    def test_diagnostic_reports_source_and_effective_point_limits_separately(self):
+        from crescendo_engine.environment_test import _execution_parallelism
+        prepared, spec, config = self.fixture.prepared, self.fixture.spec, self.fixture.config
+        config['runtime']['execution_commands'] = {
+            'scheduler_query_template': 'batch-query {job_id}',
+            'scheduler_cancel_template': 'batch-cancel {job_id}'}
+        prepared["job_policy"].update(source="invoking_session", tests=[
+            {"name": "selected", "properties": {"maxjobs": "2", "jobsubmitcommand": "batch-submit -q test"}},
+            {"name": "disabled", "properties": {"maxjobs": "10"}},
+        ])
+        prepared["job_policy"]["global"]["properties"].update(
+            distributionmethod="Command", jobsubmitcommand="batch-submit -q global", maxjobs="8")
+        prepared["setup"] = {"tests": [{"name": "selected", "enabled": True},
+                                       {"name": "disabled", "enabled": False}]}
+        spec = dict(spec, population=6, execution_backend="maestro_netlist")
+        policy = execution.execution_policy(prepared, spec, config)
+        self.assertEqual(policy["tests"]["selected"]["submit_argv"], ["batch-submit", "-q", "test"])
+        report = _execution_parallelism({"simulator_task_policy": policy, "effective_parallel_jobs": 6},
+            [{"status": "completed", "completion_evidence": {"ok": True, "points": [{}, {}]}}], spec)
+        self.assertEqual(report["candidate_limit"], 6)
+        self.assertEqual(report["verified_point_count"], 2)
+        self.assertEqual(report["netlist_build"], "serialized_native_generation")
+        point_policy = report["cli_point_policy"]
+        self.assertEqual(point_policy["source"], "invoking_session")
+        self.assertEqual(point_policy["point_pool_limit"], 8)
+        self.assertEqual(point_policy["measurement_limit"], 2)
+        self.assertIsNone(point_policy["max_jobs_input"])
+        self.assertEqual(point_policy["tests"], [{"test": "selected", "distribution": "command",
+            "configured_max_jobs": 2, "effective_solver_max_jobs": 2}])
+
     def test_original_disabled_run_is_not_silently_replaced_by_candidate_budget(self):
         self.fixture.prepared["job_policy"]["global"]["properties"]["runtimeout"] = "-1"
         context = self.fixture.context()

@@ -24,6 +24,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlparse
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .cadence import (
     CommandCancelled, check_command_cancellation, command_cancellation_scope,
     detect_pdk_context, discover_eda_environment,
@@ -115,14 +118,14 @@ _CONTROLLER_STATES = frozenset((
     "launch_intent", "starting", "ready", "processing", "closed",
     "terminated", "termination_failed",
 ))
-_CONTROLLER_SCHEMA = "crescendo.persistent_controller.v1"
-_CONTROLLER_LIVENESS_SCHEMA = "crescendo.controller_liveness.v1"
+_CONTROLLER_SCHEMA = _contract_text("crescendo.persistent_controller.v1")
+_CONTROLLER_LIVENESS_SCHEMA = _contract_text("crescendo.controller_liveness.v1")
 _CANDIDATE_NAME = re.compile(r"^g(\d+)_c(\d+)$")
 _LEGACY_ATTEMPT_NAME = re.compile(r"^attempt_(\d+)$")
-_LEGACY_PRELAUNCH_ATTEMPT_FILES = frozenset(("run_identity.json",))
+_LEGACY_PRELAUNCH_ATTEMPT_FILES = frozenset((_contract_text("run_identity.json"),))
 _RUN_DISPLAY_NAME_MAX_LENGTH = 120
-_OPTIMIZED_VIEW_CLEANUP_PENDING = ".optimized_schematic_cleanup_pending.json"
-_OPTIMIZED_VIEW_CLEANUP_SCHEMA = "crescendo.optimized_schematic_cleanup_pending.v1"
+_OPTIMIZED_VIEW_CLEANUP_PENDING = _contract_text(".optimized_schematic_cleanup_pending.json")
+_OPTIMIZED_VIEW_CLEANUP_SCHEMA = _contract_text("crescendo.optimized_schematic_cleanup_pending.v1")
 
 
 def _execution_text(value, limit=2048):
@@ -371,7 +374,7 @@ def _controller_command_matches(command, bootstrap_path, expected_executable=Non
         return False
     if not all(isinstance(item, str) and item for item in command):
         return False
-    if command[1:4] != ["-m", "crescendo_engine.persistent_controller", "--bootstrap"]:
+    if command[1:4] != ["-m", _contract_text("crescendo_engine.persistent_controller"), "--bootstrap"]:
         return False
     if not _controller_path_matches(command[4], bootstrap_path):
         return False
@@ -470,7 +473,8 @@ def _validate_controller_liveness_fields(document, lock_path, description, requi
 
 
 def _matching_controller_processes(bootstrap_path):
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    from .runtime import application_root
+    project_root = application_root(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     matches = []
     for name in os.listdir("/proc"):
         if not name.isdigit():
@@ -528,7 +532,7 @@ def _inspect_partial_controller_epoch(epoch_root, origin_root, slot_index, epoch
         raise RuntimeError("controller state exists without its bootstrap")
     lock_status = _controller_liveness_lock_status(epoch_root)
     lock_path = lock_status["path"]
-    bootstrap_path = os.path.join(epoch_root, "bootstrap.json")
+    bootstrap_path = os.path.join(epoch_root, _contract_text("bootstrap.json"))
     if not bootstrap_exists:
         allowed = {"controller_liveness.lock"}
         unexpected = sorted(set(os.listdir(epoch_root)) - allowed)
@@ -562,8 +566,8 @@ def _inspect_partial_controller_epoch(epoch_root, origin_root, slot_index, epoch
     expected_paths = {
         "requests_root": os.path.join(epoch_root, "requests"),
         "responses_root": os.path.join(epoch_root, "responses"),
-        "state_path": os.path.join(epoch_root, "controller_state.json"),
-        "ready_path": os.path.join(epoch_root, "ready.json"),
+        "state_path": os.path.join(epoch_root, _contract_text("controller_state.json")),
+        "ready_path": os.path.join(epoch_root, _contract_text("ready.json")),
     }
     for name, expected in expected_paths.items():
         if not _controller_path_matches(bootstrap.get(name), expected):
@@ -587,8 +591,8 @@ def _inspect_partial_controller_epoch(epoch_root, origin_root, slot_index, epoch
 def _inspect_controller_epoch(epoch_root, origin_root, slot_index, epoch_index):
     epoch_root = os.path.abspath(epoch_root)
     origin_root = os.path.abspath(origin_root)
-    bootstrap_path = os.path.join(epoch_root, "bootstrap.json")
-    state_path = os.path.join(epoch_root, "controller_state.json")
+    bootstrap_path = os.path.join(epoch_root, _contract_text("bootstrap.json"))
+    state_path = os.path.join(epoch_root, _contract_text("controller_state.json"))
     bootstrap_exists = os.path.lexists(bootstrap_path)
     state_exists = os.path.lexists(state_path)
     if not bootstrap_exists or not state_exists:
@@ -617,7 +621,7 @@ def _inspect_controller_epoch(epoch_root, origin_root, slot_index, epoch_index):
         "requests_root": os.path.join(epoch_root, "requests"),
         "responses_root": os.path.join(epoch_root, "responses"),
         "state_path": state_path,
-        "ready_path": os.path.join(epoch_root, "ready.json"),
+        "ready_path": os.path.join(epoch_root, _contract_text("ready.json")),
     }
     for name, expected in expected_paths.items():
         if not _controller_path_matches(bootstrap.get(name), expected):
@@ -734,10 +738,11 @@ def _inspect_controller_epoch(epoch_root, origin_root, slot_index, epoch_index):
             },
         }
     expected_command = recorded_command or [
-        os.path.abspath(sys.executable), "-m", "crescendo_engine.persistent_controller",
+        os.path.abspath(sys.executable), "-m", _contract_text("crescendo_engine.persistent_controller"),
         "--bootstrap", bootstrap_path,
     ]
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    from .runtime import application_root
+    project_root = application_root(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     identity_matches = bool(
         not snapshot.get("identity_error")
         and snapshot.get("start_ticks") == start_ticks
@@ -867,12 +872,12 @@ def _checkpoint_origin_path(checkpoint, runtime_root):
         raise RuntimeError("checkpoint origin is not a directory")
     if os.path.dirname(absolute_origin) != runtime_absolute:
         raise RuntimeError("checkpoint origin must be a direct child of the configured runtime root")
-    if checkpoint.get("schema_version") == "crescendo.checkpoint.v1":
-        status_path = os.path.join(absolute_origin, "status.json")
+    if checkpoint.get("schema_version") == _contract_text("crescendo.checkpoint.v1"):
+        status_path = os.path.join(absolute_origin, _contract_text("status.json"))
         if os.path.islink(status_path) or not os.path.isfile(status_path):
             raise RuntimeError("checkpoint origin status.json is missing or unsafe")
         status = load_json(status_path)
-        if not isinstance(status, dict) or status.get("schema_version") != "crescendo.run_status.v1":
+        if not isinstance(status, dict) or status.get("schema_version") != _contract_text("crescendo.run_status.v1"):
             raise RuntimeError("checkpoint origin status schema is not recognized")
         if status.get("run_id") != origin_id:
             raise RuntimeError("checkpoint origin status run_id does not match")
@@ -904,7 +909,7 @@ def _checkpoint_planned_candidates(checkpoint):
 
 
 def _persist_reconciled_origin_checkpoint(origin_root, checkpoint):
-    checkpoint_path = os.path.join(origin_root, "checkpoint.json")
+    checkpoint_path = os.path.join(origin_root, _contract_text("checkpoint.json"))
     if os.path.lexists(checkpoint_path) and (
         os.path.islink(checkpoint_path) or not os.path.isfile(checkpoint_path)
     ):
@@ -1318,7 +1323,7 @@ def _reconcile_continuation_anchor(checkpoint, runtime_root, persist_absent=True
 
 
 def _guard_origin_checkpoint_revision(checkpoint, origin_root, runtime_root):
-    checkpoint_path = os.path.join(origin_root, "checkpoint.json")
+    checkpoint_path = os.path.join(origin_root, _contract_text("checkpoint.json"))
     if not os.path.lexists(checkpoint_path):
         return {"state": "external_only", "checkpoint_path": checkpoint_path}
     if os.path.islink(checkpoint_path) or not os.path.isfile(checkpoint_path):
@@ -1372,7 +1377,7 @@ def _guard_origin_checkpoint_revision(checkpoint, origin_root, runtime_root):
 
 
 def _candidate_is_lightweight_only(candidate_root):
-    allowed = {"candidate.json", "timing.json", "completion_evidence.json", "cli_progress.json"}
+    allowed = {_contract_text("candidate.json"), _contract_text("timing.json"), _contract_text("completion_evidence.json"), _contract_text("cli_progress.json")}
     names = set(os.listdir(candidate_root))
     retained = set(
         name for name in names
@@ -1381,7 +1386,7 @@ def _candidate_is_lightweight_only(candidate_root):
     )
     if (
             not names or not names.issubset(allowed | retained)
-            or "candidate.json" not in names):
+            or _contract_text("candidate.json") not in names):
         return False
     for name in names:
         path = os.path.join(candidate_root, name)
@@ -1604,7 +1609,7 @@ def _worker_termination_proof(worker_state, guardian, current_boot_id=None):
 def _inspect_worker_epoch_processes(epoch_root, worker_index, epoch_index):
     epoch_root = os.path.abspath(epoch_root)
     workspace_root = os.path.join(epoch_root, "workspace")
-    worker_state_path = os.path.join(epoch_root, "worker_state.json")
+    worker_state_path = os.path.join(epoch_root, _contract_text("worker_state.json"))
     namespace = parse_worker_epoch_namespace(
         os.path.basename(os.path.dirname(epoch_root)), os.path.basename(epoch_root),
     )
@@ -1626,7 +1631,7 @@ def _inspect_worker_epoch_processes(epoch_root, worker_index, epoch_index):
         if os.path.islink(worker_state_path) or not os.path.isfile(worker_state_path):
             raise RuntimeError("worker state is not a regular file: %s" % worker_state_path)
         worker_state = load_json(worker_state_path)
-        if worker_state.get("schema_version") != "crescendo.persistent_maestro_worker.v1":
+        if worker_state.get("schema_version") != _contract_text("crescendo.persistent_maestro_worker.v1"):
             raise RuntimeError("worker state schema is not recognized")
         if int(worker_state.get("worker_index", -1)) != int(worker_index):
             raise RuntimeError("worker state index does not match its directory")
@@ -1680,11 +1685,11 @@ def _inspect_worker_epoch_processes(epoch_root, worker_index, epoch_index):
     state_path = (worker_state or {}).get("guardian_state_path")
     if state_path:
         state_path = os.path.abspath(state_path)
-        expected_state_path = os.path.join(expected_control, "guardian_state.json")
+        expected_state_path = os.path.join(expected_control, _contract_text("guardian_state.json"))
         if os.path.realpath(state_path) != os.path.realpath(expected_state_path) or not is_under(state_path, epoch_root):
             raise RuntimeError("guardian state path does not match its worker epoch")
     else:
-        candidate = os.path.join(expected_control, "guardian_state.json")
+        candidate = os.path.join(expected_control, _contract_text("guardian_state.json"))
         state_path = candidate if os.path.lexists(candidate) else None
 
     guardian = None
@@ -1692,7 +1697,7 @@ def _inspect_worker_epoch_processes(epoch_root, worker_index, epoch_index):
         if os.path.islink(state_path) or not os.path.isfile(state_path):
             raise RuntimeError("guardian state is not a regular file: %s" % state_path)
         guardian = load_json(state_path)
-        if guardian.get("schema_version") != "crescendo.ocean_worker_guardian.v1":
+        if guardian.get("schema_version") != _contract_text("crescendo.ocean_worker_guardian.v1"):
             raise RuntimeError("guardian state schema is not recognized")
         if os.path.realpath(guardian.get("cwd") or "") != os.path.realpath(workspace_root):
             raise RuntimeError("guardian cwd does not match its worker workspace")
@@ -1832,7 +1837,7 @@ def _quiesce_worker_epoch_processes(epoch_root, worker_index, epoch_index,
             initial.get("state") == "abandoned"
             and (initial.get("termination_proof") or {}).get("ok") is True):
         return initial
-    worker_state_path = os.path.join(epoch_root, "worker_state.json")
+    worker_state_path = os.path.join(epoch_root, _contract_text("worker_state.json"))
     if os.path.islink(worker_state_path) or not os.path.isfile(worker_state_path):
         raise RuntimeError("worker state is unavailable for scoped guardian cleanup")
     worker_state = load_json(worker_state_path)
@@ -1840,7 +1845,7 @@ def _quiesce_worker_epoch_processes(epoch_root, worker_index, epoch_index,
     workspace_root = os.path.join(epoch_root, "workspace")
     control_root = persistent_worker_control_root(epoch_root, expected_epoch)
     if (
-            worker_state.get("schema_version") != "crescendo.persistent_maestro_worker.v1"
+            worker_state.get("schema_version") != _contract_text("crescendo.persistent_maestro_worker.v1")
             or int(worker_state.get("worker_index", -1)) != int(worker_index)
             or worker_state.get("epoch") != expected_epoch
             or not _controller_path_matches(
@@ -2044,7 +2049,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
         config = config or self.config
         runtime = config.get("runtime") or {}
         root = runtime.get("design_root")
-        return os.path.join(root, "index.json") if root else None
+        return os.path.join(root, _contract_text("index.json")) if root else None
 
     def _load_run_index(self):
         path = self._run_index_path()
@@ -2055,7 +2060,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 8 * 1024 * 1024:
                 return
             document = load_json(path)
-            if not isinstance(document, dict) or document.get("schema_version") != "crescendo.tb_index.v1":
+            if not isinstance(document, dict) or document.get("schema_version") != _contract_text("crescendo.tb_index.v1"):
                 return
             root_identity = os.path.realpath(self.config["runtime"]["design_root"])
             if document.get("design_root") != root_identity:
@@ -2116,7 +2121,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                         previous = self._read_json_snapshot_descriptor(fd, "TB run index", 8 * 1024 * 1024)
                     finally:
                         os.close(fd)
-                    if not isinstance(previous, dict) or previous.get("schema_version") != "crescendo.tb_index.v1" or previous.get("design_root") != directory:
+                    if not isinstance(previous, dict) or previous.get("schema_version") != _contract_text("crescendo.tb_index.v1") or previous.get("design_root") != directory:
                         raise ValueError("TB run index identity is invalid")
                     if not isinstance(previous.get("runs"), list):
                         raise ValueError("TB run index rows are invalid")
@@ -2139,7 +2144,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                     merged[name] = root
                 rows = [{"run_id": name, "runtime_root": root} for name, root in
                         sorted(merged.items(), key=lambda row: self._run_recency_key(row[0]), reverse=True)[:100000]]
-                atomic_write_json(path, {"schema_version": "crescendo.tb_index.v1", "design_root": directory, "runs": rows})
+                atomic_write_json(path, {"schema_version": _contract_text("crescendo.tb_index.v1"), "design_root": directory, "runs": rows})
                 with self.lock:
                     for row in rows:
                         self._run_locations[row["run_id"]] = row["runtime_root"]
@@ -2284,7 +2289,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
             try:
                 safe_name = self._safe_run_name(name)
                 status = self._read_run_json_snapshot(
-                    safe_name, "status.json", "retained-log run status",
+                    safe_name, _contract_text("status.json"), "retained-log run status",
                     _RUN_STATUS_SNAPSHOT_MAX_BYTES, missing_ok=True,
                 )
             except (IOError, OSError, RuntimeError, TypeError, ValueError):
@@ -2364,7 +2369,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 return copy.deepcopy(cached["presentation"])
             presentation = build_objective_presentation(candidates, objectives)
             try:
-                latest_status = self._read_run_json(run_name, "status.json")
+                latest_status = self._read_run_json(run_name, _contract_text("status.json"))
             except (IOError, OSError, RuntimeError, TypeError, ValueError):
                 latest_status = None
             if (
@@ -2446,7 +2451,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                     recovered.append(job_id)
                 self.range_validations[job_id] = current
                 try:
-                    atomic_write_json(os.path.join(current["job_root"], "status.json"), current)
+                    atomic_write_json(os.path.join(current["job_root"], _contract_text("status.json")), current)
                 except Exception as error:
                     current["diagnostic_write_error"] = "%s: %s" % (error.__class__.__name__, error)
             for prepared_id, prepared in self.prepared.items():
@@ -2508,11 +2513,11 @@ class OptimizerService(PrivateSuiteServiceMixin):
         workspace_preflight_failed = bool(workspace_preflight_failed)
         message = "Optional PDK validation skipped; optimization remains available."
         status = {
-            "schema_version": "crescendo.range_validation.v1",
+            "schema_version": _contract_text("crescendo.range_validation.v1"),
             "job_id": job_id, "job_root": job_root,
             "prepared_id": prepared_id, "state": "failed",
             "message": message, "created_at": utc_timestamp(),
-            "detail": reason, "detail_path": os.path.join(job_root, "status.json"),
+            "detail": reason, "detail_path": os.path.join(job_root, _contract_text("status.json")),
             "updated_at": utc_timestamp(), "finished_at": utc_timestamp(),
             "active_endpoint": None, "parameter_count": len(variables),
             "results": [], "optional": True,
@@ -2527,7 +2532,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
         if unsafe_to_optimize:
             status["unsafe_to_optimize"] = True
         ensure_dir(job_root)
-        atomic_write_json(os.path.join(job_root, "status.json"), status)
+        atomic_write_json(os.path.join(job_root, _contract_text("status.json")), status)
         with self.lock:
             self.range_validations[job_id] = status
             session = self.resident_validation
@@ -2540,7 +2545,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 current = self.range_validations[job_id]
                 current["unsafe_cleanup_scope"] = "resident_validation"
                 current["unsafe_cleanup_session_token"] = identity["session_token"]
-                atomic_write_json(os.path.join(job_root, "status.json"), current)
+                atomic_write_json(os.path.join(job_root, _contract_text("status.json")), current)
         return {
             "job_id": job_id, "state": "failed", "optional": True,
             "blocking": False,
@@ -2632,7 +2637,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
         if selected:
             locator = resolve_setup_locator(os.path.realpath(os.path.abspath(os.path.expanduser(path))), backend="auto")
             if os.path.realpath(locator["path"]) != selected:
-                raise ValueError("This Crescendo window currently uses another saved setup. Select the intended setup with Load and Inspect before preparing or running.")
+                raise ValueError(_contract_text("This Crescendo window currently uses another saved setup. Select the intended setup with Load and Inspect before preparing or running."))
 
     def select_setup(self, path):
         """Explicitly select a saved setup; ordinary prepare remains bound.
@@ -2768,7 +2773,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 raise ValueError("ADE setup changed while reading Tests; Load and Inspect again.")
             reference = build_setup_reference(setup)
             token = uuid.uuid4().hex
-            preview = {"schema_version": "crescendo.test_inspection.v1", "setup": setup,
+            preview = {"schema_version": _contract_text("crescendo.test_inspection.v1"), "setup": setup,
                        "setup_locator": reference, "setup_path": reference["path"],
                        "tests": copy.deepcopy(setup.get("tests") or [])}
             with self.lock:
@@ -2881,7 +2886,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                     raise ValueError("ADE setup changed during cell discovery; Load Cells again.")
                 reference = build_setup_reference(setup)
                 preview = {
-                    "schema_version": "crescendo.cell_inspection.v1",
+                    "schema_version": _contract_text("crescendo.cell_inspection.v1"),
                     "setup_locator": reference, "setup_path": reference["path"],
                     "setup": setup, "hierarchy": hierarchy, "cell_scopes": scopes,
                     "job_policy": job_policy,
@@ -3269,7 +3274,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                             == reference["session_id"]):
                         self.inspections.pop(inspection_id, None)
         if reusable:
-            reusable["diagnostic_log"] = os.path.join(reusable["root"], "environment_test.log")
+            reusable["diagnostic_log"] = os.path.join(reusable["root"], _contract_text("environment_test.log"))
             preview["setup_private_session"] = reusable
             if isinstance(reusable.get("test_corner_masks"), dict):
                 preview["setup"]["test_corner_masks"] = copy.deepcopy(reusable["test_corner_masks"])
@@ -3322,7 +3327,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
         if not reference:
             raise ValueError("No private config is ready; use Load and Inspect first.")
         current = private_session_info(reference)
-        current["diagnostic_log"] = os.path.join(reference["root"], "environment_test.log")
+        current["diagnostic_log"] = os.path.join(reference["root"], _contract_text("environment_test.log"))
         return current
 
     def _attach_live_setup_private_session(self, prepared):
@@ -3421,7 +3426,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
         cadence = display_config.get("cadence", {})
         discovery = cadence.get("discovery", {})
         return {
-            "schema_version": "crescendo.eda_setup.v2",
+            "schema_version": _contract_text("crescendo.eda_setup.v2"),
             "mode": cadence.get("setup_mode", "auto"),
             "user_config_path": cadence.get("user_config_path"),
             "ok": bool(discovery.get("ok")),
@@ -3432,7 +3437,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 "simulator", "simulator_threads", "simulator_result_reader", "alps_model_file_map",
                 "spectre_result_reader", "alps_result_reader",
                 "license_file", "extra_binary_paths", "extra_library_paths", "search_roots", "pdk_name",
-                "pdk_dir", "pdk_adapter", "pdk_adapter_policy", "pdk_profiles", "model_roots",
+                _contract_text("pdk_dir"), "pdk_adapter", "pdk_adapter_policy", "pdk_profiles", "model_roots",
                 "model_path_remaps", "startup_extensions",
             )),
             "pdk_adapter_options": adapter_policy_options(),
@@ -3688,9 +3693,9 @@ class OptimizerService(PrivateSuiteServiceMixin):
         job_id = "range_validation_%s" % uuid.uuid4().hex[:12]
         job_root = os.path.join(self.config["runtime"]["run_root"], "range_validations", job_id)
         cancel_event = threading.Event()
-        status_path = os.path.join(job_root, "status.json")
+        status_path = os.path.join(job_root, _contract_text("status.json"))
         job = {
-            "schema_version": "crescendo.range_validation.v1",
+            "schema_version": _contract_text("crescendo.range_validation.v1"),
             "job_id": job_id,
             "job_root": job_root,
             "prepared_id": prepared_id,
@@ -3923,7 +3928,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
         pending = []
         for name in names:
             status = self._read_run_json_snapshot(
-                name, "status.json", "run status", _RUN_STATUS_SNAPSHOT_MAX_BYTES, missing_ok=False,
+                name, _contract_text("status.json"), "run status", _RUN_STATUS_SNAPSHOT_MAX_BYTES, missing_ok=False,
             )
             shutdown = self._read_shutdown_evidence(name, "worker shutdown", missing_ok=True)
             from .shutdown_evidence import shutdown_proven
@@ -3966,7 +3971,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                     if (proof.get("state") != "completed" or proof.get("retained_controllers")
                             or proof.get("skipped_workers") or proof.get("skipped")):
                         raise RuntimeError("owned cleanup retry remains unproven: %s" % proof)
-                    audit = {"schema_version": "crescendo.exit_cleanup.v1", "state": "completed",
+                    audit = {"schema_version": _contract_text("crescendo.exit_cleanup.v1"), "state": "completed",
                              "attempt_count": attempt, "finished_at": utc_timestamp(),
                              "process_termination_proven": True, "remote_stop_proven": True,
                              "artifact_cleanup_complete": True, "proof": proof}
@@ -3983,18 +3988,18 @@ class OptimizerService(PrivateSuiteServiceMixin):
                     status["exit_cleanup"] = audit
                     if isinstance(status.get("cleanup_failure"), dict):
                         status["cleanup_failure"]["recovery_required"] = False
-                    atomic_write_json(os.path.join(run_root, "status.json"), status)
+                    atomic_write_json(os.path.join(run_root, _contract_text("status.json")), status)
                     append_run_event(run_root, "exit_cleanup_recovered",
                                      "Owned processes/jobs stopped and remaining artifacts cleaned", audit)
                     recovered.append({"run_id": name, "state": "completed", "attempt_count": attempt})
                 except Exception as error:
-                    audit = {"schema_version": "crescendo.exit_cleanup.v1", "state": "failed",
+                    audit = {"schema_version": _contract_text("crescendo.exit_cleanup.v1"), "state": "failed",
                              "attempt_count": attempt, "finished_at": utc_timestamp(),
                              "artifact_cleanup_complete": False,
                              "error": "%s: %s" % (error.__class__.__name__, error)}
                     status["exit_cleanup"] = audit
                     try:
-                        atomic_write_json(os.path.join(run_root, "status.json"), status)
+                        atomic_write_json(os.path.join(run_root, _contract_text("status.json")), status)
                     except Exception:
                         pass
                     append_run_event(run_root, "exit_cleanup_failed", audit["error"], audit, level="ERROR")
@@ -4123,7 +4128,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
         if status:
             return dict(status)
         path = os.path.join(
-            self.config["runtime"]["run_root"], "range_validations", safe_id, "status.json",
+            self.config["runtime"]["run_root"], "range_validations", safe_id, _contract_text("status.json"),
         )
         return load_json(path) if os.path.isfile(path) else None
 
@@ -4149,7 +4154,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                     })
                     self.range_validations[job_id] = status
                     try:
-                        atomic_write_json(os.path.join(status["job_root"], "status.json"), status)
+                        atomic_write_json(os.path.join(status["job_root"], _contract_text("status.json")), status)
                     except Exception as error:
                         status["diagnostic_write_error"] = "%s: %s" % (error.__class__.__name__, error)
                 cancelled.append(job_id)
@@ -4193,7 +4198,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                             current = self.range_validations.get(job_id) or {}
                             current["cleanup_retry_error"] = "%s: %s" % (error.__class__.__name__, error)
                             try:
-                                atomic_write_json(os.path.join(current["job_root"], "status.json"), current)
+                                atomic_write_json(os.path.join(current["job_root"], _contract_text("status.json")), current)
                             except Exception as write_error:
                                 current["diagnostic_write_error"] = "%s: %s" % (write_error.__class__.__name__, write_error)
                 continue
@@ -4233,7 +4238,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                         current["cleanup_error"] = None
                         current["cleanup_retry_error"] = None
                     self.range_validations[job_id] = current
-                    atomic_write_json(os.path.join(current["job_root"], "status.json"), current)
+                    atomic_write_json(os.path.join(current["job_root"], _contract_text("status.json")), current)
             except Exception as error:
                 with self.lock:
                     self.range_validations[job_id]["cleanup_retry_error"] = str(error)
@@ -4275,7 +4280,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                         "updated_at": utc_timestamp(),
                     })
                     self.range_validations[job_id] = status
-                    atomic_write_json(os.path.join(status["job_root"], "status.json"), status)
+                    atomic_write_json(os.path.join(status["job_root"], _contract_text("status.json")), status)
                 targets.append((job_id, validation_thread))
 
         if timeout_seconds is None:
@@ -4328,7 +4333,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                         "updated_at": utc_timestamp(),
                     })
                     self.range_validations[job_id] = status
-                    atomic_write_json(os.path.join(status["job_root"], "status.json"), status)
+                    atomic_write_json(os.path.join(status["job_root"], _contract_text("status.json")), status)
         unsafe = sorted(set(missing_threads + alive + unsafe_results))
         if unsafe:
             reasons = []
@@ -4411,7 +4416,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
         with self.lock:
             names = tuple(self.session_run_names)
         for name in names:
-            status = self._read_run_json_snapshot(name, "status.json", "owned run status", _RUN_STATUS_SNAPSHOT_MAX_BYTES)
+            status = self._read_run_json_snapshot(name, _contract_text("status.json"), "owned run status", _RUN_STATUS_SNAPSHOT_MAX_BYTES)
             if not isinstance(status, dict):
                 continue
             failure = status.get("cleanup_failure") or {}
@@ -4489,7 +4494,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
         run_config = run_config or self._freeze_run_config(spec, prepared, checkpoint=checkpoint)
         spec = dict(spec)
         execution_context = _configured_execution_context(prepared, spec)
-        spec["cr_execution_context"] = execution_context
+        spec[_contract_text("cr_execution_context")] = execution_context
         display_name = _validated_run_display_name(spec.get("display_name"))
         if display_name is None:
             spec.pop("display_name", None)
@@ -4510,8 +4515,8 @@ class OptimizerService(PrivateSuiteServiceMixin):
         run_root = ensure_dir(run_root)
         index_warning = self._register_run_location(run_name, runtime_root, config=run_config)
         algorithm_parameters = dict(spec.get("algorithm_parameters") or {})
-        atomic_write_json(os.path.join(run_root, "status.json"), {
-            "schema_version": "crescendo.run_status.v1",
+        atomic_write_json(os.path.join(run_root, _contract_text("status.json")), {
+            "schema_version": _contract_text("crescendo.run_status.v1"),
             "run_id": run_name,
             "run_root": run_root,
             "display_name": display_name or run_name,
@@ -4553,7 +4558,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 failure_traceback = traceback.format_exc()
                 try:
                     atomic_write_json(
-                        os.path.join(run_root, "server_error.json"),
+                        os.path.join(run_root, _contract_text("server_error.json")),
                         {"traceback": failure_traceback,
                          "error_type": error.__class__.__name__,
                          "message": str(error)[:8192],
@@ -4562,7 +4567,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                     )
                 except Exception:
                     pass
-                status_path = os.path.join(run_root, "status.json")
+                status_path = os.path.join(run_root, _contract_text("status.json"))
                 try:
                     failure_status = load_json(status_path) if os.path.isfile(status_path) else {}
                     if not isinstance(failure_status, dict):
@@ -4576,7 +4581,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                         "failure_stage": "optimization",
                     })
                     failure_status.update({
-                        "schema_version": "crescendo.run_status.v1",
+                        "schema_version": _contract_text("crescendo.run_status.v1"),
                         "run_id": run_name,
                         "run_root": run_root,
                         "state": "failed",
@@ -4983,8 +4988,6 @@ class OptimizerService(PrivateSuiteServiceMixin):
         if not isinstance(checkpoint, dict):
             raise ValueError("checkpoint must be a JSON object")
         validate_checkpoint_integrity(checkpoint)
-        if (checkpoint.get("spec") or {}).get("execution_backend") == "maestro_baseline":
-            raise ValueError("Maestro baseline checkpoint resume is unavailable until owned native stop and identity are verified; start a new run")
         run_config = self._freeze_run_config({}, None, checkpoint=checkpoint)
         manifest = checkpoint.get("manifest") or {}
         persisted_scopes = cell_selection_scopes(manifest.get("cell_selection"))
@@ -5070,6 +5073,9 @@ class OptimizerService(PrivateSuiteServiceMixin):
             )
             anchor_before_cleanup = _reconcile_continuation_anchor(checkpoint, runtime_root)
             abandoned_cleanup = self._cleanup_checkpoint_origin(checkpoint)
+            if spec.get('execution_backend') == 'maestro_baseline' and not prepared.get('setup_private_session'):
+                self._prepare_setup_private_session(prepared)
+                self._apply_setup_private_cells(prepared, prepared.get('setup_private_session'))
             abandoned_cleanup["preflight"] = origin_inspection
             abandoned_cleanup["checkpoint_anchor"] = _reconcile_continuation_anchor(
                 checkpoint, runtime_root,
@@ -5105,7 +5111,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
         if thread is threading.current_thread():
             raise RuntimeError("optimization thread cannot wait for itself")
         thread.join()
-        status = self.read(run_name, "status.json")
+        status = self.read(run_name, _contract_text("status.json"))
         if not isinstance(status, dict):
             raise RuntimeError("optimization thread exited without a readable status")
         if status.get("state") not in ("completed", "failed", "stopped"):
@@ -5117,8 +5123,8 @@ class OptimizerService(PrivateSuiteServiceMixin):
             "run_id": run_name,
             "run_root": self.run_path(run_name, ""),
             "status": status,
-            "result": self.read(run_name, "result.json"),
-            "server_error": self.read(run_name, "server_error.json"),
+            "result": self.read(run_name, _contract_text("result.json")),
+            "server_error": self.read(run_name, _contract_text("server_error.json")),
         }
 
     def _cleanup_checkpoint_origin(self, checkpoint, terminate_owned=False, inspect_only=False):
@@ -5139,7 +5145,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
             _guard_origin_checkpoint_revision(
                 checkpoint, origin_root, run_config["runtime"]["run_root"],
             )
-            if checkpoint.get("schema_version") == "crescendo.checkpoint.v1" else
+            if checkpoint.get("schema_version") == _contract_text("crescendo.checkpoint.v1") else
             {"state": "legacy_checkpoint_without_integrity_schema"}
         )
         if (checkpoint.get("spec") or {}).get("execution_backend") == "maestro_baseline":
@@ -5366,7 +5372,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
 
         checkpoint_rows = []
         planned_candidates = []
-        if checkpoint.get("schema_version") == "crescendo.checkpoint.v1":
+        if checkpoint.get("schema_version") == _contract_text("crescendo.checkpoint.v1"):
             checkpoint_rows = checkpoint_candidates(checkpoint)
             planned_candidates = _checkpoint_planned_candidates(checkpoint)
         existing_ids = set(row.get("candidate_id") for row in checkpoint_rows)
@@ -5432,7 +5438,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                     })
                     continue
                 try:
-                    candidate_path = os.path.join(root, "candidate.json")
+                    candidate_path = os.path.join(root, _contract_text("candidate.json"))
                     if not os.path.lexists(candidate_path):
                         if name in planned_by_id and not os.listdir(root):
                             os.rmdir(root)
@@ -5470,7 +5476,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                             continue
                         required_paths = [candidate_path]
                         if status == "completed":
-                            required_paths.append(os.path.join(root, "completion_evidence.json"))
+                            required_paths.append(os.path.join(root, _contract_text("completion_evidence.json")))
                         cleanup_terminal_candidate_artifacts(
                             root, origin_root, verify_sources_unchanged,
                             required_lightweight_paths=required_paths,
@@ -5828,7 +5834,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
     def _read_shutdown_evidence(self, run_name, description, missing_ok=True):
         from .shutdown_evidence import read_shutdown
         _path, descriptor = self._open_run_relative(
-            run_name, "worker_shutdown.json", directory=False, missing_ok=missing_ok)
+            run_name, _contract_text("worker_shutdown.json"), directory=False, missing_ok=missing_ok)
         if descriptor is None:
             return None
         try:
@@ -5845,7 +5851,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 if identity(before) != identity(after):
                     raise RuntimeError("%s changed while being read" % description)
             _path, check = self._open_run_relative(
-                run_name, "worker_shutdown.json", directory=False, missing_ok=False)
+                run_name, _contract_text("worker_shutdown.json"), directory=False, missing_ok=False)
             try:
                 first, second = os.fstat(descriptor), os.fstat(check)
                 identity = lambda item: (item.st_dev, item.st_ino, item.st_size,
@@ -5872,8 +5878,8 @@ class OptimizerService(PrivateSuiteServiceMixin):
 
     def read(self, run_name, name):
         value = (self._read_shutdown_evidence(run_name, "worker shutdown")
-                 if name == "worker_shutdown.json" else self._read_run_json(run_name, name))
-        if name == "result.json" and isinstance(value, dict) and "candidate_store" in value:
+                 if name == _contract_text("worker_shutdown.json") else self._read_run_json(run_name, name))
+        if name == _contract_text("result.json") and isinstance(value, dict) and "candidate_store" in value:
             reference = value.get("candidate_store")
             if reference is None:
                 return value  # Preserve the failed publication summary.
@@ -5962,7 +5968,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
     def _validate_run_status_identity(self, run_name, status, continuation_id=None):
         run_root, run_descriptor = self._open_run_directory(run_name)
         os.close(run_descriptor)
-        if not isinstance(status, dict) or status.get("schema_version") != "crescendo.run_status.v1":
+        if not isinstance(status, dict) or status.get("schema_version") != _contract_text("crescendo.run_status.v1"):
             raise RuntimeError("run status schema is not recognized")
         if status.get("run_id") != run_name:
             raise RuntimeError("run status run_id does not match its directory")
@@ -5999,7 +6005,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
         origin_status = (
             requested_status if origin_name == requested_run_name and requested_status is not None
             else self._read_run_json_snapshot(
-                origin_name, "status.json", "run status",
+                origin_name, _contract_text("status.json"), "run status",
                 _RUN_STATUS_SNAPSHOT_MAX_BYTES, missing_ok=False,
             )
         )
@@ -6019,7 +6025,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
         if origin_name is not None or origin_root is not None:
             if status is None:
                 status = self._read_run_json_snapshot(
-                    run_name, "status.json", "run status",
+                    run_name, _contract_text("status.json"), "run status",
                     _RUN_STATUS_SNAPSHOT_MAX_BYTES, missing_ok=False,
                 )
             run_root = self._validate_run_status_identity(
@@ -6045,7 +6051,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 current_status = (
                     status if attempt == 0 and status is not None else
                     self._read_run_json_snapshot(
-                        safe_name, "status.json", "run status",
+                        safe_name, _contract_text("status.json"), "run status",
                         _RUN_STATUS_SNAPSHOT_MAX_BYTES, missing_ok=True,
                     )
                 )
@@ -6060,7 +6066,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 run_checkpoint = None
                 if continuation_id is None:
                     run_checkpoint = self._read_run_json_snapshot(
-                        safe_name, "checkpoint.json", "run checkpoint",
+                        safe_name, _contract_text("checkpoint.json"), "run checkpoint",
                         _CHECKPOINT_SNAPSHOT_MAX_BYTES, missing_ok=True,
                     )
                     if run_checkpoint is not None:
@@ -6077,7 +6083,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 )
                 if run_checkpoint is None:
                     run_checkpoint = self._read_run_json_snapshot(
-                        safe_name, "checkpoint.json", "run checkpoint",
+                        safe_name, _contract_text("checkpoint.json"), "run checkpoint",
                         _CHECKPOINT_SNAPSHOT_MAX_BYTES, missing_ok=True,
                     )
                     if run_checkpoint is not None:
@@ -6140,7 +6146,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
         continuation = status.get("continuation_id")
         if not continuation and cached and cached.get("snapshot"):
             continuation = checkpoint_continuation_id(cached["snapshot"]["checkpoint"])
-        paths = [os.path.join(root, "checkpoint.json"), os.path.join(root, "optimization.crescendo")]
+        paths = [os.path.join(root, _contract_text("checkpoint.json")), os.path.join(root, _contract_text("optimization.crescendo"))]
         if continuation:
             paths += [continuation_checkpoint_path(runtime, continuation, create=False),
                       continuation_pending_path(runtime, continuation, create=False)]
@@ -6186,7 +6192,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 break
             try:
                 status = self._read_run_json_snapshot(
-                    name, "status.json", "run status",
+                    name, _contract_text("status.json"), "run status",
                     _RUN_STATUS_SNAPSHOT_MAX_BYTES, missing_ok=True,
                 )
             except (IOError, OSError, RuntimeError, TypeError, ValueError):
@@ -6403,11 +6409,11 @@ class OptimizerService(PrivateSuiteServiceMixin):
         run_root, descriptor = self._open_run_directory(run_name)
         os.close(descriptor)
         payload = {
-            "schema_version": "crescendo.execution_progress.v1", "run_root": run_root,
-            "status_file": os.path.join(run_root, "status.json"),
-            "error_file": os.path.join(run_root, "server_error.json"),
-            "startup_error_file": os.path.join(run_root, "startup_failure.json"),
-            "main_log_file": os.path.join(run_root, "crescendo.log"),
+            "schema_version": _contract_text("crescendo.execution_progress.v1"), "run_root": run_root,
+            "status_file": os.path.join(run_root, _contract_text("status.json")),
+            "error_file": os.path.join(run_root, _contract_text("server_error.json")),
+            "startup_error_file": os.path.join(run_root, _contract_text("startup_failure.json")),
+            "main_log_file": os.path.join(run_root, _contract_text("crescendo.log")),
             "stage": _execution_text(status.get("state"), 120),
             "message": _execution_text(status.get("message"), 4096),
             "commands": [], "workers": [], "log_tails": [], "warnings": warnings,
@@ -6452,13 +6458,13 @@ class OptimizerService(PrivateSuiteServiceMixin):
                     warn(path, error)
 
         try:
-            main_log = self._execution_log_tail(run_name, "crescendo.log", 16384)
+            main_log = self._execution_log_tail(run_name, _contract_text("crescendo.log"), 16384)
             if main_log is not None:
                 payload["log_tails"].append(main_log)
                 remaining[0] = 0
         except (IOError, OSError, RuntimeError, TypeError, ValueError) as error:
-            warn("crescendo.log", error)
-        context = spec.get("cr_execution_context") or status.get("execution_context") or {}
+            warn(_contract_text("crescendo.log"), error)
+        context = spec.get(_contract_text("cr_execution_context")) or status.get("execution_context") or {}
         if not isinstance(context, dict):
             context = {}
         command = context.get("configured_command")
@@ -6480,7 +6486,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 payload["commands"].append({
                     "kind": "native_submission", "label": "Native submission · shared worker pool/batch",
                     "state": "observed_submission", "argv": [_execution_text(value, 4096) for value in submission["argv"][:64]],
-                    "source": os.path.join(run_root, "native_dispatch.jsonl"),
+                    "source": os.path.join(run_root, _contract_text("native_dispatch.jsonl")),
                     "invocation_id": _execution_text(submission.get("invocation_id"), 120),
                     "returncode": submission.get("returncode"),
                     "job_ids": [_execution_text(value, 120) for value in (submission.get("job_ids") or [])[:32]],
@@ -6491,7 +6497,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                                               (submission.get("text") if submission.get("stream") == "stderr" else None), 2048),
                     "scope": "shared_native_worker_pool", "batch_id": live.get("batch_id"),
                 })
-        error = read("server_error.json", 1024 * 1024)
+        error = read(_contract_text("server_error.json"), 1024 * 1024)
         if isinstance(error, dict) or status.get("state") == "failed":
             error = error if isinstance(error, dict) else {}
             payload["error"] = {
@@ -6501,8 +6507,8 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 "remote_traceback_tail": _execution_text(error.get("remote_traceback"), 8192),
                 "path": payload["error_file"] if error else payload["status_file"],
             }
-        startup = read("startup_failure.json", 128 * 1024)
-        if isinstance(startup, dict) and startup.get("schema_version") == "crescendo.startup_failure.v1":
+        startup = read(_contract_text("startup_failure.json"), 128 * 1024)
+        if isinstance(startup, dict) and startup.get("schema_version") == _contract_text("crescendo.startup_failure.v1"):
             marker = startup.get("marker") or {}
             if not isinstance(marker, dict):
                 marker = {}
@@ -6541,11 +6547,11 @@ class OptimizerService(PrivateSuiteServiceMixin):
                     })
                     remaining[0] -= len(text.encode("utf-8"))
         elif startup is not None:
-            warn("startup_failure.json", "unsupported retained startup diagnostic schema")
+            warn(_contract_text("startup_failure.json"), "unsupported retained startup diagnostic schema")
         if spec.get("execution_backend") in ("private_netlist", "maestro_netlist"):
-            progress_relative = os.path.join("private_netlist", "progress.json")
+            progress_relative = os.path.join("private_netlist", _contract_text("progress.json"))
             private_progress = read(progress_relative, 512 * 1024)
-            if isinstance(private_progress, dict) and private_progress.get("schema_version") == "crescendo.private_netlist_optimizer.v1":
+            if isinstance(private_progress, dict) and private_progress.get("schema_version") == _contract_text("crescendo.private_netlist_optimizer.v1"):
                 latest = private_progress.get("latest") or {}
                 from .ui_gates import gate_progress
                 gates = gate_progress(private_progress.get("gate_progress") or
@@ -6578,7 +6584,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
             slot_relative = os.path.join("controllers", slot)
             for epoch in names(slot_relative, _EPOCH_NAME, 1):
                 relative = os.path.join(slot_relative, epoch)
-                state = read(os.path.join(relative, "controller_state.json"))
+                state = read(os.path.join(relative, _contract_text("controller_state.json")))
                 if isinstance(state, dict) and state.get("schema_version") == _CONTROLLER_SCHEMA:
                     phase = state.get("startup_phase") or {}
                     request = state.get("active_request") or {}
@@ -6594,12 +6600,12 @@ class OptimizerService(PrivateSuiteServiceMixin):
                         "stage": _execution_text(phase.get("stage"), 120),
                     })
                     argv = state.get("command")
-                    bootstrap = os.path.join(run_root, relative, "bootstrap.json")
+                    bootstrap = os.path.join(run_root, relative, _contract_text("bootstrap.json"))
                     if _controller_command_matches(argv, bootstrap):
                         payload["commands"].append({
                             "kind": "controller", "label": "Recorded controller launch", "state": "recorded",
                             "argv": [_execution_text(item, 4096) for item in argv],
-                            "source": os.path.join(run_root, relative, "controller_state.json"),
+                            "source": os.path.join(run_root, relative, _contract_text("controller_state.json")),
                         })
                 logs(relative, ("controller.stderr", "controller.stdout"))
         for worker in names("workers", re.compile(r"^worker_(\d+)$")):
@@ -6609,7 +6615,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 if namespace is None:
                     continue
                 relative = os.path.join(worker_relative, epoch)
-                state = read(os.path.join(relative, "worker_state.json"))
+                state = read(os.path.join(relative, _contract_text("worker_state.json")))
                 if not isinstance(state, dict) or state.get("epoch") != namespace["epoch_identity"]:
                     continue
                 control = persistent_worker_control_root(os.path.join(run_root, relative), namespace["epoch_identity"])
@@ -6619,8 +6625,8 @@ class OptimizerService(PrivateSuiteServiceMixin):
                     "worker_state": _execution_text(state.get("state"), 120),
                     "message": _execution_text(state.get("message"), 1024),
                 })
-                guardian = read(os.path.join(control_relative, "guardian_state.json"))
-                policy = read(os.path.join(control_relative, "effective_job_policy.json"), 4 * 1024 * 1024)
+                guardian = read(os.path.join(control_relative, _contract_text("guardian_state.json")))
+                policy = read(os.path.join(control_relative, _contract_text("effective_job_policy.json")), 4 * 1024 * 1024)
                 if isinstance(policy, dict):
                     actual = (policy.get("global") or {}).get("properties") or {}
                     wrappers = policy.get("command_wrappers") or []
@@ -6634,7 +6640,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                         "distribution": _execution_text(actual.get("distributionmethod"), 120),
                         "max_jobs": actual.get("maxjobs"),
                         "run_mode": (policy.get("run_options") or {}).get("RunIn"),
-                        "source": os.path.join(control, "effective_job_policy.json"),
+                        "source": os.path.join(control, _contract_text("effective_job_policy.json")),
                     })
                 argv = guardian.get("argv") if isinstance(guardian, dict) else None
                 # Native Ocean uses this exact two-argument launch. Do not expose
@@ -6643,7 +6649,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                     payload["commands"].append({
                         "kind": "ocean", "label": "Recorded Ocean launch", "state": "recorded",
                         "argv": [_execution_text(item, 4096) for item in argv],
-                        "source": os.path.join(control, "guardian_state.json"),
+                        "source": os.path.join(control, _contract_text("guardian_state.json")),
                     })
                 logs(control_relative, ("ocean.stderr", "ocean.stdout"))
         payload["commands"] = payload["commands"][:8]
@@ -6697,7 +6703,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
 
     def progress(self, run_name, since_revision=0, include_candidates=True):
         try:
-            status = self.read(run_name, "status.json")
+            status = self.read(run_name, _contract_text("status.json"))
         except Exception:
             self._invalidate_objective_presentation(run_name)
             raise
@@ -6712,7 +6718,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 if len(warnings) < 16:
                     warnings.append(_execution_text("%s: %s" % (relative, error), 512))
                 return None
-        spec = optional_read("spec.json", 4 * 1024 * 1024) or {}
+        spec = optional_read(_contract_text("spec.json"), 4 * 1024 * 1024) or {}
         if not isinstance(spec, dict):
             warnings.append("spec.json is not an object")
             spec = {}
@@ -6720,22 +6726,25 @@ class OptimizerService(PrivateSuiteServiceMixin):
             core = self._core_progress(run_name, since_revision=since_revision, include_candidates=include_candidates)
         except (IOError, OSError, RuntimeError, TypeError, ValueError) as error:
             core = None
-            warnings.append(_execution_text("optimization.crescendo: %s" % error, 512))
+            warnings.append(_execution_text(_contract_text("optimization.crescendo: %s") % error, 512))
         if core is not None:
+            generation_timings = (core.get("result") or {}).get("generation_timings")
+            if generation_timings:
+                status = dict(status, generation_timings=generation_timings)
             metadata = core.get("metadata") or {}
             if metadata.get("spec"):
                 spec = metadata["spec"]
             payload = {"status": status, "spec": spec, "revision": core.get("revision"),
                        "changed_candidates": core.get("changed_candidates") or [],
                        "objective_presentation": core.get("objective_presentation"),
-                       "dataset_path": self.run_path(run_name, "optimization.crescendo"),
+                       "dataset_path": self.run_path(run_name, _contract_text("optimization.crescendo")),
                        "execution": self._execution_progress(run_name, status, spec, warnings)}
             if include_candidates or core.get("reset"):
                 payload["candidates"] = core.get("candidates") or []
                 payload["reset"] = bool(core.get("reset"))
             return payload
         candidates_by_id = {}
-        checkpoint = optional_read("checkpoint.json", 64 * 1024 * 1024)
+        checkpoint = optional_read(_contract_text("checkpoint.json"), 64 * 1024 * 1024)
         if checkpoint:
             try:
                 for index, generation, values in _checkpoint_planned_candidates(checkpoint):
@@ -6760,7 +6769,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
         for name in candidate_names or []:
             if not _CANDIDATE_NAME.match(name):
                 continue
-            row = optional_read(os.path.join("candidates", name, "candidate.json"), 16 * 1024 * 1024)
+            row = optional_read(os.path.join("candidates", name, _contract_text("candidate.json")), 16 * 1024 * 1024)
             if isinstance(row, dict) and row.get("candidate_id") == name:
                 if all(isinstance(row.get(key, -1), int) and not isinstance(row.get(key), bool)
                        for key in ("generation", "index")):
@@ -6804,7 +6813,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
         )
         if not isinstance(state, dict):
             return False
-        if state.get("schema_version") != "crescendo.persistent_maestro_worker.v1":
+        if state.get("schema_version") != _contract_text("crescendo.persistent_maestro_worker.v1"):
             return False
         try:
             if int(state.get("worker_index", -1)) != int(fence.get("worker_index", -2)):
@@ -6925,7 +6934,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
             for epoch_name in self._list_run_directory(run_name, relative) or []:
                 namespace = parse_worker_epoch_namespace(worker_name, epoch_name)
                 if namespace and namespace.get("epoch_identity") == identity["epoch"]:
-                    matches.append({"state_relative": os.path.join(relative, epoch_name, "worker_state.json"),
+                    matches.append({"state_relative": os.path.join(relative, epoch_name, _contract_text("worker_state.json")),
                                     "worker_index": worker_index, "worker_epoch": identity["epoch"],
                                     "protocol_identity": dict(identity)})
         if len(matches) > 1:
@@ -6934,7 +6943,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
 
     def _native_candidate_record(self, run_name, candidate_id, description="candidate metadata", strict=False):
         candidate_id = self._safe_candidate_name(candidate_id)
-        row = self._read_run_json_snapshot(run_name, os.path.join("candidates", candidate_id, "candidate.json"),
+        row = self._read_run_json_snapshot(run_name, os.path.join("candidates", candidate_id, _contract_text("candidate.json")),
                                           description, 64 * 1024 * 1024)
         if row is None and strict:
             from .run_data_store import CORE_NAME, dataset_from_reference
@@ -6989,12 +6998,12 @@ class OptimizerService(PrivateSuiteServiceMixin):
                               "test_name_map": (scope or {}).get("test_name_map")})
 
         artifact = self._read_run_json_snapshot(
-            run_name, os.path.join(candidate_relative, "persistent_worker_candidate.json"),
+            run_name, os.path.join(candidate_relative, _contract_text("persistent_worker_candidate.json")),
             "persistent worker candidate live-log artifact", 4 * 1024 * 1024,
         )
         if candidate is None:
             candidate = self._read_run_json_snapshot(
-                run_name, os.path.join(candidate_relative, "candidate.json"),
+                run_name, os.path.join(candidate_relative, _contract_text("candidate.json")),
                 "candidate live-log metadata", 16 * 1024 * 1024,
             ) or {}
         scope = self._candidate_batch_log_scope(candidate, artifact)
@@ -7043,7 +7052,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 if matches:
                     fence = {
                         "state_relative": os.path.join(
-                            worker_relative, matches[0], "worker_state.json",
+                            worker_relative, matches[0], _contract_text("worker_state.json"),
                         ),
                         "worker_index": worker_index,
                         "worker_epoch": token,
@@ -7202,7 +7211,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                         "schema_version", "source_path", "source_cwd",
                         "returncode", "finished_epoch", "candidate_id", "artifact_test", "point_id"):
                     rows[key] = value
-            if rows.get("schema_version") != "crescendo.retained_spectre_log.v1":
+            if rows.get("schema_version") != _contract_text("crescendo.retained_spectre_log.v1"):
                 return {}
             return rows
         finally:
@@ -7316,7 +7325,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
         serial_fence = self._candidate_serial_log_fence(run_name, scope) if serial else None
         run_root = os.path.abspath(self.run_path(run_name, ""))
         common = (candidate.get("execution_backend") in ("private_netlist", "maestro_netlist")
-                  and progress.get("schema_version") == "crescendo.shared_cli_progress.v1")
+                  and progress.get("schema_version") == _contract_text("crescendo.shared_cli_progress.v1"))
         results = []
 
         def add(path, kind, label, task=None, shared=False, retained=None):
@@ -7384,7 +7393,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                         meta = self._read_retained_spectre_meta(opened, os.path.basename(relative)[:-4] + ".meta")
                     finally:
                         os.close(opened)
-                    if meta.get("schema_version") != "crescendo.retained_spectre_log.v1":
+                    if meta.get("schema_version") != _contract_text("crescendo.retained_spectre_log.v1"):
                         raise ValueError("retained task Spectre log has no native source identity")
                     physical = task.get("artifact_test") or task.get("test")
                     if (meta.get("candidate_id") != candidate_id or meta.get("artifact_test") != physical
@@ -7495,12 +7504,12 @@ class OptimizerService(PrivateSuiteServiceMixin):
                         continue  # Display the actual growing/live file when available.
                     add(entry.get("path"), str(entry.get("kind") or simulator) + "_retained",
                         "Snapshot " + str(entry.get("file_name") or "log") + " · " + label, task, retained=entry)
-            submit_shared = os.path.basename(str(task.get("submit_log") or "")) == "native_dispatch.jsonl"
+            submit_shared = os.path.basename(str(task.get("submit_log") or "")) == _contract_text("native_dispatch.jsonl")
             add(task.get("submit_log"), "submission", "Submission ledger · shared batch" if submit_shared
                 else "Submission · " + label, task, shared=submit_shared)
         # Shared diagnostics are explicitly labelled: they are not evidence
         # that this candidate's Spectre task has started.
-        add(os.path.join(run_root, "crescendo.log"), "optimizer", "Optimizer · shared run", shared=True)
+        add(os.path.join(run_root, _contract_text("crescendo.log")), "optimizer", "Optimizer · shared run", shared=True)
         shared_logs = progress.get("shared_logs") or []
         if not isinstance(shared_logs, list) or len(shared_logs) > 16:
             raise ValueError("candidate shared diagnostics are invalid")
@@ -7512,9 +7521,9 @@ class OptimizerService(PrivateSuiteServiceMixin):
             retained = (entry.get("retained_snapshot") is True and
                         re.match(r"^retained_native_[0-9a-f]{16}\.log$", name))
             if name not in ("ocean.stdout", "ocean.stderr", "persistent_worker_batch.tsv",
-                            "persistent_worker_batch_job_policy.tsv", "native_dispatch.jsonl",
-                            "effective_job_policy.tsv", "effective_job_policy.json",
-                            "execution_progress_full.json") and not retained:
+                            "persistent_worker_batch_job_policy.tsv", _contract_text("native_dispatch.jsonl"),
+                            "effective_job_policy.tsv", _contract_text("effective_job_policy.json"),
+                            _contract_text("execution_progress_full.json")) and not retained:
                 raise ValueError("candidate shared diagnostic name is unsupported")
             add(path, "ocean" if name.startswith("ocean.") else "native_batch",
                 (entry.get("label") or name) + " · shared worker/batch", shared=True)
@@ -7528,9 +7537,9 @@ class OptimizerService(PrivateSuiteServiceMixin):
             raise ValueError("candidate log metadata identity does not match")
         if candidate.get("execution_backend") in ("private_netlist", "maestro_netlist"):
             cli_progress = self._read_run_json_snapshot(run_name,
-                os.path.join(candidate_relative, "cli_progress.json"), "shared CLI candidate display progress", 32 * 1024 * 1024)
+                os.path.join(candidate_relative, _contract_text("cli_progress.json")), "shared CLI candidate display progress", 32 * 1024 * 1024)
             if cli_progress is not None:
-                if (not isinstance(cli_progress, dict) or cli_progress.get("schema_version") != "crescendo.shared_cli_progress.v1"
+                if (not isinstance(cli_progress, dict) or cli_progress.get("schema_version") != _contract_text("crescendo.shared_cli_progress.v1")
                         or cli_progress.get("candidate_id") != candidate_id
                         or cli_progress.get("execution_backend") != candidate.get("execution_backend")
                         or cli_progress.get("execution_simulator") not in ("spectre", "alps")):
@@ -7947,7 +7956,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                     raise RuntimeError("Stop optimization and wait for cleanup before generating schematic views")
                 self.optimized_view_export_active = True
                 registered = True
-            status = self._read_run_json_snapshot(run_name, "status.json", "schematic export run status", 4 * 1024 * 1024)
+            status = self._read_run_json_snapshot(run_name, _contract_text("status.json"), "schematic export run status", 4 * 1024 * 1024)
             if not status or status.get("state") not in _TERMINAL_RUN_STATES:
                 raise ValueError("Schematic export requires a completed or stopped run")
             run_root = self._validate_run_status_identity(run_name, status)
@@ -7957,13 +7966,13 @@ class OptimizerService(PrivateSuiteServiceMixin):
             from .shutdown_evidence import shutdown_proven
             if shutdown is not None and not shutdown_proven(shutdown):
                 raise RuntimeError("Simulation worker cleanup is unproven; inspect run diagnostics before exporting")
-            context = self._read_run_json_snapshot(run_name, "schematic_export_context.json", "schematic export context", 64 * 1024 * 1024)
-            if not context or context.get("schema_version") != "crescendo.schematic_export_context.v1":
+            context = self._read_run_json_snapshot(run_name, _contract_text("schematic_export_context.json"), "schematic export context", 64 * 1024 * 1024)
+            if not context or context.get("schema_version") != _contract_text("crescendo.schematic_export_context.v1"):
                 raise ValueError("This run has no schematic export context; run again with this version")
             candidate = self._native_candidate_record(run_name, candidate_id, "schematic export candidate", strict=True)
             if not candidate or candidate.get("candidate_id") != candidate_id or candidate.get("status") != "completed":
                 raise ValueError("Select a completed real simulation candidate")
-            spec = self._read_run_json_snapshot(run_name, "spec.json", "schematic export specification", 4 * 1024 * 1024) or {}
+            spec = self._read_run_json_snapshot(run_name, _contract_text("spec.json"), "schematic export specification", 4 * 1024 * 1024) or {}
             if spec.get("evaluator", "real") != "real":
                 raise ValueError("Mock candidates cannot generate optimized schematic views")
             prepared, config = context["prepared"], context["config"]
@@ -7975,18 +7984,18 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 if origin in seen or len(seen) >= 32:
                     raise ValueError("Original candidate evidence chain is unavailable; open its original run to export")
                 seen.add(origin)
-                origin_status = self._read_run_json_snapshot(origin, "status.json", "original export run status", 4 * 1024 * 1024)
+                origin_status = self._read_run_json_snapshot(origin, _contract_text("status.json"), "original export run status", 4 * 1024 * 1024)
                 if not origin_status or origin_status.get("state") not in _TERMINAL_RUN_STATES:
                     raise ValueError("Original candidate run is not proven finalized")
                 self._validate_run_status_identity(origin, origin_status)
                 origin_shutdown = self._read_shutdown_evidence(origin, "original export shutdown")
                 if origin_shutdown is not None and not shutdown_proven(origin_shutdown):
                     raise ValueError("Original simulation worker cleanup is unproven")
-                origin_context = self._read_run_json_snapshot(origin, "schematic_export_context.json", "original export context", 64 * 1024 * 1024)
+                origin_context = self._read_run_json_snapshot(origin, _contract_text("schematic_export_context.json"), "original export context", 64 * 1024 * 1024)
                 origin_candidate = self._native_candidate_record(origin, candidate_id, "original export candidate", strict=True)
                 before = prepared.get("source_identity") or {}
                 observed = ((origin_context or {}).get("prepared") or {}).get("source_identity") or {}
-                if (not origin_context or origin_context.get("schema_version") != "crescendo.schematic_export_context.v1"
+                if (not origin_context or origin_context.get("schema_version") != _contract_text("crescendo.schematic_export_context.v1")
                         or not origin_candidate or origin_candidate.get("candidate_id") != candidate_id
                         or origin_candidate.get("status") != "completed"
                         or origin_candidate.get("values") != candidate.get("values")
@@ -8044,7 +8053,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
         if snapshot is None:
             return None
         checkpoint = snapshot["checkpoint"]
-        if checkpoint.get("schema_version") != "crescendo.checkpoint.v1":
+        if checkpoint.get("schema_version") != _contract_text("crescendo.checkpoint.v1"):
             raise ValueError("legacy checkpoint export is not supported")
         validate_checkpoint_integrity(checkpoint)
         from .runner import self_contained_checkpoint
@@ -8058,7 +8067,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
 
 def make_handler(service):
     class Handler(BaseHTTPRequestHandler):
-        server_version = "Crescendo/1.0"
+        server_version = _contract_text("Crescendo/1.0")
 
         def _json(self, status, payload, download_name=None):
             data = json.dumps(payload, sort_keys=True).encode("utf-8")
@@ -8107,7 +8116,7 @@ def make_handler(service):
             query = parse_qs(parsed.query)
             try:
                 if parsed.path == "/api/health":
-                    self._json(200, {"ok": True, "service": "crescendo"})
+                    self._json(200, {"ok": True, "service": _contract_text("crescendo")})
                 elif parsed.path == "/api/eda-setup":
                     self._json(200, service.eda_setup())
                 elif parsed.path == "/api/runs":
@@ -8117,10 +8126,10 @@ def make_handler(service):
                 elif parsed.path == "/api/progress":
                     self._json(200, service.progress(query.get("run_id", [""])[0]))
                 elif parsed.path == "/api/status":
-                    payload = service.read(query.get("run_id", [""])[0], "status.json")
+                    payload = service.read(query.get("run_id", [""])[0], _contract_text("status.json"))
                     self._json(200 if payload else 404, payload or {"error": "status not found"})
                 elif parsed.path == "/api/result":
-                    payload = service.read(query.get("run_id", [""])[0], "result.json")
+                    payload = service.read(query.get("run_id", [""])[0], _contract_text("result.json"))
                     self._json(200 if payload else 404, payload or {"error": "result not ready"})
                 elif parsed.path == "/api/checkpoint":
                     run_name = query.get("run_id", [""])[0]
@@ -8203,11 +8212,11 @@ def make_handler(service):
 
 def serve(config, host="127.0.0.1", port=8877):
     if host not in ("127.0.0.1", "localhost", "::1"):
-        raise ValueError("Crescendo UI only binds to loopback; use SSH port forwarding for remote access")
+        raise ValueError(_contract_text("Crescendo UI only binds to loopback; use SSH port forwarding for remote access"))
     service = OptimizerService(config)
     server = ThreadingHTTPServer((host, int(port)), make_handler(service))
     service.shutdown_callback = server.shutdown
-    print("Crescendo UI: http://%s:%d" % (host, int(port)))
+    print(_contract_text("Crescendo UI: http://%s:%d") % (host, int(port)))
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -8217,5 +8226,5 @@ def serve(config, host="127.0.0.1", port=8877):
             service._cancel_and_wait_range_validations()
             service._close_resident_validation()
         except Exception as error:
-            print("Crescendo shutdown cleanup failed: %s: %s" % (error.__class__.__name__, error))
+            print(_contract_text("Crescendo shutdown cleanup failed: %s: %s") % (error.__class__.__name__, error))
         server.server_close()

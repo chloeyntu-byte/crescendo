@@ -11,6 +11,10 @@ import stat
 import threading
 import time
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
+from .candidate_timing import elapsed, timestamp, update_cleanup_timing
 from .legacy_guardian import (
     LAUNCH_LOCK_NAME as LEGACY_GUARDIAN_LAUNCH_LOCK_NAME,
     MANIFEST_NAME as LEGACY_GUARDIAN_MANIFEST_NAME,
@@ -196,7 +200,7 @@ def _artifact_deletion_detail(payload_root, error, attempts):
 
 _DIAGNOSTIC_IDENTITY_LIMIT = 4 * 1024 * 1024
 _DIAGNOSTIC_IDENTITY_PATHS = (
-    "point_identity.json", "portability_settings.json",
+    _contract_text("point_identity.json"), _contract_text("portability_settings.json"),
     "workspace/portability_settings.json",
 )
 
@@ -268,7 +272,7 @@ def _read_diagnostic_bytes(run_root, relative, run_device, limit):
 def _diagnostic_environment_run(run_root, run_device):
     # The marker only preserves small metadata; it grants no cleanup ownership
     # or process proof. Match the runner's bounded diagnostic marker contract.
-    for name in ("spec.json", "status.json"):
+    for name in (_contract_text("spec.json"), _contract_text("status.json")):
         if not os.path.lexists(os.path.join(run_root, name)):
             continue
         try:
@@ -281,7 +285,7 @@ def _diagnostic_environment_run(run_root, run_device):
             continue
         test_id = marker.get("test_id")
         if (set(marker) == {"schema_version", "test_id"} and
-                marker.get("schema_version") == "crescendo.environment_test.run.v1" and
+                marker.get("schema_version") == _contract_text("crescendo.environment_test.run.v1") and
                 isinstance(test_id, str) and test_id.strip() and len(test_id) <= 128 and
                 not any(ord(char) < 32 for char in test_id)):
             return True
@@ -427,7 +431,7 @@ _CONTROLLER_EPOCH_LIVENESS_PROOFS = frozenset((
 ))
 _CONTROLLER_LIVENESS_LOCK = "controller_liveness.lock"
 _CLEANUP_PENDING_DIRECTORY = ".cleanup_pending"
-_CLEANUP_PENDING_SCHEMA = "crescendo.cleanup_pending.v1"
+_CLEANUP_PENDING_SCHEMA = _contract_text("crescendo.cleanup_pending.v1")
 _CLEANUP_PENDING_STATES = frozenset(("prepared", "quarantined", "deleted"))
 _CLEANUP_KINDS = frozenset((
     "controller_epoch", "worker_epoch", "nonterminal_candidate",
@@ -712,7 +716,7 @@ def _cleanup_pending_manifest_temps(entry_root, run_device):
 
 
 def _load_pending_manifest(entry_root, run_root, run_device):
-    manifest_path = os.path.join(entry_root, "manifest.json")
+    manifest_path = os.path.join(entry_root, _contract_text("manifest.json"))
     try:
         manifest_stat = os.lstat(manifest_path)
     except OSError as error:
@@ -731,7 +735,7 @@ def _load_pending_manifest(entry_root, run_root, run_device):
 
 def _write_pending_manifest(entry_root, run_root, run_device, document):
     _cleanup_pending_manifest_temps(entry_root, run_device)
-    manifest_path = os.path.join(entry_root, "manifest.json")
+    manifest_path = os.path.join(entry_root, _contract_text("manifest.json"))
     if os.path.lexists(manifest_path) and (
         os.path.islink(manifest_path) or not os.path.isfile(manifest_path)
     ):
@@ -767,7 +771,7 @@ def _finish_pending_entry(run_root, pending_root, entry_root):
     payload_root = os.path.join(entry_root, "payload")
     if os.path.lexists(payload_root):
         raise UnsafeCleanupError("cleanup pending payload still exists after deletion")
-    manifest_path = os.path.join(entry_root, "manifest.json")
+    manifest_path = os.path.join(entry_root, _contract_text("manifest.json"))
     if os.path.lexists(manifest_path):
         if os.path.islink(manifest_path) or not os.path.isfile(manifest_path):
             raise UnsafeCleanupError("cleanup pending manifest became unsafe")
@@ -816,9 +820,9 @@ def _quarantine_and_delete(source_root, run_root, cleanup_kind, source_relative,
         pending_root, expected_manifest["entry_name"], run_device, create=True,
     )
     _cleanup_pending_manifest_temps(entry_root, run_device)
-    manifest_path = os.path.join(entry_root, "manifest.json")
+    manifest_path = os.path.join(entry_root, _contract_text("manifest.json"))
     payload_root = os.path.join(entry_root, "payload")
-    unexpected = set(os.listdir(entry_root)) - {"manifest.json", "payload"}
+    unexpected = set(os.listdir(entry_root)) - {_contract_text("manifest.json"), "payload"}
     if unexpected:
         raise UnsafeCleanupError("cleanup pending entry contains unexpected files: %s" % sorted(unexpected))
     if os.path.lexists(manifest_path):
@@ -872,8 +876,8 @@ def _validated_terminal_cleanup_evidence(manifest):
     evidence = manifest.get("evidence") or {}
     preserved = _validated_cleanup_item_names(evidence.get("preserved"), "preserved")
     disposable = _validated_cleanup_item_names(evidence.get("disposable"), "disposable")
-    protected = {"candidate.json", "timing.json", "completion_evidence.json"}
-    if "candidate.json" not in preserved:
+    protected = {_contract_text("candidate.json"), _contract_text("timing.json"), _contract_text("completion_evidence.json")}
+    if _contract_text("candidate.json") not in preserved:
         raise UnsafeCleanupError("terminal cleanup manifest does not preserve candidate.json")
     if set(preserved).intersection(disposable) or protected.intersection(disposable):
         raise UnsafeCleanupError("terminal cleanup manifest would delete lightweight recovery evidence")
@@ -974,7 +978,7 @@ def _validate_controller_termination_candidate(candidate_root, evidence):
         raise UnsafeCleanupError(
             "controller-termination cleanup refuses any candidate workspace"
         )
-    candidate_path = os.path.join(candidate_root, "candidate.json")
+    candidate_path = os.path.join(candidate_root, _contract_text("candidate.json"))
     try:
         candidate = load_json(candidate_path)
     except Exception as error:
@@ -999,7 +1003,7 @@ def _validate_terminal_preserved_files(candidate_root, preserved):
             raise UnsafeCleanupError(
                 "terminal cleanup preserved artifact is missing or unsafe: %s" % path
             )
-    for name in ("candidate.json", "timing.json", "completion_evidence.json"):
+    for name in (_contract_text("candidate.json"), _contract_text("timing.json"), _contract_text("completion_evidence.json")):
         path = os.path.join(candidate_root, name)
         if os.path.lexists(path) and name not in preserved:
             raise UnsafeCleanupError(
@@ -1151,7 +1155,7 @@ def _resume_pending_terminal_candidate(candidate_root, run_root):
     entry_root = _validated_pending_entry(pending_root, entry_name, run_device)
     _cleanup_pending_manifest_temps(entry_root, run_device)
     names = set(os.listdir(entry_root))
-    if "manifest.json" not in names:
+    if _contract_text("manifest.json") not in names:
         if "payload" in names:
             raise UnsafeCleanupError("terminal cleanup payload exists without its manifest")
         if names:
@@ -1160,7 +1164,7 @@ def _resume_pending_terminal_candidate(candidate_root, run_root):
             )
         _finish_pending_entry(run_root, pending_root, entry_root)
         return None
-    unexpected = names - {"manifest.json", "payload"}
+    unexpected = names - {_contract_text("manifest.json"), "payload"}
     if unexpected:
         raise UnsafeCleanupError(
             "terminal cleanup pending entry contains unexpected files: %s" % sorted(unexpected)
@@ -1187,9 +1191,9 @@ def _terminal_candidate_cleanup_transaction(candidate_root, run_root, evidence,
         pending_root, expected_manifest["entry_name"], run_device, create=True,
     )
     _cleanup_pending_manifest_temps(entry_root, run_device)
-    manifest_path = os.path.join(entry_root, "manifest.json")
+    manifest_path = os.path.join(entry_root, _contract_text("manifest.json"))
     payload_root = os.path.join(entry_root, "payload")
-    unexpected = set(os.listdir(entry_root)) - {"manifest.json", "payload"}
+    unexpected = set(os.listdir(entry_root)) - {_contract_text("manifest.json"), "payload"}
     if unexpected:
         raise UnsafeCleanupError(
             "terminal cleanup pending entry contains unexpected files: %s" % sorted(unexpected)
@@ -1220,7 +1224,7 @@ def resume_pending_cleanups(run_root):
         entry_root = _validated_pending_entry(pending_root, entry_name, run_device)
         _cleanup_pending_manifest_temps(entry_root, run_device)
         names = set(os.listdir(entry_root))
-        if "manifest.json" not in names:
+        if _contract_text("manifest.json") not in names:
             if names:
                 raise UnsafeCleanupError(
                     "cleanup pending entry has no manifest: %s" % entry_name
@@ -1229,7 +1233,7 @@ def resume_pending_cleanups(run_root):
             _fsync_directory(pending_root)
             resumed.append({"entry_name": entry_name, "state": "empty_entry_removed"})
             continue
-        unexpected = names - {"manifest.json", "payload"}
+        unexpected = names - {_contract_text("manifest.json"), "payload"}
         if unexpected:
             raise UnsafeCleanupError(
                 "cleanup pending entry contains unexpected files: %s" % sorted(unexpected)
@@ -1307,7 +1311,7 @@ def inspect_run_cleanup_scope(run_root):
     owned quarantine. This snapshot is for final status aggregation, not a
     process-termination proof or authorization to remove any resource.
     """
-    snapshot = {"schema_version": "crescendo.run_cleanup_scope.v1",
+    snapshot = {"schema_version": _contract_text("crescendo.run_cleanup_scope.v1"),
                 "run_root": os.path.abspath(run_root), "observed_at": utc_timestamp(),
                 "retained_worker_epochs": [], "retained_controller_epochs": [],
                 "pending_entries": [], "errors": []}
@@ -1638,7 +1642,7 @@ def _reject_unsafe_regular_tree(root, expected_device, description):
 
 
 def _load_nonterminal_candidate_record(candidate_root):
-    candidate_path = os.path.join(candidate_root, "candidate.json")
+    candidate_path = os.path.join(candidate_root, _contract_text("candidate.json"))
     try:
         candidate_stat = os.lstat(candidate_path)
     except OSError as error:
@@ -1681,7 +1685,7 @@ def _candidate_workspace_metadata(candidate_root):
         return None
     if os.path.islink(workspace) or not os.path.isdir(workspace):
         raise UnsafeCleanupError("nonterminal candidate workspace is not a real directory")
-    metadata_path = os.path.join(workspace, "workspace.json")
+    metadata_path = os.path.join(workspace, _contract_text("workspace.json"))
     try:
         metadata_stat = os.lstat(metadata_path)
     except OSError as error:
@@ -1773,7 +1777,7 @@ def _worker_control_roots(epoch_root):
 def _guardian_state_paths(epoch_root):
     result = []
     for control_root in _worker_control_roots(epoch_root):
-        state_path = os.path.join(control_root, "guardian_state.json")
+        state_path = os.path.join(control_root, _contract_text("guardian_state.json"))
         if not os.path.lexists(state_path):
             continue
         if os.path.islink(state_path) or not os.path.isfile(state_path):
@@ -1855,7 +1859,7 @@ def _acquire_worker_launch_cleanup_guards(epoch_root):
     controls = _worker_control_roots(epoch_root)
     expected_manifest = os.path.join(expected_control, LEGACY_GUARDIAN_MANIFEST_NAME)
     expected_lock = os.path.join(expected_control, LEGACY_GUARDIAN_LAUNCH_LOCK_NAME)
-    worker_state_path = os.path.join(epoch_root, "worker_state.json")
+    worker_state_path = os.path.join(epoch_root, _contract_text("worker_state.json"))
     worker_state = None
     worker_state_signature = _path_signature(worker_state_path)
     if worker_state_signature is not None:
@@ -1871,7 +1875,7 @@ def _acquire_worker_launch_cleanup_guards(epoch_root):
     if durable_recorded:
         if any(value is None for value in durable_values.values()):
             raise UnsafeCleanupError("worker guardian durable launch identity is incomplete")
-        if (worker_state or {}).get("schema_version") != "crescendo.persistent_maestro_worker.v1":
+        if (worker_state or {}).get("schema_version") != _contract_text("crescendo.persistent_maestro_worker.v1"):
             raise UnsafeCleanupError("worker state schema is not recognized")
         try:
             recorded_worker_index = int(worker_state.get("worker_index", -1))
@@ -1884,7 +1888,7 @@ def _acquire_worker_launch_cleanup_guards(epoch_root):
         for key, expected in (
             ("workspace_root", os.path.join(epoch_root, "workspace")),
             ("control_root", expected_control),
-            ("guardian_state_path", os.path.join(expected_control, "guardian_state.json")),
+            ("guardian_state_path", os.path.join(expected_control, _contract_text("guardian_state.json"))),
         ):
             if not _recorded_path_matches(worker_state.get(key), expected):
                 raise UnsafeCleanupError("worker state %s does not match its epoch" % key)
@@ -1901,7 +1905,7 @@ def _acquire_worker_launch_cleanup_guards(epoch_root):
         raise UnsafeCleanupError("worker durable launch artifacts are incomplete")
     durable_proof = None
     guardian_inspections = []
-    guardian_state_path = os.path.join(expected_control, "guardian_state.json")
+    guardian_state_path = os.path.join(expected_control, _contract_text("guardian_state.json"))
     guardian_signature = (_path_signature(guardian_state_path)
                           if manifest_signature is not None else None)
     if manifest_signature is not None:
@@ -1978,7 +1982,7 @@ def _validate_partial_worker_epoch_proof(epoch_root, termination_proof, launch_g
             "partial worker epoch requires explicit proven-dead or no-spawn proof"
         )
     _reject_symlinks_below(epoch_root)
-    state_path = os.path.join(epoch_root, "worker_state.json")
+    state_path = os.path.join(epoch_root, _contract_text("worker_state.json"))
     guardian_paths = _guardian_state_paths(epoch_root)
     if kind == "worker_not_created":
         if os.path.lexists(state_path) or guardian_paths:
@@ -2061,7 +2065,8 @@ def lightweight_candidate_record(row):
     result = {}
     for key in (
         "candidate_id", "generation", "index", "values", "status", "metrics",
-        "failure_class", "started_at", "finished_at", "source_guard",
+        "failure_class", "started_at", "finished_at", "source_guard", "batch_reference",
+        "shared_with", "physical_execution_candidate",
         "failure_stage", "spectre_state", "execution_backend",
         "persistent_worker", "simulation_submission",
         "batch_execution",
@@ -2134,7 +2139,7 @@ def lightweight_candidate_record(row):
 
 def persist_lightweight_candidate(candidate_root, row):
     candidate_root = os.path.abspath(candidate_root)
-    path = os.path.join(candidate_root, "candidate.json")
+    path = os.path.join(candidate_root, _contract_text("candidate.json"))
     atomic_write_json(path, lightweight_candidate_record(row))
     return path
 
@@ -2145,27 +2150,29 @@ def summarize_successful_candidate_artifacts(candidate_root, run_root):
     names = sorted(os.listdir(candidate_root))
     summaries = []
     for name in names:
-        if name not in ("candidate.json", "timing.json", "completion_evidence.json", "execution_diagnostics.json", "cli_progress.json") and not _retained_spectre_name(name):
+        if name not in (_contract_text("candidate.json"), _contract_text("timing.json"), _contract_text("completion_evidence.json"), _contract_text("execution_diagnostics.json"), _contract_text("cli_progress.json"), _contract_text("artifact_summary.json")) and not _retained_spectre_name(name):
             return None  # Raw/pending/unknown evidence still belongs to native cleanup.
         path = os.path.join(candidate_root, name)
         value = os.lstat(path)
         if (not stat.S_ISREG(value.st_mode) or value.st_nlink != 1 or value.st_dev != run_device):
             raise UnsafeCleanupError("successful candidate summary contains an unsafe file: %s" % path)
-        summaries.append({"name": name, "bytes": value.st_size, "sha256": sha256_file(path)})
+        if name != _contract_text("artifact_summary.json"):
+            summaries.append({"name": name, "bytes": value.st_size, "sha256": sha256_file(path)})
     return summaries
 
 
 @_serialize_cleanup(1)
 def compact_successful_candidate_artifacts(candidate_root, run_root):
-    """Delete direct success files only after their core/checkpoint ACK.
+    """Compact direct success files after their core/checkpoint ACK.
 
-    The full timing/completion/actual-parameter evidence is already in the core
-    candidate. Failure/unknown/pending artifacts never enter this path.
+    Shared CLI candidates retain hashed logical audit files. Other candidates
+    keep timing/completion/actual-parameter evidence in the core candidate.
+    Failure/unknown/pending artifacts never enter this path.
     """
     candidate_root, run_root, _parent, run_device = _validated_direct_candidate_paths(candidate_root, run_root)
     from .runner import validate_checkpoint_integrity
     from .run_data_store import dataset_from_reference
-    checkpoint_path = os.path.join(run_root, "checkpoint.json")
+    checkpoint_path = os.path.join(run_root, _contract_text("checkpoint.json"))
     if not _regular_nonempty(checkpoint_path, run_root):
         raise UnsafeCleanupError("successful compaction requires the durable run checkpoint")
     checkpoint = load_json(checkpoint_path)
@@ -2179,6 +2186,12 @@ def compact_successful_candidate_artifacts(candidate_root, run_root):
     if len(rows) != 1:
         raise UnsafeCleanupError("successful candidate core identity is ambiguous")
     row = rows[0]
+    if row.get('batch_reference'):
+        from .generation_batch import require_history_released
+        try:
+            require_history_released(row['batch_reference'], identity)
+        except (OSError, ValueError) as error:
+            raise UnsafeCleanupError(str(error))
     proof = row.get("raw_cleanup_proof") or {}
     if (row.get("status") != "completed" or (row.get("source_guard") or {}).get("ok") is not True
             or (row.get("completion_evidence") or row.get("completion") or {}).get("ok") is not True
@@ -2189,6 +2202,18 @@ def compact_successful_candidate_artifacts(candidate_root, run_root):
     actual = summarize_successful_candidate_artifacts(candidate_root, run_root)
     if not expected or actual != expected:
         raise UnsafeCleanupError("successful candidate files changed after their durable summary")
+    if row.get('batch_reference') and row.get('execution_backend') in ('private_netlist', 'maestro_netlist'):
+        summary_path = os.path.join(candidate_root, _contract_text('artifact_summary.json'))
+        summary = {'schema_version': _contract_text('crescendo.logical_candidate_artifacts.v1'),
+            'candidate_id': identity, 'batch_reference': row['batch_reference'],
+            'physical_execution_candidate': row.get('physical_execution_candidate'),
+            'shared_with': row.get('shared_with'), 'files': expected,
+            'artifact_cleanup_complete': True, 'checkpoint_sha256': checkpoint.get('payload_sha256')}
+        atomic_write_json(summary_path, summary)
+        return {'ok': True, 'artifact_cleanup_complete': True, 'removed': [],
+            'retained': [item['name'] for item in expected] + [_contract_text('artifact_summary.json')],
+            'summary_path': summary_path, 'candidate_id': identity,
+            'checkpoint_sha256': checkpoint.get('payload_sha256')}
     removed = []
     for artifact in expected:
         path = os.path.join(candidate_root, artifact["name"])
@@ -2271,7 +2296,7 @@ def distribute_batch_spectre_logs(batch_root, candidates, workspace_root):
             meta = dict(line.rstrip("\r\n").split("=", 1) for line in stream if "=" in line)
         source_path = meta.get("source_path") or ""
         parts = source_path.replace("\\", "/").split("/")
-        if (meta.get("schema_version") != "crescendo.retained_spectre_log.v1"
+        if (meta.get("schema_version") != _contract_text("crescendo.retained_spectre_log.v1")
                 or not os.path.isabs(source_path) or not is_under(source_path, workspace_root)
                 or len(parts) < 4 or parts[-2:] != ["psf", "spectre.out"]):
             continue
@@ -2336,7 +2361,7 @@ def clear_retained_spectre_logs(run_root, include_live=False):
 
 @_serialize_cleanup(1)
 def safe_delete_candidate_workspace(candidate_root, run_root, source_guard, required_lightweight_paths=None):
-    cleanup_started = time.monotonic()
+    cleanup_started = timestamp()
     candidate_root, run_root, _candidates_root, run_device = _validated_direct_candidate_paths(
         candidate_root, run_root,
     )
@@ -2345,18 +2370,18 @@ def safe_delete_candidate_workspace(candidate_root, run_root, source_guard, requ
     _reject_mounts_or_cross_device_tree(
         candidate_root, run_device, "terminal candidate tree",
     )
-    candidate_path = os.path.join(candidate_root, "candidate.json")
+    candidate_path = os.path.join(candidate_root, _contract_text("candidate.json"))
     required = list(required_lightweight_paths or [
         candidate_path,
-        os.path.join(candidate_root, "completion_evidence.json"),
+        os.path.join(candidate_root, _contract_text("completion_evidence.json")),
     ])
     if candidate_path not in required:
         required.append(candidate_path)
     for retained_path in retained_spectre_paths(candidate_root):
         if retained_path not in required:
             required.append(retained_path)
-    completion_path = os.path.join(candidate_root, "completion_evidence.json")
-    timing_path = os.path.join(candidate_root, "timing.json")
+    completion_path = os.path.join(candidate_root, _contract_text("completion_evidence.json"))
+    timing_path = os.path.join(candidate_root, _contract_text("timing.json"))
     for optional_path in (completion_path, timing_path):
         if os.path.lexists(optional_path):
             if not _regular_nonempty(optional_path, candidate_root):
@@ -2389,14 +2414,9 @@ def safe_delete_candidate_workspace(candidate_root, run_root, source_guard, requ
             "cleaned_at": utc_timestamp(),
         }
         if timing_path in preserved:
-            timing = load_json(timing_path)
-            timing.setdefault("phases", {})["cleanup"] = {
-                "elapsed_seconds": time.monotonic() - cleanup_started,
-                "workspace_removed": workspace_removed,
-                "raw_artifact_count": len(raw_removed),
-                "resumed": True,
-            }
-            atomic_write_json(timing_path, timing)
+            update_cleanup_timing(timing_path, elapsed_seconds=elapsed(cleanup_started, timestamp()),
+                                  workspace_removed=workspace_removed, raw_artifact_count=len(raw_removed),
+                                  resumed=True)
         return result
     workspace = os.path.join(candidate_root, "workspace")
     workspace_relative = None
@@ -2408,7 +2428,7 @@ def safe_delete_candidate_workspace(candidate_root, run_root, source_guard, requ
             raise UnsafeCleanupError("candidate workspace is not a directory: %s" % workspace)
         if not is_under(workspace, candidate_root):
             raise UnsafeCleanupError("candidate workspace resolves outside the candidate directory: %s" % workspace)
-        metadata_path = os.path.join(workspace, "workspace.json")
+        metadata_path = os.path.join(workspace, _contract_text("workspace.json"))
         if not _regular_nonempty(metadata_path, workspace):
             raise UnsafeCleanupError("candidate workspace metadata is missing: %s" % metadata_path)
         metadata = load_json(metadata_path)
@@ -2465,20 +2485,15 @@ def safe_delete_candidate_workspace(candidate_root, run_root, source_guard, requ
         "cleaned_at": utc_timestamp(),
     }
     if timing_path in preserved:
-        timing = load_json(timing_path)
-        timing.setdefault("phases", {})["cleanup"] = {
-            "elapsed_seconds": time.monotonic() - cleanup_started,
-            "workspace_removed": workspace_removed,
-            "raw_artifact_count": len(raw_removed),
-        }
-        atomic_write_json(timing_path, timing)
+        update_cleanup_timing(timing_path, elapsed_seconds=elapsed(cleanup_started, timestamp()),
+                              workspace_removed=workspace_removed, raw_artifact_count=len(raw_removed))
     return result
 
 
 @_serialize_cleanup(1)
 def cleanup_proven_terminal_infrastructure_candidate(candidate_root, run_root,
                                                      required_lightweight_paths=None):
-    cleanup_started = time.monotonic()
+    cleanup_started = timestamp()
     candidate_root, run_root, _candidates_root, run_device = _validated_direct_candidate_paths(
         candidate_root, run_root,
     )
@@ -2489,8 +2504,8 @@ def cleanup_proven_terminal_infrastructure_candidate(candidate_root, run_root,
     _reject_mounts_or_cross_device_tree(
         candidate_root, run_device, "proven-dead terminal candidate tree",
     )
-    candidate_path = os.path.join(candidate_root, "candidate.json")
-    timing_path = os.path.join(candidate_root, "timing.json")
+    candidate_path = os.path.join(candidate_root, _contract_text("candidate.json"))
+    timing_path = os.path.join(candidate_root, _contract_text("timing.json"))
     if not _regular_nonempty(candidate_path, candidate_root):
         raise UnsafeCleanupError(
             "controller-termination candidate record is missing or unsafe: %s" % candidate_path
@@ -2508,15 +2523,18 @@ def cleanup_proven_terminal_infrastructure_candidate(candidate_root, run_root,
     termination_evidence = _controller_termination_evidence(candidate)
     persist_lightweight_candidate(candidate_root, candidate)
 
-    required = list(required_lightweight_paths or [candidate_path, timing_path])
+    required = list(required_lightweight_paths or [candidate_path])
     if candidate_path not in required:
         required.append(candidate_path)
-    if timing_path not in required:
-        required.append(timing_path)
+    if os.path.lexists(timing_path):
+        if timing_path not in required:
+            required.append(timing_path)
+    else:
+        required = [path for path in required if os.path.abspath(path) != timing_path]
     for retained_path in retained_spectre_paths(candidate_root):
         if retained_path not in required:
             required.append(retained_path)
-    completion_path = os.path.join(candidate_root, "completion_evidence.json")
+    completion_path = os.path.join(candidate_root, _contract_text("completion_evidence.json"))
     if os.path.lexists(completion_path) and completion_path not in required:
         required.append(completion_path)
     preserved = set()
@@ -2570,20 +2588,15 @@ def cleanup_proven_terminal_infrastructure_candidate(candidate_root, run_root,
         "proof_kind": "controller_termination_proven",
         "cleaned_at": utc_timestamp(),
     }
-    timing = load_json(timing_path)
-    timing.setdefault("phases", {})["cleanup"] = {
-        "elapsed_seconds": time.monotonic() - cleanup_started,
-        "workspace_removed": False,
-        "raw_artifact_count": len(raw_removed),
-        "controller_termination_proven": True,
-        "resumed": was_resumed,
-    }
-    atomic_write_json(timing_path, timing)
+    if timing_path in preserved:
+        update_cleanup_timing(timing_path, elapsed_seconds=elapsed(cleanup_started, timestamp()),
+                              workspace_removed=False, raw_artifact_count=len(raw_removed),
+                              controller_termination_proven=True, resumed=was_resumed)
     return result
 
 
 def _require_remote_batch_quiescent(epoch_root):
-    state_path = os.path.join(epoch_root, "worker_state.json")
+    state_path = os.path.join(epoch_root, _contract_text("worker_state.json"))
     if not os.path.lexists(state_path):
         return
     if not _regular_nonempty(state_path, epoch_root):
@@ -2628,7 +2641,7 @@ def safe_delete_worker_epoch(epoch_root, run_root, source_guard):
         workspace = os.path.join(epoch_root, "workspace")
         if os.path.islink(workspace) or not os.path.isdir(workspace):
             raise UnsafeCleanupError("worker workspace is missing, not a directory, or a symbolic link: %s" % workspace)
-        metadata_path = os.path.join(workspace, "workspace.json")
+        metadata_path = os.path.join(workspace, _contract_text("workspace.json"))
         if not _regular_nonempty(metadata_path, workspace):
             raise UnsafeCleanupError("worker workspace metadata is missing: %s" % metadata_path)
         metadata = load_json(metadata_path)
@@ -2676,7 +2689,7 @@ def _safe_delete_partial_worker_epoch(epoch_root, run_root, termination_proof):
         if os.path.lexists(workspace):
             if os.path.islink(workspace) or not os.path.isdir(workspace):
                 raise UnsafeCleanupError("partial worker workspace is unsafe: %s" % workspace)
-            metadata_path = os.path.join(workspace, "workspace.json")
+            metadata_path = os.path.join(workspace, _contract_text("workspace.json"))
             if os.path.lexists(metadata_path):
                 raise UnsafeCleanupError(
                     "partial worker cleanup cannot bypass existing workspace metadata: %s" % metadata_path
@@ -2716,11 +2729,11 @@ def cleanup_abandoned_candidate(candidate_root, run_root, source_verifier, requi
     workspace_path = os.path.join(candidate_root, "workspace")
     if os.path.islink(workspace_path) or not os.path.isdir(workspace_path):
         raise UnsafeCleanupError("abandoned candidate workspace is missing or unsafe: %s" % workspace_path)
-    metadata_path = os.path.join(workspace_path, "workspace.json")
+    metadata_path = os.path.join(workspace_path, _contract_text("workspace.json"))
     if not _regular_nonempty(metadata_path, workspace_path):
         raise UnsafeCleanupError("abandoned candidate has no workspace metadata: %s" % metadata_path)
     source_guard = source_verifier(load_json(metadata_path))
-    candidate_path = os.path.join(candidate_root, "candidate.json")
+    candidate_path = os.path.join(candidate_root, _contract_text("candidate.json"))
     if source_guard.get("ok") and os.path.isfile(candidate_path):
         persist_lightweight_candidate(candidate_root, load_json(candidate_path))
     return safe_delete_candidate_workspace(
@@ -2800,7 +2813,7 @@ def cleanup_terminal_candidate_artifacts(candidate_root, run_root, source_verifi
         os.path.islink(candidate_root) or not os.path.isdir(candidate_root)
     ):
         raise UnsafeCleanupError("terminal candidate target is outside its run or is unsafe: %s" % candidate_root)
-    candidate_path = os.path.join(candidate_root, "candidate.json")
+    candidate_path = os.path.join(candidate_root, _contract_text("candidate.json"))
     if not os.path.isfile(candidate_path) or os.path.islink(candidate_path):
         raise UnsafeCleanupError("terminal candidate record is missing or unsafe: %s" % candidate_path)
     candidate = load_json(candidate_path)
@@ -2846,7 +2859,7 @@ def cleanup_abandoned_worker_epoch(epoch_root, run_root, source_verifier, termin
         return _safe_delete_partial_worker_epoch(epoch_root, run_root, termination_proof)
     if os.path.islink(workspace) or not os.path.isdir(workspace):
         raise UnsafeCleanupError("abandoned worker workspace is unsafe: %s" % workspace)
-    metadata_path = os.path.join(workspace, "workspace.json")
+    metadata_path = os.path.join(workspace, _contract_text("workspace.json"))
     if not _regular_nonempty(metadata_path, workspace):
         if os.path.lexists(metadata_path):
             raise UnsafeCleanupError("abandoned worker epoch has invalid workspace metadata: %s" % metadata_path)

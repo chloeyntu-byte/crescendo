@@ -2,6 +2,9 @@
 import copy
 import os
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .ade_setup import (resolve_setup_locator, _setupdb_root, _active_node,
                         _children, _child, _name, _text, _option_map,
                         _enabled, _disabled_test_names)
@@ -55,6 +58,6 @@ def load_test_catalogue(path, config, backend='auto'):
         if identity() != before:
             raise ValueError('ADE setup changed while reading Tests; Load and Inspect again.')
         result['metadata_identity'] = before
-    result['schema_version'] = 'crescendo.test_catalogue.v1'
+    result['schema_version'] = _contract_text('crescendo.test_catalogue.v1')
     result['metadata_only'] = True
     return result

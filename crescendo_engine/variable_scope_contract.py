@@ -5,10 +5,13 @@ device expression has a numeric value in a particular test/corner point.
 """
 import copy
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .spectre_values import parse_spectre_number
 
 
-SCHEMA_VERSION = "crescendo.variable_scope_contract.v1"
+SCHEMA_VERSION = _contract_text("crescendo.variable_scope_contract.v1")
 
 
 class VariableScopeContractError(ValueError):

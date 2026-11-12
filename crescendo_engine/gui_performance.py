@@ -1,4 +1,7 @@
 """Private acceleration helpers; retain Tk encodings and snapshot ownership."""
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 import copy
 import marshal
 import math
@@ -89,7 +92,7 @@ class CachedCanvas(object):
     """Reuse an ordered Canvas display list; unchanged draws make no Tcl calls."""
     def __init__(self, canvas):
         self.canvas = canvas
-        self.items = getattr(canvas, "_cr_draw_items", [])
+        self.items = getattr(canvas, _contract_text("_cr_draw_items"), [])
         self.index = 0
 
     def __getattr__(self, name):
@@ -114,6 +117,10 @@ class CachedCanvas(object):
             if previous is not None:
                 self.canvas.delete(previous[1])
             item = getattr(self.canvas, method)(*coordinates, **options)
+            if self.index + 1 < len(self.items):
+                # Canvas appends new primitives at the top; retain draw order
+                # when replacing an earlier primitive among reused later ones.
+                self.canvas.tag_lower(item, self.items[self.index + 1][1])
         record = (method, item, coordinates, options)
         if previous is None:
             self.items.append(record)
@@ -126,7 +133,7 @@ class CachedCanvas(object):
         for record in self.items[self.index:]:
             self.canvas.delete(record[1])
         del self.items[self.index:]
-        self.canvas._cr_draw_items = self.items
+        setattr(self.canvas, _contract_text("_cr_draw_items"), self.items)
 
 
 def json_detail_tail(document, limit=65536):

@@ -1,4 +1,8 @@
 from __future__ import print_function
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
+from .pdk import adapter_entry_symbol
 
 import hashlib
 import json
@@ -11,6 +15,7 @@ import threading
 import time
 import uuid
 
+from .diagnostic_timing import elapsed_seconds, phase_seconds, timing_tick
 from .cadence import child_environment, run_command
 from .simulators import selected_simulator
 from .run_log import append_run_event
@@ -63,11 +68,11 @@ from .workspace import (
 from .storage_policy import (workspace_rdb_path, native_storage_readback_lines, load_native_storage_readback,
                              native_history_readback_line, qualify_native_history_paths)
 
-SCHEMA_VERSION = "crescendo.persistent_maestro.v1"
-WORKER_SCHEMA_VERSION = "crescendo.persistent_maestro_worker.v1"
-GUARDIAN_SCHEMA_VERSION = "crescendo.ocean_worker_guardian.v1"
+SCHEMA_VERSION = _contract_text("crescendo.persistent_maestro.v1")
+WORKER_SCHEMA_VERSION = _contract_text("crescendo.persistent_maestro_worker.v1")
+GUARDIAN_SCHEMA_VERSION = _contract_text("crescendo.ocean_worker_guardian.v1")
 GUARDIAN_CHILD_ENVIRONMENT_KEYS = GUI_ENV_NAMES
-GUARDIAN_CHILD_ENVIRONMENT_PREFIX = "CRESCENDO_GUARDIAN_CHILD_"
+GUARDIAN_CHILD_ENVIRONMENT_PREFIX = _contract_text("CRESCENDO_GUARDIAN_CHILD_")
 
 
 class PersistentMaestroWorkerError(RuntimeError):
@@ -182,7 +187,7 @@ def _candidate_rows(workspace, parameters, values, clone_lookup):
 
 
 def _snapshot_lines(rows, path, kind):
-    lines = ['crescVerify = outfile("%s")' % _skill_quote(path)]
+    lines = [_contract_text('crescVerify = outfile("%s")') % _skill_quote(path)]
     grouped = {}
     for row in rows:
         grouped.setdefault((row["library"], row["cell"], row.get("view", "schematic"), row.get("view_type", "schematic"), row["instance"]), []).append(row)
@@ -190,10 +195,10 @@ def _snapshot_lines(rows, path, kind):
         lines.extend([
             'cv = dbOpenCellViewByType("%s" "%s" "%s" "%s" "r")' % (
                 _skill_quote(library), _skill_quote(cell), _skill_quote(view), _skill_quote(view_type)),
-            'unless(cv error("Crescendo cannot open snapshot cell %s/%s/schematic\\n"))' % (
+            _contract_text('unless(cv error("Crescendo cannot open snapshot cell %s/%s/schematic\\n"))') % (
                 _skill_quote(library), _skill_quote(cell)),
             'snapshotInstances = setof(item cv~>instances item~>name == "%s")' % _skill_quote(instance),
-            'unless(length(snapshotInstances) == 1 error("Crescendo snapshot instance is not unique: %s/%s/%s count=%%L\\n" length(snapshotInstances)))' % (
+            _contract_text('unless(length(snapshotInstances) == 1 error("Crescendo snapshot instance is not unique: %s/%s/%s count=%%L\\n" length(snapshotInstances)))') % (
                 _skill_quote(library), _skill_quote(cell), _skill_quote(instance)),
             'inst = car(snapshotInstances)',
             'cdfgData = cdfGetInstCDF(inst)',
@@ -202,20 +207,20 @@ def _snapshot_lines(rows, path, kind):
             lines.extend([
                 'snapshotProp = dbFindProp(inst "%s")' % _skill_quote(row["property"]),
                 'snapshotCdfParam = get(cdfgData stringToSymbol("%s"))' % _skill_quote(row["property"]),
-                'unless(snapshotCdfParam error("Crescendo snapshot CDF parameter is missing: %s\\n"))' % _skill_quote(row["property"]),
+                _contract_text('unless(snapshotCdfParam error("Crescendo snapshot CDF parameter is missing: %s\\n"))') % _skill_quote(row["property"]),
                 'snapshotValue = if(snapshotProp then snapshotProp~>value else snapshotCdfParam~>value)',
-                'fprintf(crescVerify "%s_DIRECT\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" "%s" "%s" snapshotValue snapshotCdfParam~>value)' % (
+                _contract_text('fprintf(crescVerify "%s_DIRECT\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" "%s" "%s" snapshotValue snapshotCdfParam~>value)') % (
                     kind, _skill_quote(row["parameter_id"]), _skill_quote(library),
                     _skill_quote(cell), _skill_quote(instance), _skill_quote(row["property"])),
             ])
             lines.extend(_cdf_snapshot_skill(kind, row["parameter_id"]))
         lines.append('dbClose(cv)')
-    lines.append('close(crescVerify)')
+    lines.append(_contract_text('close(crescVerify)'))
     return lines
 
 
 def _patch_lines(rows, path, adapter_path):
-    lines = ['crescVerify = outfile("%s")' % _skill_quote(path)]
+    lines = [_contract_text('crescVerify = outfile("%s")') % _skill_quote(path)]
     grouped = {}
     for row in rows:
         grouped.setdefault((row["library"], row["cell"], row.get("view", "schematic"), row.get("view_type", "schematic")), []).append(row)
@@ -223,7 +228,7 @@ def _patch_lines(rows, path, adapter_path):
         lines.extend([
             'cv = dbOpenCellViewByType("%s" "%s" "%s" "%s" "a")' % (
                 _skill_quote(library), _skill_quote(cell), _skill_quote(view), _skill_quote(view_type)),
-            'unless(cv error("Crescendo cannot open copied cell %s/%s/schematic\\n"))' % (
+            _contract_text('unless(cv error("Crescendo cannot open copied cell %s/%s/schematic\\n"))') % (
                 _skill_quote(library), _skill_quote(cell)),
         ])
         instance_groups = {}
@@ -233,7 +238,7 @@ def _patch_lines(rows, path, adapter_path):
             instance_rows = sorted(instance_rows, key=lambda item: item["property"])
             lines.extend([
                 'instances = setof(item cv~>instances item~>name == "%s")' % _skill_quote(instance),
-                'unless(length(instances) == 1 error("Crescendo patch instance is not unique: %s/%s/%s count=%%L\\n" length(instances)))' % (
+                _contract_text('unless(length(instances) == 1 error("Crescendo patch instance is not unique: %s/%s/%s count=%%L\\n" length(instances)))') % (
                     _skill_quote(library), _skill_quote(cell), _skill_quote(instance)),
                 'inst = car(instances)',
                 'cdfgData = cdfGetInstCDF(inst)',
@@ -247,34 +252,34 @@ def _patch_lines(rows, path, adapter_path):
                 literal = _skill_literal(row["value"], row["prop_type"])
                 lines.extend([
                     'cdfResult = errset(cdfGetInstCDF(inst) t)',
-                    'unless(cdfResult && car(cdfResult) error("Crescendo cannot obtain instance CDF for parameter callback\\n"))',
+                    _contract_text('unless(cdfResult && car(cdfResult) error("Crescendo cannot obtain instance CDF for parameter callback\\n"))'),
                     'cdfgData = car(cdfResult)',
                     'cdfParam = get(cdfgData stringToSymbol("%s"))' % _skill_quote(row["property"]),
-                    'unless(cdfParam error("Crescendo CDF parameter disappeared after update: %s\\n"))' % _skill_quote(row["property"]),
+                    _contract_text('unless(cdfParam error("Crescendo CDF parameter disappeared after update: %s\\n"))') % _skill_quote(row["property"]),
                     'cdfParam~>value = %s' % literal,
                 ])
                 if adapter_path:
                     lines.extend([
-                        'callbackResult = errset(crescPdkApplyParameter(inst "%s" %s) t)' % (
+                        (_contract_text('callbackResult = errset(crescPdkApplyParameter(inst "%s" %s) t)')).replace(_contract_text("crescPdkApplyParameter"), adapter_entry_symbol(adapter_path)) % (
                             _skill_quote(row["property"]), literal),
-                        'unless(callbackResult && car(callbackResult) error("CRESCENDO_ADAPTER_ERROR:cdf_parameter_mapping_incompatible PDK adapter failed for %s\\n"))' % _skill_quote(row["property"]),
+                        _contract_text('unless(callbackResult && car(callbackResult) error("CRESCENDO_ADAPTER_ERROR:cdf_parameter_mapping_incompatible PDK adapter failed for %s\\n"))') % _skill_quote(row["property"]),
                     ])
                 else:
                     lines.extend([
                         'callbackExpr = cdfParam~>callback',
                         'when(callbackExpr && callbackExpr != ""',
-                        "  crescCallbackDefaultValue = get(cdfParam 'defValue)",
-                        '  crescCallbackDefaultPresent = numberp(crescCallbackDefaultValue) || stringp(crescCallbackDefaultValue)',
+                        _contract_text("  crescCallbackDefaultValue = get(cdfParam 'defValue)"),
+                        _contract_text('  crescCallbackDefaultPresent = numberp(crescCallbackDefaultValue) || stringp(crescCallbackDefaultValue)'),
                     ])
                     lines.extend(callback_failure_lines(
                         row, literal, library, cell, view, instance,
                         [item["property"] for item in instance_rows], _skill_quote))
                     lines.extend([
-                        '  crescCallbackEffectiveValue = cdfParam~>value',
+                        _contract_text('  crescCallbackEffectiveValue = cdfParam~>value'),
                         ')',
                         'when(isCallable(\'cdfUpdateInstParam)',
                         '  updateResult = errset(cdfUpdateInstParam(inst) t)',
-                        '  unless(updateResult error("CRESCENDO_ADAPTER_ERROR:cdf_update_api_incompatible cdfUpdateInstParam failed for %s\\n"))' % _skill_quote(row["property"]),
+                        _contract_text('  unless(updateResult error("CRESCENDO_ADAPTER_ERROR:cdf_update_api_incompatible cdfUpdateInstParam failed for %s\\n"))') % _skill_quote(row["property"]),
                         ')',
                     ])
                     lines.extend(callback_value_proof_lines(row, _skill_quote))
@@ -284,7 +289,7 @@ def _patch_lines(rows, path, adapter_path):
                     'schematicProp = dbFindProp(inst "%s")' % _skill_quote(row["property"]),
                     'cdfgData = cdfGetInstCDF(inst)',
                     'cdfParam = get(cdfgData stringToSymbol("%s"))' % _skill_quote(row["property"]),
-                    'unless(cdfParam error("Crescendo updated CDF parameter is missing: %s\\n"))' % _skill_quote(row["property"]),
+                    _contract_text('unless(cdfParam error("Crescendo updated CDF parameter is missing: %s\\n"))') % _skill_quote(row["property"]),
                     'schematicValue = if(schematicProp then schematicProp~>value else cdfParam~>value)',
                 ])
                 if adapter_path:
@@ -295,15 +300,15 @@ def _patch_lines(rows, path, adapter_path):
                         'callbackStatus = if(callbackExpr && callbackExpr != "" then "executed" else "not_defined")',
                     ])
                 lines.append(
-                    'fprintf(crescVerify "PARAM\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" %s schematicValue cdfParam~>value callbackStatus callbackExpr)' % (
+                    _contract_text('fprintf(crescVerify "PARAM\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" %s schematicValue cdfParam~>value callbackStatus callbackExpr)') % (
                         _skill_quote(row["parameter_id"]), literal))
         lines.extend([
             'schCheck(cv)',
-            'unless(dbSave(cv) error("Crescendo failed to save copied cell %s/%s\\n"))' % (
+            _contract_text('unless(dbSave(cv) error("Crescendo failed to save copied cell %s/%s\\n"))') % (
                 _skill_quote(library), _skill_quote(cell)),
             'dbClose(cv)',
         ])
-    lines.append('close(crescVerify)')
+    lines.append(_contract_text('close(crescVerify)'))
     if rows:
         from .optimized_schematic import export_snapshot_skill
         lines.extend(export_snapshot_skill(rows, path + ".export.tsv"))
@@ -311,13 +316,13 @@ def _patch_lines(rows, path, adapter_path):
 
 
 def _clone_lines(clone_plan, verification_path, workspace=None):
-    lines = ['crescCloneVerify = outfile("%s")' % _skill_quote(verification_path)]
+    lines = [_contract_text('crescCloneVerify = outfile("%s")') % _skill_quote(verification_path)]
     if workspace and workspace.get("copy_policy") == "same_library_views":
         from .same_library_views import copy_lines
         lines.extend(copy_lines(clone_plan))
         config_lines, _plan = config_binding_lines(workspace, clone_plan, verification_path + ".config")
         lines.extend(config_lines)
-        lines.append('close(crescCloneVerify)')
+        lines.append(_contract_text('close(crescCloneVerify)'))
         return lines
     for clone in clone_plan:
         views = [(clone.get("source_view", "schematic"), clone.get("source_view_type", "schematic"))]
@@ -330,11 +335,11 @@ def _clone_lines(clone_plan, verification_path, workspace=None):
                 'srcCv = dbOpenCellViewByType("%s" "%s" "%s" "%s" "r")' % (
                     _skill_quote(source_library), _skill_quote(source_cell),
                     _skill_quote(view), _skill_quote(view_type)),
-                'unless(srcCv error("Crescendo cannot open clone source %s/%s/%s\\n"))' % (
+                _contract_text('unless(srcCv error("Crescendo cannot open clone source %s/%s/%s\\n"))') % (
                     _skill_quote(clone["source_library"]), _skill_quote(clone["source_cell"]), _skill_quote(view)),
                 'dstCv = dbCopyCellView(srcCv "%s" "%s" "%s")' % (
                     _skill_quote(clone["clone_library"]), _skill_quote(clone["clone_cell"]), _skill_quote(view)),
-                'unless(dstCv error("Crescendo failed to clone %s/%s/%s\\n"))' % (
+                _contract_text('unless(dstCv error("Crescendo failed to clone %s/%s/%s\\n"))') % (
                     _skill_quote(clone["source_library"]), _skill_quote(clone["source_cell"]), _skill_quote(view)),
                 'dbClose(srcCv)', 'dbClose(dstCv)',
             ])
@@ -343,13 +348,13 @@ def _clone_lines(clone_plan, verification_path, workspace=None):
             'parentCv = dbOpenCellViewByType("%s" "%s" "%s" "%s" "a")' % (
                 _skill_quote(clone["parent_library"]), _skill_quote(clone["parent_cell"]),
                 _skill_quote(clone.get("parent_view", "schematic")), _skill_quote(clone.get("parent_view_type", "schematic"))),
-            'unless(parentCv error("Crescendo cannot open clone parent %s/%s/schematic\\n"))' % (
+            _contract_text('unless(parentCv error("Crescendo cannot open clone parent %s/%s/schematic\\n"))') % (
                 _skill_quote(clone["parent_library"]), _skill_quote(clone["parent_cell"])),
             'oldInstances = setof(item parentCv~>instances item~>name == "%s")' % _skill_quote(clone["instance"]),
-            'unless(length(oldInstances) == 1 error("Crescendo clone occurrence is not unique: %s count=%%L\\n" length(oldInstances)))' % _skill_quote(clone["occurrence_path"]),
+            _contract_text('unless(length(oldInstances) == 1 error("Crescendo clone occurrence is not unique: %s count=%%L\\n" length(oldInstances)))') % _skill_quote(clone["occurrence_path"]),
             'oldInst = car(oldInstances)',
-            'unless(oldInst~>objType == "inst" error("Crescendo does not support independent cloning of arrays/mosaics: %s\\n"))' % _skill_quote(clone["occurrence_path"]),
-            'when(oldInst~>magnification && oldInst~>magnification != 1.0 error("Crescendo does not support magnified hierarchical instances: %s\\n"))' % _skill_quote(clone["occurrence_path"]),
+            _contract_text('unless(oldInst~>objType == "inst" error("Crescendo does not support independent cloning of arrays/mosaics: %s\\n"))') % _skill_quote(clone["occurrence_path"]),
+            _contract_text('when(oldInst~>magnification && oldInst~>magnification != 1.0 error("Crescendo does not support magnified hierarchical instances: %s\\n"))') % _skill_quote(clone["occurrence_path"]),
             'oldName = oldInst~>name', 'oldXY = oldInst~>xy', 'oldOrient = oldInst~>orient',
             'oldParams = foreach(mapcar prop oldInst~>prop list(prop~>name prop~>valueType prop~>value))',
             'oldConnections = foreach(mapcar instTerm oldInst~>instTerms list(instTerm~>term~>name if(instTerm~>net then instTerm~>net~>name else nil)))',
@@ -357,35 +362,35 @@ def _clone_lines(clone_plan, verification_path, workspace=None):
             'cloneMaster = dbOpenCellViewByType("%s" "%s" "%s" "%s" "r")' % (
                 _skill_quote(clone["clone_library"]), _skill_quote(clone["clone_cell"]),
                 _skill_quote(clone["master_view"]), _skill_quote(clone["master_view_type"])),
-            'unless(cloneMaster error("Crescendo cannot open cloned master %s/%s/%s\\n"))' % (
+            _contract_text('unless(cloneMaster error("Crescendo cannot open cloned master %s/%s/%s\\n"))') % (
                 _skill_quote(clone["clone_library"]), _skill_quote(clone["clone_cell"]), _skill_quote(clone["master_view"])),
             'newInst = dbCreateParamInst(parentCv cloneMaster oldName oldXY oldOrient 1 oldParams)',
-            'unless(newInst error("Crescendo failed to recreate independent occurrence\\n"))',
+            _contract_text('unless(newInst error("Crescendo failed to recreate independent occurrence\\n"))'),
             'schCheck(parentCv)',
-            'unless(newInst~>name == oldName && newInst~>xy == oldXY && newInst~>orient == oldOrient error("Crescendo recreated occurrence geometry mismatch\\n"))',
-            'unless(newInst~>master~>libName == "%s" && newInst~>master~>cellName == "%s" && newInst~>master~>viewName == "%s" error("Crescendo recreated occurrence master mismatch\\n"))' % (
+            _contract_text('unless(newInst~>name == oldName && newInst~>xy == oldXY && newInst~>orient == oldOrient error("Crescendo recreated occurrence geometry mismatch\\n"))'),
+            _contract_text('unless(newInst~>master~>libName == "%s" && newInst~>master~>cellName == "%s" && newInst~>master~>viewName == "%s" error("Crescendo recreated occurrence master mismatch\\n"))') % (
                 _skill_quote(clone["clone_library"]), _skill_quote(clone["clone_cell"]), _skill_quote(clone["master_view"])),
-            'unless(length(newInst~>instTerms) == length(oldConnections) error("Crescendo recreated occurrence terminal count mismatch\\n"))',
+            _contract_text('unless(length(newInst~>instTerms) == length(oldConnections) error("Crescendo recreated occurrence terminal count mismatch\\n"))'),
             'foreach(connection oldConnections',
             '  newTerm = car(setof(term newInst~>instTerms term~>term~>name == car(connection)))',
-            '  unless(newTerm error("Crescendo recreated occurrence missing terminal %L\\n" car(connection)))',
+            _contract_text('  unless(newTerm error("Crescendo recreated occurrence missing terminal %L\\n" car(connection)))'),
             '  newNetName = if(newTerm~>net then newTerm~>net~>name else nil)',
-            '  unless(equal(newNetName cadr(connection)) error("Crescendo recreated occurrence connectivity mismatch at %L\\n" car(connection)))',
+            _contract_text('  unless(equal(newNetName cadr(connection)) error("Crescendo recreated occurrence connectivity mismatch at %L\\n" car(connection)))'),
             ')',
             'foreach(paramRow oldParams',
             '  newProp = dbFindProp(newInst car(paramRow))',
-            '  unless(newProp && equal(newProp~>value caddr(paramRow)) error("Crescendo recreated occurrence property mismatch at %L\\n" car(paramRow)))',
+            _contract_text('  unless(newProp && equal(newProp~>value caddr(paramRow)) error("Crescendo recreated occurrence property mismatch at %L\\n" car(paramRow)))'),
             ')',
-            'unless(dbSave(parentCv) error("Crescendo failed to save clone parent\\n"))',
+            _contract_text('unless(dbSave(parentCv) error("Crescendo failed to save clone parent\\n"))'),
             'dbClose(parentCv)', 'dbClose(cloneMaster)',
-            'fprintf(crescCloneVerify "CLONE\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" "%s")' % (
+            _contract_text('fprintf(crescCloneVerify "CLONE\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" "%s")') % (
                 _skill_quote(clone["occurrence_path"]), _skill_quote(clone["source_cell"]),
                 _skill_quote(clone["clone_cell"]), _skill_quote(clone["parent_cell"])),
         ])
     if workspace is not None:
         config_lines, _plan = config_binding_lines(workspace, clone_plan, verification_path + ".config")
         lines.extend(config_lines)
-    lines.append('close(crescCloneVerify)')
+    lines.append(_contract_text('close(crescCloneVerify)'))
     return lines
 
 
@@ -405,7 +410,7 @@ def _pristine_cell_plan(rows, epoch, workspace=None):
             "view": view,
             "view_type": view_type,
             "pristine_library": private_library_name(workspace, library) if workspace and workspace.get("copy_policy") == "same_library_views" else library,
-            "pristine_cell": "cr_pristine_%s" % digest,
+            "pristine_cell": _contract_text("cr_pristine_%s") % digest,
             "instances": sorted(instances),
         })
         if workspace and workspace.get("same_library_objects"):
@@ -418,7 +423,7 @@ def _pristine_cell_plan(rows, epoch, workspace=None):
 
 def _pristine_signature_procedure_lines():
     return [
-        "procedure(crescPristineCellSignature(cv)",
+        _contract_text("procedure(crescPristineCellSignature(cv)"),
         "  let((records instance property instTerm net terminal figure signatureTerminal)",
         '    records = list(sprintf(nil "COUNTS|%L" list(length(cv~>instances) length(cv~>nets) length(cv~>terminals) length(cv~>shapes))))',
         "    foreach(instance cv~>instances",
@@ -452,24 +457,24 @@ def _pristine_signature_procedure_lines():
 
 
 def _pristine_capture_lines(plan, verification_path):
-    lines = ['crescPristineVerify = outfile("%s")' % _skill_quote(verification_path)]
+    lines = [_contract_text('crescPristineVerify = outfile("%s")') % _skill_quote(verification_path)]
     for row in plan:
         lines.extend([
             'srcCv = dbOpenCellViewByType("%s" "%s" "%s" "%s" "r")' % (
                 _skill_quote(row["library"]), _skill_quote(row["cell"]),
                 _skill_quote(row["view"]), _skill_quote(row["view_type"])),
-            'unless(srcCv error("Crescendo cannot open pristine source %s/%s/%s\\n"))' % (
+            _contract_text('unless(srcCv error("Crescendo cannot open pristine source %s/%s/%s\\n"))') % (
                 _skill_quote(row["library"]), _skill_quote(row["cell"]),
                 _skill_quote(row["view"])),
             'dstCv = dbCopyCellView(srcCv "%s" "%s" "%s")' % (
                 _skill_quote(row["pristine_library"]), _skill_quote(row["pristine_cell"]),
                 _skill_quote(row.get("pristine_view") or row["view"])),
-            'unless(dstCv error("Crescendo failed to capture pristine cellview %s/%s/%s\\n"))' % (
+            _contract_text('unless(dstCv error("Crescendo failed to capture pristine cellview %s/%s/%s\\n"))') % (
                 _skill_quote(row["library"]), _skill_quote(row["cell"]),
                 _skill_quote(row["view"])),
-            'pristineSourceSignature = crescPristineCellSignature(srcCv)',
-            'pristineCopySignature = crescPristineCellSignature(dstCv)',
-            'unless(equal(pristineSourceSignature pristineCopySignature) error("Crescendo pristine capture semantic mismatch: %s/%s/%s\\n"))' % (
+            _contract_text('pristineSourceSignature = crescPristineCellSignature(srcCv)'),
+            _contract_text('pristineCopySignature = crescPristineCellSignature(dstCv)'),
+            _contract_text('unless(equal(pristineSourceSignature pristineCopySignature) error("Crescendo pristine capture semantic mismatch: %s/%s/%s\\n"))') % (
                 _skill_quote(row["library"]), _skill_quote(row["cell"]),
                 _skill_quote(row["view"])),
             'dbClose(dstCv)',
@@ -477,14 +482,14 @@ def _pristine_capture_lines(plan, verification_path):
             'persistedCv = dbOpenCellViewByType("%s" "%s" "%s" "%s" "r")' % (
                 _skill_quote(row["pristine_library"]), _skill_quote(row["pristine_cell"]),
                 _skill_quote(row.get("pristine_view") or row["view"]), _skill_quote(row["view_type"])),
-            'unless(persistedCv error("Crescendo cannot reopen persisted pristine cellview %s/%s/%s\\n"))' % (
+            _contract_text('unless(persistedCv error("Crescendo cannot reopen persisted pristine cellview %s/%s/%s\\n"))') % (
                 _skill_quote(row["pristine_library"]), _skill_quote(row["pristine_cell"]),
                 _skill_quote(row["view"])),
-            'pristinePersistedSignature = crescPristineCellSignature(persistedCv)',
-            'unless(equal(pristineSourceSignature pristinePersistedSignature) error("Crescendo persisted pristine capture semantic mismatch: %s/%s/%s\\n"))' % (
+            _contract_text('pristinePersistedSignature = crescPristineCellSignature(persistedCv)'),
+            _contract_text('unless(equal(pristineSourceSignature pristinePersistedSignature) error("Crescendo persisted pristine capture semantic mismatch: %s/%s/%s\\n"))') % (
                 _skill_quote(row["library"]), _skill_quote(row["cell"]),
                 _skill_quote(row["view"])),
-            'fprintf(crescPristineVerify "PRISTINE\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" "%s")' % (
+            _contract_text('fprintf(crescPristineVerify "PRISTINE\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" "%s")') % (
                 _skill_quote(row["library"]), _skill_quote(row["cell"]),
                 _skill_quote(row["pristine_library"]), _skill_quote(row["pristine_cell"])),
             'dbClose(srcCv)',
@@ -495,41 +500,41 @@ def _pristine_capture_lines(plan, verification_path):
         if row.get("owned_view"):
             from .same_library_views import ownership_marker_lines
             lines.extend(ownership_marker_lines(row["owned_view"]))
-    lines.append('close(crescPristineVerify)')
+    lines.append(_contract_text('close(crescPristineVerify)'))
     return lines
 
 
 def _pristine_restore_lines(plan, verification_path):
-    lines = ['crescPristineVerify = outfile("%s")' % _skill_quote(verification_path)]
+    lines = [_contract_text('crescPristineVerify = outfile("%s")') % _skill_quote(verification_path)]
     for row in plan:
         lines.extend([
             'workingLib = ddGetObj("%s")' % _skill_quote(row["library"]),
-            'unless(workingLib error("Crescendo cannot obtain library id before pristine restore: %s\\n"))' % (
+            _contract_text('unless(workingLib error("Crescendo cannot obtain library id before pristine restore: %s\\n"))') % (
                 _skill_quote(row["library"]),
             ),
             'workingCv = dbFindOpenCellView(workingLib "%s" "%s" nil)' % (
                 _skill_quote(row["cell"]),
                 _skill_quote(row["view"])),
             'when(workingCv dbPurge(workingCv))',
-            'when(dbFindOpenCellView(workingLib "%s" "%s" nil) error("Crescendo cannot purge working cellview before pristine restore: %s/%s/%s\\n"))' % (
+            _contract_text('when(dbFindOpenCellView(workingLib "%s" "%s" nil) error("Crescendo cannot purge working cellview before pristine restore: %s/%s/%s\\n"))') % (
                 _skill_quote(row["cell"]), _skill_quote(row["view"]),
                 _skill_quote(row["library"]),
                 _skill_quote(row["cell"]), _skill_quote(row["view"])),
             'pristineCv = dbOpenCellViewByType("%s" "%s" "%s" "%s" "r")' % (
                 _skill_quote(row["pristine_library"]), _skill_quote(row["pristine_cell"]),
                 _skill_quote(row.get("pristine_view") or row["view"]), _skill_quote(row["view_type"])),
-            'unless(pristineCv error("Crescendo cannot open pristine cellview %s/%s/%s\\n"))' % (
+            _contract_text('unless(pristineCv error("Crescendo cannot open pristine cellview %s/%s/%s\\n"))') % (
                 _skill_quote(row["pristine_library"]), _skill_quote(row["pristine_cell"]),
                 _skill_quote(row["view"])),
             'restoredCv = dbCopyCellView(pristineCv "%s" "%s" "%s" nil nil t)' % (
                 _skill_quote(row["library"]), _skill_quote(row["cell"]),
                 _skill_quote(row["view"])),
-            'unless(restoredCv error("Crescendo failed to restore pristine cellview %s/%s/%s\\n"))' % (
+            _contract_text('unless(restoredCv error("Crescendo failed to restore pristine cellview %s/%s/%s\\n"))') % (
                 _skill_quote(row["library"]), _skill_quote(row["cell"]),
                 _skill_quote(row["view"])),
-            'pristineSourceSignature = crescPristineCellSignature(pristineCv)',
-            'pristineRestoreSignature = crescPristineCellSignature(restoredCv)',
-            'unless(equal(pristineSourceSignature pristineRestoreSignature) error("Crescendo pristine restore semantic mismatch: %s/%s/%s\\n"))' % (
+            _contract_text('pristineSourceSignature = crescPristineCellSignature(pristineCv)'),
+            _contract_text('pristineRestoreSignature = crescPristineCellSignature(restoredCv)'),
+            _contract_text('unless(equal(pristineSourceSignature pristineRestoreSignature) error("Crescendo pristine restore semantic mismatch: %s/%s/%s\\n"))') % (
                 _skill_quote(row["library"]), _skill_quote(row["cell"]),
                 _skill_quote(row["view"])),
             'dbClose(restoredCv)',
@@ -537,14 +542,14 @@ def _pristine_restore_lines(plan, verification_path):
             'persistedCv = dbOpenCellViewByType("%s" "%s" "%s" "%s" "r")' % (
                 _skill_quote(row["library"]), _skill_quote(row["cell"]),
                 _skill_quote(row["view"]), _skill_quote(row["view_type"])),
-            'unless(persistedCv error("Crescendo cannot reopen persisted restored cellview %s/%s/%s\\n"))' % (
+            _contract_text('unless(persistedCv error("Crescendo cannot reopen persisted restored cellview %s/%s/%s\\n"))') % (
                 _skill_quote(row["library"]), _skill_quote(row["cell"]),
                 _skill_quote(row["view"])),
-            'pristinePersistedSignature = crescPristineCellSignature(persistedCv)',
-            'unless(equal(pristineSourceSignature pristinePersistedSignature) error("Crescendo persisted pristine restore semantic mismatch: %s/%s/%s\\n"))' % (
+            _contract_text('pristinePersistedSignature = crescPristineCellSignature(persistedCv)'),
+            _contract_text('unless(equal(pristineSourceSignature pristinePersistedSignature) error("Crescendo persisted pristine restore semantic mismatch: %s/%s/%s\\n"))') % (
                 _skill_quote(row["library"]), _skill_quote(row["cell"]),
                 _skill_quote(row["view"])),
-            'fprintf(crescPristineVerify "RESTORED\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" "%s")' % (
+            _contract_text('fprintf(crescPristineVerify "RESTORED\\t%%L\\t%%L\\t%%L\\t%%L\\n" "%s" "%s" "%s" "%s")') % (
                 _skill_quote(row["library"]), _skill_quote(row["cell"]),
                 _skill_quote(row["pristine_library"]), _skill_quote(row["pristine_cell"])),
             'dbClose(persistedCv)',
@@ -552,7 +557,7 @@ def _pristine_restore_lines(plan, verification_path):
             'persistedCv = nil',
             'pristineCv = nil',
         ])
-    lines.append('close(crescPristineVerify)')
+    lines.append(_contract_text('close(crescPristineVerify)'))
     return lines
 
 
@@ -619,7 +624,7 @@ def prepare_persistent_batch(workspace, config, parameters, candidates, batch_ro
         adapter_path = os.path.abspath(os.path.expanduser(str(adapter)))
         if not os.path.isfile(adapter_path):
             raise ParameterApplicationFailure("unsupported PDK adapter or missing SKILL file: %s" % adapter)
-    wrapper = write_batch_files(workspace, config, history_name="CRESCENDO_persistent_batch")
+    wrapper = write_batch_files(workspace, config, history_name=_contract_text("CRESCENDO_persistent_batch"))
     clone_records = os.path.join(batch_root, "clone.records")
     artifacts = []
     for candidate_id, values, explicit_root in normalized:
@@ -641,10 +646,10 @@ def prepare_persistent_batch(workspace, config, parameters, candidates, batch_ro
         })
     script_path = os.path.join(batch_root, "persistent_maestro.ocn")
     progress_path = os.path.join(batch_root, "persistent_progress.tsv")
-    spectre_retain_pointer = os.path.join(batch_root, "spectre_retain_candidate.txt")
+    spectre_retain_pointer = os.path.join(batch_root, _contract_text("spectre_retain_candidate.txt"))
     atomic_write_text(spectre_retain_pointer, "")
     lines = [
-        'procedure(crescWriteStatus(path state message)',
+        _contract_text('procedure(crescWriteStatus(path state message)'),
         '  let((port progressPort)',
         '    port = outfile(path "a")',
         '    fprintf(port "%s\\t%s\\t%s\\n" state getCurrentTime() message)',
@@ -658,17 +663,17 @@ def prepare_persistent_batch(workspace, config, parameters, candidates, batch_ro
         ')',
     ]
     lines.extend(_workspace_startup_load_lines(workspace))
-    lines.append('printf("CRESCENDO_PERSISTENT_BEGIN\\n")')
+    lines.append(_contract_text('printf("CRESCENDO_PERSISTENT_BEGIN\\n")'))
     if adapter_path:
         lines.extend([
             'load("%s")' % _skill_quote(adapter_path),
-            'unless(isCallable(\'crescPdkApplyParameter) error("CRESCENDO_ADAPTER_ERROR:cdf_update_api_incompatible PDK adapter must define crescPdkApplyParameter\\n"))',
+            (_contract_text('unless(isCallable(\'crescPdkApplyParameter) error("CRESCENDO_ADAPTER_ERROR:cdf_update_api_incompatible PDK adapter must define crescPdkApplyParameter\\n"))')).replace(_contract_text("crescPdkApplyParameter"), adapter_entry_symbol(adapter_path)),
         ])
     lines.extend(_clone_lines(clone_plan, clone_records, workspace))
     lines.append('session = maeOpenSetup("%s" "%s" "%s" ?mode "a")' % (
         _skill_quote(workspace["primary_library"]), _skill_quote(workspace["setup_cell"]),
         _skill_quote(workspace.get("setup_view") or "maestro")))
-    lines.append('unless(session error("Crescendo cannot open Maestro setup\\n"))')
+    lines.append(_contract_text('unless(session error("Crescendo cannot open Maestro setup\\n"))'))
     lines.append('mainSDB = axlGetMainSetupDB(session)')
     lines.extend(native_storage_readback_lines(workspace))
     lines.extend(workspace_test_design_lines(workspace))
@@ -676,7 +681,7 @@ def prepare_persistent_batch(workspace, config, parameters, candidates, batch_ro
         plans = artifact["patch_plan"]
         marker = _skill_quote(artifact["marker_path"])
         lines.extend([
-            'crescWriteStatus("%s" "BEGIN" "")' % marker,
+            _contract_text('crescWriteStatus("%s" "BEGIN" "")') % marker,
             'candidateResult = errset(progn(',
         ])
         lines.extend('  ' + row for row in _snapshot_lines(
@@ -686,30 +691,30 @@ def prepare_persistent_batch(workspace, config, parameters, candidates, batch_ro
         lines.extend('  ' + row for row in _snapshot_lines(
             plans["verify"]["parameters"], plans["verify"]["verification_path"], "POST"))
         lines.extend([
-            '  crescWriteStatus("%s" "PATCHED" "")' % marker,
+            _contract_text('  crescWriteStatus("%s" "PATCHED" "")') % marker,
             '  retainPort = outfile("%s" "w")' % _skill_quote(spectre_retain_pointer),
             '  fprintf(retainPort "%%s\\n" "%s")' % _skill_quote(artifact["candidate_root"]),
             '  close(retainPort)',
             '  runId = maeRunSimulation(?waitUntilDone t ?returnRunId t ?session session)',
             '  maeWaitUntilDone(\'All ?session session)',
             '  runData = axlGetRunData(session runId)',
-            '  unless(runData error("Crescendo cannot obtain run data\\n"))',
+            _contract_text('  unless(runData error("Crescendo cannot obtain run data\\n"))'),
             '  axlSetHistoryName(runData "%s")' % _skill_quote(artifact["history_name"]),
-            '  unless(equal(axlGetHistoryName(runData) "%s") error("Crescendo history rename failed\\n"))' % _skill_quote(artifact["history_name"]),
+            _contract_text('  unless(equal(axlGetHistoryName(runData) "%s") error("Crescendo history rename failed\\n"))') % _skill_quote(artifact["history_name"]),
             '  maeExportOutputView(?session session ?historyName "%s")' % _skill_quote(artifact["history_name"]),
             '  maeWaitUntilDone(\'All ?session session)',
-            '  crescWriteStatus("%s" "DONE" "")' % marker,
+            _contract_text('  crescWriteStatus("%s" "DONE" "")') % marker,
             '  t',
             ') t)',
             'unless(candidateResult',
-            '  crescWriteStatus("%s" "ERROR" "candidate failed")' % marker,
+            _contract_text('  crescWriteStatus("%s" "ERROR" "candidate failed")') % marker,
             '  errset(maeCloseSession(?session session ?forceClose t) t)',
             '  exit()',
             ')',
         ])
     lines.extend([
         'maeCloseSession(?session session ?forceClose t)',
-        'printf("CRESCENDO_PERSISTENT_DONE\\n")',
+        _contract_text('printf("CRESCENDO_PERSISTENT_DONE\\n")'),
         'exit()',
     ])
     # The legacy one-shot entry is still supported. Keep each candidate body
@@ -737,7 +742,7 @@ def prepare_persistent_batch(workspace, config, parameters, candidates, batch_ro
         "config_verification_path": clone_records + ".config",
         "candidates": artifacts,
     }
-    atomic_write_json(os.path.join(batch_root, "persistent_batch.json"), manifest)
+    atomic_write_json(os.path.join(batch_root, _contract_text("persistent_batch.json")), manifest)
     return manifest
 
 
@@ -820,18 +825,18 @@ def read_candidate_status(candidate):
 
 
 def run_persistent_batch(workspace, config, batch, timeout_seconds=None, candidate_timeout_seconds=None):
-    spectre_log = os.path.join(batch["batch_root"], "spectre_timeout.log")
+    spectre_log = os.path.join(batch["batch_root"], _contract_text("spectre_timeout.log"))
     base_env = child_environment(config, workspace["root"])
     env = child_environment(config, workspace["root"], include_runtime_ld=True, extra={
         "PATH": os.path.dirname(batch["spectre_wrapper"]) + ":" + base_env["PATH"],
-        "CRESCENDO_SIMULATION_TIMEOUT_SECONDS": config["runtime"].get("simulation_timeout_seconds", 900),
-        "CRESCENDO_REAL_SIMULATOR_BIN": config["cadence"].get(selected_simulator(config) + "_bin"),
-        "CRESCENDO_REAL_SPECTRE_BIN": config["cadence"].get(selected_simulator(config) + "_bin"),
-        "CRESCENDO_EXECUTION_SIMULATOR": selected_simulator(config),
-        "CRESCENDO_CADENCE_ROOT": config["cadence"].get("cadence_root") or "",
-        "CRESCENDO_SPECTRE_TIMEOUT_LOG": spectre_log,
-        "CRESCENDO_SPECTRE_RETAIN_POINTER": batch["spectre_retain_pointer"],
-        "CRESCENDO_SPECTRE_SUBMIT_SCRIPT": config["runtime"].get(
+        _contract_text("CRESCENDO_SIMULATION_TIMEOUT_SECONDS"): config["runtime"].get("simulation_timeout_seconds", 900),
+        _contract_text("CRESCENDO_REAL_SIMULATOR_BIN"): config["cadence"].get(selected_simulator(config) + "_bin"),
+        _contract_text("CRESCENDO_REAL_SPECTRE_BIN"): config["cadence"].get(selected_simulator(config) + "_bin"),
+        _contract_text("CRESCENDO_EXECUTION_SIMULATOR"): selected_simulator(config),
+        _contract_text("CRESCENDO_CADENCE_ROOT"): config["cadence"].get("cadence_root") or "",
+        _contract_text("CRESCENDO_SPECTRE_TIMEOUT_LOG"): spectre_log,
+        _contract_text("CRESCENDO_SPECTRE_RETAIN_POINTER"): batch["spectre_retain_pointer"],
+        _contract_text("CRESCENDO_SPECTRE_SUBMIT_SCRIPT"): config["runtime"].get(
             "spectre_submit_script"
         ) or submit_spectre_script_path(),
     })
@@ -858,7 +863,7 @@ def run_persistent_batch(workspace, config, batch, timeout_seconds=None, candida
     )
     command["started_epoch"] = started
     command["finished_epoch"] = time.time()
-    command["spectre_submit_script"] = env["CRESCENDO_SPECTRE_SUBMIT_SCRIPT"]
+    command["spectre_submit_script"] = env[_contract_text("CRESCENDO_SPECTRE_SUBMIT_SCRIPT")]
     command["spectre_timing"] = summarize_spectre_timing(spectre_log, workspace["root"])
     command["candidates"] = [{
         "candidate_id": row["candidate_id"], "history_name": row["history_name"],
@@ -877,9 +882,9 @@ def run_persistent_batch(workspace, config, batch, timeout_seconds=None, candida
             command["technology_validation"] = {
                 "ok": False, "status": "failed", "error": str(error),
             }
-            atomic_write_json(os.path.join(batch["batch_root"], "persistent_command.json"), command)
+            atomic_write_json(os.path.join(batch["batch_root"], _contract_text("persistent_command.json")), command)
             raise PersistentMaestroWorkerStartupError(str(error))
-    atomic_write_json(os.path.join(batch["batch_root"], "persistent_command.json"), command)
+    atomic_write_json(os.path.join(batch["batch_root"], _contract_text("persistent_command.json")), command)
     return command
 
 
@@ -939,6 +944,27 @@ def _validate_worker_protocol(rows, successful_states, error_state):
     )
 
 
+def _native_candidate_timing(started, observations, finished):
+    """Durations use the first Python observation of each fenced native marker."""
+    patched = observations.get("PATCHED")
+    sim_done = observations.get("SIM_DONE")
+    error = observations.get("ERROR")
+    execution_end = sim_done if sim_done is not None else error
+    # Fast native stages may coalesce within a poll. Their true duration is
+    # unknown when both boundaries were first seen at the same instant.
+    execution = elapsed_seconds(patched, execution_end) if execution_end is not None and execution_end != patched else None
+    build_end = patched if patched is not None else error
+    return {
+        "build": phase_seconds(elapsed_seconds(started, build_end) if build_end is not None else None,
+                               completed=patched is not None, source="native_protocol_observation"),
+        "execution": phase_seconds(execution, completed=sim_done is not None,
+                                   source="native_protocol_observation"),
+        "native_collection": phase_seconds(elapsed_seconds(sim_done, finished),
+                                           completed="DONE" in observations,
+                                           source="native_protocol_observation"),
+    }
+
+
 class PersistentMaestroWorker(object):
     """One supervised interactive Ocean/Maestro process for one private workspace.
 
@@ -994,8 +1020,8 @@ class PersistentMaestroWorker(object):
         self.pristine_records = os.path.join(self.control_root, "pristine_cells.records")
         self.startup_marker = os.path.join(self.control_root, "startup.tsv")
         self.shutdown_marker = os.path.join(self.control_root, "shutdown.tsv")
-        self.worker_state_path = os.path.join(self.worker_root, "worker_state.json")
-        self.guardian_state_path = os.path.join(self.control_root, "guardian_state.json")
+        self.worker_state_path = os.path.join(self.worker_root, _contract_text("worker_state.json"))
+        self.guardian_state_path = os.path.join(self.control_root, _contract_text("guardian_state.json"))
         self.guardian_launch_manifest_path = os.path.join(
             self.control_root, GUARDIAN_LAUNCH_MANIFEST_NAME,
         )
@@ -1011,9 +1037,9 @@ class PersistentMaestroWorker(object):
         self.guardian_token = self.guardian_token_identity["token"]
         self._guardian_terminate_grace_seconds = 5.0
         self._guardian_termination_margin_seconds = 3.0
-        self.spectre_log = os.path.join(self.control_root, "spectre_timeout.log")
+        self.spectre_log = os.path.join(self.control_root, _contract_text("spectre_timeout.log"))
         self.spectre_retain_pointer = os.path.join(
-            self.control_root, "spectre_retain_candidate.txt",
+            self.control_root, _contract_text("spectre_retain_candidate.txt"),
         )
         atomic_write_text(self.spectre_retain_pointer, "")
         self.spectre_wrapper = None
@@ -1140,20 +1166,20 @@ class PersistentMaestroWorker(object):
 
     def _environment(self):
         wrapper = write_batch_files(
-            self.workspace, self.config, history_name="CRESCENDO_persistent_worker_%d" % self.worker_index,
+            self.workspace, self.config, history_name=_contract_text("CRESCENDO_persistent_worker_%d") % self.worker_index,
         )
         self.spectre_wrapper = wrapper["spectre_wrapper"]
         base_env = child_environment(self.config, self.workspace["root"])
         return child_environment(self.config, self.workspace["root"], include_runtime_ld=True, extra={
             "PATH": os.path.dirname(self.spectre_wrapper) + ":" + base_env["PATH"],
-            "CRESCENDO_SIMULATION_TIMEOUT_SECONDS": self.config["runtime"].get("simulation_timeout_seconds", 900),
-            "CRESCENDO_REAL_SIMULATOR_BIN": self.config["cadence"].get(selected_simulator(self.config) + "_bin"),
-            "CRESCENDO_REAL_SPECTRE_BIN": self.config["cadence"].get(selected_simulator(self.config) + "_bin"),
-            "CRESCENDO_EXECUTION_SIMULATOR": selected_simulator(self.config),
-            "CRESCENDO_CADENCE_ROOT": self.config["cadence"].get("cadence_root") or "",
-            "CRESCENDO_SPECTRE_TIMEOUT_LOG": self.spectre_log,
-            "CRESCENDO_SPECTRE_RETAIN_POINTER": self.spectre_retain_pointer,
-            "CRESCENDO_SPECTRE_SUBMIT_SCRIPT": self.config["runtime"].get(
+            _contract_text("CRESCENDO_SIMULATION_TIMEOUT_SECONDS"): self.config["runtime"].get("simulation_timeout_seconds", 900),
+            _contract_text("CRESCENDO_REAL_SIMULATOR_BIN"): self.config["cadence"].get(selected_simulator(self.config) + "_bin"),
+            _contract_text("CRESCENDO_REAL_SPECTRE_BIN"): self.config["cadence"].get(selected_simulator(self.config) + "_bin"),
+            _contract_text("CRESCENDO_EXECUTION_SIMULATOR"): selected_simulator(self.config),
+            _contract_text("CRESCENDO_CADENCE_ROOT"): self.config["cadence"].get("cadence_root") or "",
+            _contract_text("CRESCENDO_SPECTRE_TIMEOUT_LOG"): self.spectre_log,
+            _contract_text("CRESCENDO_SPECTRE_RETAIN_POINTER"): self.spectre_retain_pointer,
+            _contract_text("CRESCENDO_SPECTRE_SUBMIT_SCRIPT"): self.config["runtime"].get(
                 "spectre_submit_script"
             ) or submit_spectre_script_path(),
         })
@@ -1161,7 +1187,7 @@ class PersistentMaestroWorker(object):
     @staticmethod
     def _status_procedure_lines():
         return [
-            "procedure(crescWriteWorkerStatus(path epoch sequence nonce candidate state message)",
+            _contract_text("procedure(crescWriteWorkerStatus(path epoch sequence nonce candidate state message)"),
             "  let((port)",
             "    port = outfile(path \"a\")",
             '    fprintf(port "%s\\t%L\\t%s\\t%s\\t%s\\t%s\\t%s\\n" epoch sequence nonce candidate state getCurrentTime() message)',
@@ -1242,32 +1268,32 @@ class PersistentMaestroWorker(object):
         path = os.path.join(self.control_root, "bootstrap.il")
         lines = self._status_procedure_lines()
         bootstrap_lines = _workspace_startup_load_lines(self.workspace) + [
-            'crescWorkerEpoch = "%s"' % _skill_quote(self.epoch),
-            "crescWorkerTainted = nil",
-            "crescLastRunId = nil",
-            "crescLastHistoryName = nil",
-            "crescExpectedHistoryName = nil",
-            "crescLastEpoch = nil",
-            "crescLastSequence = nil",
-            "crescLastNonce = nil",
-            "crescLastCandidate = nil",
+            _contract_text('crescWorkerEpoch = "%s"') % _skill_quote(self.epoch),
+            _contract_text("crescWorkerTainted = nil"),
+            _contract_text("crescLastRunId = nil"),
+            _contract_text("crescLastHistoryName = nil"),
+            _contract_text("crescExpectedHistoryName = nil"),
+            _contract_text("crescLastEpoch = nil"),
+            _contract_text("crescLastSequence = nil"),
+            _contract_text("crescLastNonce = nil"),
+            _contract_text("crescLastCandidate = nil"),
         ]
         if adapter_path:
             bootstrap_lines.extend([
-                'crescBootstrapStage = "pdk_adapter"',
+                _contract_text('crescBootstrapStage = "pdk_adapter"'),
                 'load("%s")' % _skill_quote(adapter_path),
-                "unless(isCallable('crescPdkApplyParameter) error(\"CRESCENDO_ADAPTER_ERROR:cdf_update_api_incompatible PDK adapter must define crescPdkApplyParameter\\n\"))",
+                (_contract_text("unless(isCallable('crescPdkApplyParameter) error(\"CRESCENDO_ADAPTER_ERROR:cdf_update_api_incompatible PDK adapter must define crescPdkApplyParameter\\n\"))")).replace(_contract_text("crescPdkApplyParameter"), adapter_entry_symbol(adapter_path)),
             ])
         bootstrap_lines.extend(_pristine_signature_procedure_lines())
-        bootstrap_lines.append('crescBootstrapStage = "occurrence_clone"')
+        bootstrap_lines.append(_contract_text('crescBootstrapStage = "occurrence_clone"'))
         bootstrap_lines.extend(_clone_lines(self.clone_plan, self.clone_records, self.workspace))
-        bootstrap_lines.append('crescBootstrapStage = "pristine_capture"')
+        bootstrap_lines.append(_contract_text('crescBootstrapStage = "pristine_capture"'))
         bootstrap_lines.extend(_pristine_capture_lines(
             self.pristine_cells, self.pristine_records,
         ))
         bootstrap_lines.extend([
-            "crescCloneVerify = nil",
-            "crescPristineVerify = nil",
+            _contract_text("crescCloneVerify = nil"),
+            _contract_text("crescPristineVerify = nil"),
             "srcCv = nil",
             "dstCv = nil",
             "parentCv = nil",
@@ -1294,30 +1320,30 @@ class PersistentMaestroWorker(object):
             "pristineCopySignature = nil",
             "pristineRestoreSignature = nil",
             "pristinePersistedSignature = nil",
-            'crescBootstrapStage = "maestro_setup_open"',
+            _contract_text('crescBootstrapStage = "maestro_setup_open"'),
             'envSetVal("adexl.simulation" "saveLastNHistoryEntries" \'int 1)',
             'session = maeOpenSetup("%s" "%s" "%s" ?mode "a")' % (
                 _skill_quote(self.workspace["primary_library"]), _skill_quote(self.workspace["setup_cell"]),
                 _skill_quote(self.workspace.get("setup_view") or "maestro"),
             ),
-            'unless(session error("Crescendo cannot open Maestro setup\\n"))',
+            _contract_text('unless(session error("Crescendo cannot open Maestro setup\\n"))'),
             "mainSDB = axlGetMainSetupDB(session)",
-            'unless(mainSDB error("Crescendo cannot obtain the Maestro setup database\\n"))',
+            _contract_text('unless(mainSDB error("Crescendo cannot obtain the Maestro setup database\\n"))'),
             "activeSetup = axlGetActiveSetup(mainSDB)",
-            'unless(activeSetup error("Crescendo cannot obtain the active Maestro setup\\n"))',
+            _contract_text('unless(activeSetup error("Crescendo cannot obtain the active Maestro setup\\n"))'),
         ])
-        bootstrap_lines.append('crescBootstrapStage = "native_storage_readback"')
+        bootstrap_lines.append(_contract_text('crescBootstrapStage = "native_storage_readback"'))
         bootstrap_lines.extend(native_storage_readback_lines(self.workspace))
-        bootstrap_lines.append('crescBootstrapStage = "native_corner_identity"')
+        bootstrap_lines.append(_contract_text('crescBootstrapStage = "native_corner_identity"'))
         bootstrap_lines.extend(native_corner_schedule_skill(
             self.workspace["setup"], os.path.join(self.control_root, "native_corner_schedule.tsv")))
         bootstrap_lines.extend([
-            'crescBootstrapStage = "history_overwrite"',
-            'crescOverwriteHistoryName = "Next History Run"',
+            _contract_text('crescBootstrapStage = "history_overwrite"'),
+            _contract_text('crescOverwriteHistoryName = "Next History Run"'),
             "overwriteModeResult = errset(axlSetOverwriteHistory(activeSetup t) t)",
-            'unless(overwriteModeResult && axlGetOverwriteHistory(activeSetup) error("Crescendo cannot enable native history overwrite\\n"))',
-            "overwriteNameResult = errset(axlSetOverwriteHistoryName(activeSetup crescOverwriteHistoryName) t)",
-            'unless(overwriteNameResult && equal(axlGetOverwriteHistoryName(activeSetup) crescOverwriteHistoryName) error("Crescendo cannot bind the native overwrite history selection\\n"))',
+            _contract_text('unless(overwriteModeResult && axlGetOverwriteHistory(activeSetup) error("Crescendo cannot enable native history overwrite\\n"))'),
+            _contract_text("overwriteNameResult = errset(axlSetOverwriteHistoryName(activeSetup crescOverwriteHistoryName) t)"),
+            _contract_text('unless(overwriteNameResult && equal(axlGetOverwriteHistoryName(activeSetup) crescOverwriteHistoryName) error("Crescendo cannot bind the native overwrite history selection\\n"))'),
             "t",
         ])
         bootstrap_lines.extend(workspace_test_design_lines(self.workspace))
@@ -1341,7 +1367,7 @@ class PersistentMaestroWorker(object):
                 'submission_scope': 'owned_session_pool_may_prestart',
                 'batch_id': identity['candidate_id'], 'candidate_id': identity['candidate_id'],
                 'batch_root': self.control_root, 'candidate_root': self.control_root,
-                'manifest_path': os.path.join(self.control_root, 'startup_session_ownership.json'),
+                'manifest_path': os.path.join(self.control_root, _contract_text('startup_session_ownership.json')),
                 'protocol_identity': dict(identity), 'simulation_submitted': True,
                 'native_completion_proven': False, 'native_stop_proven': False,
                 'no_remote_jobs_started': False, 'abort_requested': False,
@@ -1356,23 +1382,23 @@ class PersistentMaestroWorker(object):
         if snapshot.get('available') or bool(overrides.get('command')):
             from .resources import tool_path
             submission_root = runtime.get('run_root') or self.worker_root
-            submission_log = os.path.join(submission_root, 'native_dispatch.jsonl')
+            submission_log = os.path.join(submission_root, _contract_text('native_dispatch.jsonl'))
             self.job_observation = prepare_job_command_observers(snapshot, overrides,
                 os.path.join(self.control_root, 'job_observers'), submission_log,
                 python_bin=sys.executable, helper_path=tool_path('maestro_job_observer.py'))
             self.config.setdefault('runtime', {})['maestro_submission_log_path'] = submission_log
         self.job_policy_readback_path = os.path.join(self.control_root, 'effective_job_policy.tsv')
-        bootstrap_lines.append('crescBootstrapStage = "job_policy_apply_readback"')
+        bootstrap_lines.append(_contract_text('crescBootstrapStage = "job_policy_apply_readback"'))
         bootstrap_lines.extend(job_policy_application_skill(snapshot, overrides,
             session_expr='session', output_path=self.job_policy_readback_path,
             command_wrappers=self.job_observation.get('wrappers')).splitlines())
         startup_status = (
-            'crescWriteWorkerStatus("%s" "%s" %d "%s" "%s"' % (
+            _contract_text('crescWriteWorkerStatus("%s" "%s" %d "%s" "%s"') % (
                 _skill_quote(self.startup_marker), _skill_quote(identity["epoch"]), identity["sequence"],
                 _skill_quote(identity["nonce"]), _skill_quote(identity["candidate_id"]),
             )
         )
-        lines.append('crescBootstrapStage = "startup_load"')
+        lines.append(_contract_text('crescBootstrapStage = "startup_load"'))
         lines.append(startup_status + ' "STARTING" "")')
         bounded_lines, generation = bounded_skill_body_lines(bootstrap_lines, "bootstrapResult")
         lines.extend(bounded_lines)
@@ -1380,12 +1406,12 @@ class PersistentMaestroWorker(object):
             "if(bootstrapResult then",
             "  " + startup_status + ' "READY" "")',
             "else",
-            "  crescWorkerTainted = t",
-            "  " + startup_status + ' "STARTUP_ERROR" strcat("bootstrap failed at " crescBootstrapStage))',
+            _contract_text("  crescWorkerTainted = t"),
+            "  " + startup_status + _contract_text(' "STARTUP_ERROR" strcat("bootstrap failed at " crescBootstrapStage))'),
             ")",
         ])
         atomic_write_text(path, "\n".join(lines) + "\n")
-        atomic_write_json(os.path.join(self.control_root, "worker_manifest.json"), {
+        atomic_write_json(os.path.join(self.control_root, _contract_text("worker_manifest.json")), {
             "schema_version": WORKER_SCHEMA_VERSION,
             "epoch": self.epoch,
             "worker_index": self.worker_index,
@@ -1462,6 +1488,13 @@ class PersistentMaestroWorker(object):
             if abort_check is not None:
                 abort_check()
             rows = _matching_worker_protocol(path, identity)
+            timing_request = getattr(self, "_timing_request", None)
+            if timing_request is not None and timing_request[0] == identity and len(rows) > observed:
+                observations = timing_request[1]
+                unseen = [row["state"] for row in rows if row["state"] not in observations]
+                if unseen:
+                    observed_at = timing_tick()
+                    observations.update((state, observed_at) for state in unseen)
             observer = getattr(self, '_live_progress', None)
             if observer is not None and identity.get('candidate_id') == observer.manifest.get('batch_id'):
                 try:
@@ -1685,7 +1718,7 @@ class PersistentMaestroWorker(object):
                                              if expected_policy.get('available') else 'explicit_overrides_only'),
                         'known_override_fields': sorted((expected_policy.get('overrides') or {}).keys()),
                     }
-                    atomic_write_json(os.path.join(self.control_root, 'effective_job_policy.json'), verified)
+                    atomic_write_json(os.path.join(self.control_root, _contract_text('effective_job_policy.json')), verified)
                     self._log_event('maestro_effective_job_policy',
                         'Private Maestro Job Setup applied and read back', verified)
                     if not verified['ok']:
@@ -1703,9 +1736,9 @@ class PersistentMaestroWorker(object):
                     self.workspace["native_corner_identity"] = {"setup_snapshot": snapshot,
                                                                 "schedule": schedule,
                                                                 "point_parameters_required": True}
-                    atomic_write_json(os.path.join(self.workspace["root"], "workspace.json"), self.workspace)
+                    atomic_write_json(os.path.join(self.workspace["root"], _contract_text("workspace.json")), self.workspace)
                     self._log_event("maestro_corner_identity", "Native source corner groups qualified before candidate tests", {
-                        "schedule": schedule, "setup_snapshot_path": os.path.join(self.control_root, "corner_identity.json"),
+                        "schedule": schedule, "setup_snapshot_path": os.path.join(self.control_root, _contract_text("corner_identity.json")),
                     })
                 self.state = "ready"
                 self.active_identity = None
@@ -1752,7 +1785,7 @@ class PersistentMaestroWorker(object):
             artifact.update({
                 "native_serial": True, "batch_id": str(candidate_id),
                 "batch_root": candidate_root,
-                "manifest_path": os.path.join(candidate_root, "persistent_worker_candidate.json"),
+                "manifest_path": os.path.join(candidate_root, _contract_text("persistent_worker_candidate.json")),
                 "simulation_submitted": bool(getattr(self, 'remote_session_possible', False)),
                 "native_completion_proven": False,
                 "native_stop_proven": False,
@@ -1764,20 +1797,20 @@ class PersistentMaestroWorker(object):
             })
             atomic_write_text(artifact["abort_marker_path"], "")
         status = (
-            'crescWriteWorkerStatus("%s" "%s" %d "%s" "%s"' % (
+            _contract_text('crescWriteWorkerStatus("%s" "%s" %d "%s" "%s"') % (
                 _skill_quote(marker_path), _skill_quote(identity["epoch"]), identity["sequence"],
                 _skill_quote(identity["nonce"]), _skill_quote(identity["candidate_id"]),
             )
         )
         lines = [
-            'unless(equal(crescWorkerEpoch "%s") error("Crescendo worker epoch mismatch\\n"))' % _skill_quote(self.epoch),
-            'when(crescWorkerTainted error("Crescendo worker is tainted\\n"))',
+            _contract_text('unless(equal(crescWorkerEpoch "%s") error("Crescendo worker epoch mismatch\\n"))') % _skill_quote(self.epoch),
+            _contract_text('when(crescWorkerTainted error("Crescendo worker is tainted\\n"))'),
             status + ' "ACCEPTED" "")',
             "candidateResult = errset(progn(",
             "  " + status + ' "BEGIN" "")',
         ]
         if native_serial:
-            lines.append('  unless(isCallable(\'maeStopSimulation) && isCallable(\'maeWaitUntilDone) error("Crescendo cluster stop APIs unavailable; no simulation submitted\\n"))')
+            lines.append(_contract_text('  unless(isCallable(\'maeStopSimulation) && isCallable(\'maeWaitUntilDone) error("Crescendo cluster stop APIs unavailable; no simulation submitted\\n"))'))
         lines.extend("  " + row for row in _pristine_restore_lines(
             self.pristine_cells, pristine_restore_path,
         ))
@@ -1801,21 +1834,21 @@ class PersistentMaestroWorker(object):
             command_wrappers=getattr(self, 'job_observation', {}).get('wrappers')).splitlines())
         result_lines = [
             "  runData = axlGetRunData(session runId)",
-            '  unless(runData error("Crescendo cannot obtain run data\\n"))',
+            _contract_text('  unless(runData error("Crescendo cannot obtain run data\\n"))'),
             "  actualHistoryName = axlGetHistoryName(runData)",
-            '  unless(stringp(actualHistoryName) && actualHistoryName != "" error("Crescendo cannot identify completed history\\n"))',
-            "  if(crescExpectedHistoryName then",
-            '    unless(equal(actualHistoryName crescExpectedHistoryName) error("Crescendo native history overwrite did not reuse the expected history\\n"))',
+            _contract_text('  unless(stringp(actualHistoryName) && actualHistoryName != "" error("Crescendo cannot identify completed history\\n"))'),
+            _contract_text("  if(crescExpectedHistoryName then"),
+            _contract_text('    unless(equal(actualHistoryName crescExpectedHistoryName) error("Crescendo native history overwrite did not reuse the expected history\\n"))'),
             "  else",
-            "    crescExpectedHistoryName = actualHistoryName",
+            _contract_text("    crescExpectedHistoryName = actualHistoryName"),
             "  )",
             "  " + status + ' "RESULTS_READY" actualHistoryName)',
-            "  crescLastRunId = runId",
-            "  crescLastHistoryName = actualHistoryName",
-            '  crescLastEpoch = "%s"' % _skill_quote(identity["epoch"]),
-            "  crescLastSequence = %d" % identity["sequence"],
-            '  crescLastNonce = "%s"' % _skill_quote(identity["nonce"]),
-            '  crescLastCandidate = "%s"' % _skill_quote(identity["candidate_id"]),
+            _contract_text("  crescLastRunId = runId"),
+            _contract_text("  crescLastHistoryName = actualHistoryName"),
+            _contract_text('  crescLastEpoch = "%s"') % _skill_quote(identity["epoch"]),
+            _contract_text("  crescLastSequence = %d") % identity["sequence"],
+            _contract_text('  crescLastNonce = "%s"') % _skill_quote(identity["nonce"]),
+            _contract_text('  crescLastCandidate = "%s"') % _skill_quote(identity["candidate_id"]),
             "  " + status + ' "DONE" actualHistoryName)',
         ]
         storage_line = native_history_readback_line(self.workspace, candidate_root)
@@ -1824,20 +1857,20 @@ class PersistentMaestroWorker(object):
         lines.append("  " + status + ' "PATCHED" "")')
         if native_serial:
             lines.extend([
-                "  procedure(crescCandidateFinished()",
+                _contract_text("  procedure(crescCandidateFinished()"),
                 "    " + status + ' "SIM_DONE" "")',
                 "  )",
-                '  runId = maeRunSimulation(?waitUntilDone nil ?returnRunId t ?callback "crescCandidateFinished()" ?session session)',
-                '  unless(runId error("Crescendo candidate async submission rejected\\n"))',
+                _contract_text('  runId = maeRunSimulation(?waitUntilDone nil ?returnRunId t ?callback "crescCandidateFinished()" ?session session)'),
+                _contract_text('  unless(runId error("Crescendo candidate async submission rejected\\n"))'),
             ])
             finish_lines = [
-                'unless(equal(crescWorkerEpoch "%s") error("Crescendo candidate finish epoch mismatch\\n"))' % _skill_quote(self.epoch),
+                _contract_text('unless(equal(crescWorkerEpoch "%s") error("Crescendo candidate finish epoch mismatch\\n"))') % _skill_quote(self.epoch),
                 "candidateFinishResult = errset(progn(",
                 "  maeWaitUntilDone('All ?session session)",
             ] + result_lines + [
                 "  t", ") t)",
                 "unless(candidateFinishResult",
-                "  crescWorkerTainted = t",
+                _contract_text("  crescWorkerTainted = t"),
                 "  " + status + ' "ERROR" "candidate result finalization failed")',
                 ")",
             ]
@@ -1851,7 +1884,7 @@ class PersistentMaestroWorker(object):
             "  t",
             ") t)",
             "unless(candidateResult",
-            "  crescWorkerTainted = t",
+            _contract_text("  crescWorkerTainted = t"),
             "  " + status + ' "ERROR" "candidate failed")',
             ")",
         ])
@@ -1863,7 +1896,7 @@ class PersistentMaestroWorker(object):
         lines[body_start:body_end + 1] = bounded
         artifact["candidate_generation"] = generation
         atomic_write_text(script_path, "\n".join(lines) + "\n")
-        atomic_write_json(os.path.join(candidate_root, "persistent_worker_candidate.json"), artifact)
+        atomic_write_json(os.path.join(candidate_root, _contract_text("persistent_worker_candidate.json")), artifact)
         return artifact
 
     def evaluate(self, candidate_id, values, candidate_root, timeout_seconds=None):
@@ -1894,6 +1927,7 @@ class PersistentMaestroWorker(object):
             )
             if no_progress_timeout <= 0:
                 raise ValueError("candidate_no_progress_timeout_seconds must be positive")
+            timing_started = timing_tick()
             started_monotonic = self._clock()
             deadline_monotonic = started_monotonic + timeout_seconds
             started = time.time()
@@ -1905,6 +1939,8 @@ class PersistentMaestroWorker(object):
             self.active_identity = identity
             self.state = "busy"
             self._write_state()
+            observations = {}
+            self._timing_request = (identity, observations)
             try:
                 artifact = self._candidate_artifact(candidate_id, values, candidate_root, identity)
                 from .maestro_progress import MaestroProgressObserver
@@ -1988,8 +2024,9 @@ class PersistentMaestroWorker(object):
                     ]
                     artifact["history_identity"]["history_name"] = actual_history_name
                     atomic_write_json(
-                        os.path.join(candidate_root, "persistent_worker_candidate.json"), artifact,
+                        os.path.join(candidate_root, _contract_text("persistent_worker_candidate.json")), artifact,
                     )
+                artifact["phase_timing"] = _native_candidate_timing(timing_started, observations, timing_tick())
                 artifact["status"] = rows
                 artifact["states"] = [row["state"] for row in rows]
                 artifact["started_epoch"] = started
@@ -2007,16 +2044,20 @@ class PersistentMaestroWorker(object):
                         artifact["native_completion_proven"] = True
                     self.pending_cleanup = dict(identity)
                     self.state = "awaiting_cleanup"
-                atomic_write_json(os.path.join(candidate_root, "persistent_worker_candidate.json"), artifact)
+                atomic_write_json(os.path.join(candidate_root, _contract_text("persistent_worker_candidate.json")), artifact)
                 self.active_identity = None
                 self._write_state()
                 return artifact
             except Exception as error:
+                if isinstance(error, PersistentMaestroWorkerError):
+                    error.phase_timing = _native_candidate_timing(timing_started, observations, timing_tick())
                 self.tainted = True
                 self.state = "tainted"
                 self._terminate_after_failure("candidate supervision failure", error,
                     request_native_stop=native_serial)
                 raise
+            finally:
+                self._timing_request = None
 
     def evaluate_batch(self, candidates, batch_root, timeout_seconds=None):
         """Run independently patched candidate designs as tests in one Maestro.
@@ -2031,6 +2072,7 @@ class PersistentMaestroWorker(object):
         )
         from .job_policy import job_policy_override_definitions
         with self._operation_lock:
+            timing_started = timing_tick()
             with self._batch_submit_lock:
                 if self._batch_abort_before_submit:
                     raise PersistentMaestroWorkerError("batch session was aborted before submission")
@@ -2068,26 +2110,26 @@ class PersistentMaestroWorker(object):
             atomic_write_text(manifest['live_marker_path'], '')
             manifest['job_policy_readback_path'] = os.path.join(manifest['batch_root'], 'persistent_worker_batch_job_policy.tsv')
             manifest['submission_log_path'] = self.config.get('runtime', {}).get('maestro_submission_log_path')
-            status = ('crescWriteWorkerStatus("%s" "%s" %d "%s" "%s"' % (
+            status = (_contract_text('crescWriteWorkerStatus("%s" "%s" %d "%s" "%s"') % (
                 _skill_quote(manifest["marker_path"]), _skill_quote(identity["epoch"]),
                 identity["sequence"], _skill_quote(identity["nonce"]),
                 _skill_quote(identity["candidate_id"])))
             lines = job_policy_override_definitions(
                 self.config.get("runtime", {}).get("maestro_job_overrides") or {}).splitlines()
             lines.extend([
-                'unless(equal(crescWorkerEpoch "%s") error("Crescendo batch epoch mismatch\\n"))' % _skill_quote(self.epoch),
-                'when(crescWorkerTainted error("Crescendo batch worker is tainted\\n"))',
+                _contract_text('unless(equal(crescWorkerEpoch "%s") error("Crescendo batch epoch mismatch\\n"))') % _skill_quote(self.epoch),
+                _contract_text('when(crescWorkerTainted error("Crescendo batch worker is tainted\\n"))'),
                 status + ' "ACCEPTED" "")',
             ])
             lines.extend(snapshot_preflight_lines(manifest))
             lines.extend([
-                "if(crescBatchUnsupportedReason then",
-                "  " + status + ' "BATCH_UNSUPPORTED" crescBatchUnsupportedReason)',
+                _contract_text("if(crescBatchUnsupportedReason then"),
+                "  " + status + _contract_text(' "BATCH_UNSUPPORTED" crescBatchUnsupportedReason)'),
                 "else",
                 "  batchResult = errset(progn(",
                 "    " + status + ' "BEGIN" "")',
-                '    crescBatchSnapshotVerify = outfile("%s")' % _skill_quote(manifest["snapshot_records"]),
-                '    unless(crescBatchSnapshotVerify error("Crescendo batch snapshot evidence unavailable\\n"))',
+                _contract_text('    crescBatchSnapshotVerify = outfile("%s")') % _skill_quote(manifest["snapshot_records"]),
+                _contract_text('    unless(crescBatchSnapshotVerify error("Crescendo batch snapshot evidence unavailable\\n"))'),
             ])
             lines.extend("    " + row for row in _pristine_restore_lines(
                 self.pristine_cells, manifest["pristine_restore_path"]))
@@ -2100,9 +2142,9 @@ class PersistentMaestroWorker(object):
             lines.extend('    ' + row for row in job_policy_observation_skill(wrappers,
                 session_expr='session', test_map=test_map).splitlines())
             lines.extend([
-                '    unless(isCallable(\'axlSetRunDistributeOptions) && isCallable(\'axlGetRunDistributeOptions) error("Crescendo batch native parallel Run Options unavailable; no simulation submitted\\n"))',
-                '    unless(axlSetRunDistributeOptions(activeSetup ?RunIn \'Parallel) error("Crescendo batch native parallel Run Options rejected; no simulation submitted\\n"))',
-                '    unless(equal(get(axlGetRunDistributeOptions(activeSetup) \'RunIn) \'Parallel) error("Crescendo batch native parallel Run Options differ; no simulation submitted\\n"))',
+                _contract_text('    unless(isCallable(\'axlSetRunDistributeOptions) && isCallable(\'axlGetRunDistributeOptions) error("Crescendo batch native parallel Run Options unavailable; no simulation submitted\\n"))'),
+                _contract_text('    unless(axlSetRunDistributeOptions(activeSetup ?RunIn \'Parallel) error("Crescendo batch native parallel Run Options rejected; no simulation submitted\\n"))'),
+                _contract_text('    unless(equal(get(axlGetRunDistributeOptions(activeSetup) \'RunIn) \'Parallel) error("Crescendo batch native parallel Run Options differ; no simulation submitted\\n"))'),
             ])
             lines.extend('    ' + row for row in job_policy_readback_skill(manifest['job_policy_readback_path'],
                 session_expr='session', tests=list(test_map)).splitlines())
@@ -2110,19 +2152,19 @@ class PersistentMaestroWorker(object):
                 getattr(self, 'expected_job_policy', {}), session_expr='session', test_map=test_map,
                 command_wrappers=wrappers, force_parallel=True).splitlines())
             lines.extend([
-                "    close(crescBatchSnapshotVerify)",
-                "    crescBatchSnapshotVerify = nil",
+                _contract_text("    close(crescBatchSnapshotVerify)"),
+                _contract_text("    crescBatchSnapshotVerify = nil"),
                 "    " + status + ' "PATCHED" "")',
-                "    procedure(crescBatchFinished()",
+                _contract_text("    procedure(crescBatchFinished()"),
                 "      " + status + ' "SIM_DONE" "")',
                 "    )",
-                '    runId = maeRunSimulation(?waitUntilDone nil ?returnRunId t ?callback "crescBatchFinished()" ?session session)',
-                '    unless(runId error("Crescendo batch simulation submission rejected\\n"))',
+                _contract_text('    runId = maeRunSimulation(?waitUntilDone nil ?returnRunId t ?callback "crescBatchFinished()" ?session session)'),
+                _contract_text('    unless(runId error("Crescendo batch simulation submission rejected\\n"))'),
                 status.replace(_skill_quote(manifest['marker_path']), _skill_quote(manifest['live_marker_path'])) + ' "SUBMITTED" sprintf(nil "%L" runId))',
                 "    t",
                 "  ) t)",
                 "  unless(batchResult",
-                "    crescWorkerTainted = t",
+                _contract_text("    crescWorkerTainted = t"),
                 "    " + status + ' "ERROR" "batch preparation or submission failed")',
                 "  )",
                 ")",
@@ -2132,30 +2174,30 @@ class PersistentMaestroWorker(object):
                 "batchFinishResult = errset(progn(",
                 "  maeWaitUntilDone('All ?session session)",
                 "  runData = axlGetRunData(session runId)",
-                '  unless(runData error("Crescendo batch run data unavailable\\n"))',
+                _contract_text('  unless(runData error("Crescendo batch run data unavailable\\n"))'),
                 "  actualHistoryName = axlGetHistoryName(runData)",
-                '  unless(stringp(actualHistoryName) && actualHistoryName != "" error("Crescendo batch history unavailable\\n"))',
-                "  if(crescExpectedHistoryName then",
-                '    unless(equal(actualHistoryName crescExpectedHistoryName) error("Crescendo batch native overwrite history mismatch\\n"))',
-                "  else crescExpectedHistoryName = actualHistoryName)",
+                _contract_text('  unless(stringp(actualHistoryName) && actualHistoryName != "" error("Crescendo batch history unavailable\\n"))'),
+                _contract_text("  if(crescExpectedHistoryName then"),
+                _contract_text('    unless(equal(actualHistoryName crescExpectedHistoryName) error("Crescendo batch native overwrite history mismatch\\n"))'),
+                _contract_text("  else crescExpectedHistoryName = actualHistoryName)"),
                 "  " + status + ' "RESULTS_READY" actualHistoryName)',
-                "  crescLastRunId = runId",
-                "  crescLastHistoryName = actualHistoryName",
-                '  crescLastEpoch = "%s"' % _skill_quote(identity["epoch"]),
-                "  crescLastSequence = %d" % identity["sequence"],
-                '  crescLastNonce = "%s"' % _skill_quote(identity["nonce"]),
-                '  crescLastCandidate = "%s"' % _skill_quote(identity["candidate_id"]),
+                _contract_text("  crescLastRunId = runId"),
+                _contract_text("  crescLastHistoryName = actualHistoryName"),
+                _contract_text('  crescLastEpoch = "%s"') % _skill_quote(identity["epoch"]),
+                _contract_text("  crescLastSequence = %d") % identity["sequence"],
+                _contract_text('  crescLastNonce = "%s"') % _skill_quote(identity["nonce"]),
+                _contract_text('  crescLastCandidate = "%s"') % _skill_quote(identity["candidate_id"]),
                 "  " + status + ' "DONE" actualHistoryName)',
                 "  t",
                 ") t)",
                 "unless(batchFinishResult",
-                "  crescWorkerTainted = t",
+                _contract_text("  crescWorkerTainted = t"),
                 "  " + status + ' "ERROR" "batch result finalization failed")',
                 ")",
             ]
             atomic_write_text(manifest["marker_path"], "")
             atomic_write_text(manifest["abort_marker_path"], "")
-            guard_start = lines.index("if(crescBatchUnsupportedReason then")
+            guard_start = lines.index(_contract_text("if(crescBatchUnsupportedReason then"))
             body_start = lines.index("  batchResult = errset(progn(", guard_start)
             body_end = lines.index("  ) t)", body_start + 1)
             body = [row[4:] if row.startswith("    ") else row
@@ -2164,13 +2206,13 @@ class PersistentMaestroWorker(object):
             shared_definitions, body, shared_generation = shared_skill_expressions(body)
             bounded, generation = bounded_skill_body_lines(body, "batchResult")
             generation["shared_expressions"] = shared_generation
-            bounded[0] = "batchResult = unless(crescBatchUnsupportedReason list(t))"
+            bounded[0] = _contract_text("batchResult = unless(crescBatchUnsupportedReason list(t))")
             lines = lines[:guard_start] + shared_definitions + bounded + [
-                "if(crescBatchUnsupportedReason then",
-                "  " + status + ' "BATCH_UNSUPPORTED" crescBatchUnsupportedReason)',
+                _contract_text("if(crescBatchUnsupportedReason then"),
+                "  " + status + _contract_text(' "BATCH_UNSUPPORTED" crescBatchUnsupportedReason)'),
                 "else",
                 "  unless(batchResult",
-                "    crescWorkerTainted = t",
+                _contract_text("    crescWorkerTainted = t"),
                 "    " + status + ' "ERROR" "batch preparation or submission failed")',
                 "  )",
                 ")",
@@ -2203,6 +2245,8 @@ class PersistentMaestroWorker(object):
                 if manifest.get("abort_requested") and manifest.get("native_stop_proven"):
                     raise PersistentMaestroWorkerError(
                         "batch was stopped by request; native cancellation acknowledged")
+            observations = {}
+            self._timing_request = (identity, observations)
             try:
                 atomic_write_text(self.spectre_retain_pointer, manifest["batch_root"] + "\n")
                 with self._batch_submit_lock:
@@ -2241,6 +2285,7 @@ class PersistentMaestroWorker(object):
                         abort_check=require_not_stopped,
                     )
                 terminal = _validate_worker_protocol(rows, self.CANDIDATE_STATES, "ERROR")
+                manifest["phase_timing"] = _native_candidate_timing(timing_started, observations, timing_tick())
                 manifest["status"] = rows
                 manifest["states"] = [row["state"] for row in rows]
                 manifest["started_epoch"] = started
@@ -2297,6 +2342,8 @@ class PersistentMaestroWorker(object):
                 self._terminate_after_failure("batch supervision failure", error,
                     request_native_stop=True)
                 raise
+            finally:
+                self._timing_request = None
 
     def request_batch_abort(self, reason="external batch abort", timeout_seconds=None):
         """Best effort native cluster stop; acknowledgement is recorded distinctly.
@@ -2328,22 +2375,22 @@ class PersistentMaestroWorker(object):
         identity = batch["protocol_identity"]
         marker = batch["abort_marker_path"]
         script = batch["abort_script_path"]
-        status = ('crescWriteWorkerStatus("%s" "%s" %d "%s" "%s"' % (
+        status = (_contract_text('crescWriteWorkerStatus("%s" "%s" %d "%s" "%s"') % (
             _skill_quote(marker), _skill_quote(identity["epoch"]), identity["sequence"],
             _skill_quote(identity["nonce"]), _skill_quote(identity["candidate_id"])))
         lines = [
-            'unless(equal(crescWorkerEpoch "%s") error("Crescendo batch stop epoch mismatch\\n"))' % _skill_quote(self.epoch),
+            _contract_text('unless(equal(crescWorkerEpoch "%s") error("Crescendo batch stop epoch mismatch\\n"))') % _skill_quote(self.epoch),
             status + ' "STOP_BEGIN" "")',
             "batchStopResult = errset(progn(",
-            '  unless(isCallable(\'maeStopSimulation) && isCallable(\'maeWaitUntilDone) error("Crescendo native stop APIs unavailable; remote cancellation unproven\\n"))',
-            '  unless(boundp(\'session) && session error("Crescendo owned session is unavailable; remote cancellation unproven\\n"))',
+            _contract_text('  unless(isCallable(\'maeStopSimulation) && isCallable(\'maeWaitUntilDone) error("Crescendo native stop APIs unavailable; remote cancellation unproven\\n"))'),
+            _contract_text('  unless(boundp(\'session) && session error("Crescendo owned session is unavailable; remote cancellation unproven\\n"))'),
             '  nativeStopAccepted = errset(maeStopSimulation(?session session) t)',
-            '  unless(nativeStopAccepted && car(nativeStopAccepted) || %s error("Crescendo batch native stop rejected\\n"))' % ('t' if batch.get('startup_session') or batch.get('native_completion_proven') else 'nil'),
+            _contract_text('  unless(nativeStopAccepted && car(nativeStopAccepted) || %s error("Crescendo batch native stop rejected\\n"))') % ('t' if batch.get('startup_session') or batch.get('native_completion_proven') else 'nil'),
             "  " + status + ' "STOP_SENT" "owned Maestro accepted stop request")',
             "  maeWaitUntilDone('All ?session session)",
-            '  unless(isCallable(\'maeCloseSession) error("Crescendo owned session close API unavailable; remote worker pool stop unproven\\n"))',
+            _contract_text('  unless(isCallable(\'maeCloseSession) error("Crescendo owned session close API unavailable; remote worker pool stop unproven\\n"))'),
             '  ownedSessionClosed = errset(maeCloseSession(?session session ?forceClose t) t)',
-            '  unless(ownedSessionClosed error("Crescendo owned session close failed; remote worker pool stop unproven\\n"))',
+            _contract_text('  unless(ownedSessionClosed error("Crescendo owned session close failed; remote worker pool stop unproven\\n"))'),
             "  " + status + ' "STOP_DONE" "owned Maestro reports simulation stopped and session closed")',
             "  t",
             ") t)",
@@ -2376,7 +2423,7 @@ class PersistentMaestroWorker(object):
                 persist_batch_artifacts(batch)
         except Exception as error:
             result["error"] = "%s: %s" % (error.__class__.__name__, error)
-        atomic_write_json(os.path.join(batch["batch_root"], "batch_stop_evidence.json"), result)
+        atomic_write_json(os.path.join(batch["batch_root"], _contract_text("batch_stop_evidence.json")), result)
         return result
 
     def request_cleanup(self, candidate, timeout_seconds=None):
@@ -2392,7 +2439,7 @@ class PersistentMaestroWorker(object):
             script_path = os.path.join(candidate["candidate_root"], "persistent_worker_cleanup.il")
             atomic_write_text(marker_path, "")
             status = (
-                'crescWriteWorkerStatus("%s" "%s" %d "%s" "%s"' % (
+                _contract_text('crescWriteWorkerStatus("%s" "%s" %d "%s" "%s"') % (
                     _skill_quote(marker_path), _skill_quote(identity["epoch"]), identity["sequence"],
                     _skill_quote(identity["nonce"]), _skill_quote(identity["candidate_id"]),
                 )
@@ -2400,22 +2447,22 @@ class PersistentMaestroWorker(object):
             lines = [
                 status + ' "CLEANUP_BEGIN" "")',
                 "cleanupResult = errset(progn(",
-                '  unless(equal(crescLastEpoch "%s") error("Crescendo cleanup epoch mismatch\\n"))' % _skill_quote(identity["epoch"]),
-                "  unless(crescLastSequence == %d error(\"Crescendo cleanup sequence mismatch\\n\"))" % identity["sequence"],
-                '  unless(equal(crescLastNonce "%s") error("Crescendo cleanup nonce mismatch\\n"))' % _skill_quote(identity["nonce"]),
-                '  unless(equal(crescLastCandidate "%s") error("Crescendo cleanup candidate mismatch\\n"))' % _skill_quote(identity["candidate_id"]),
-                "  unless(isCallable('axlRemoveSimulationResults) error(\"Crescendo result cleanup API is unavailable\\n\"))",
-                "  historySDB = axlGetHistoryEntry(mainSDB crescLastHistoryName)",
-                "  unless(historySDB error(\"Crescendo completed history entry is unavailable\\n\"))",
+                _contract_text('  unless(equal(crescLastEpoch "%s") error("Crescendo cleanup epoch mismatch\\n"))') % _skill_quote(identity["epoch"]),
+                _contract_text("  unless(crescLastSequence == %d error(\"Crescendo cleanup sequence mismatch\\n\"))") % identity["sequence"],
+                _contract_text('  unless(equal(crescLastNonce "%s") error("Crescendo cleanup nonce mismatch\\n"))') % _skill_quote(identity["nonce"]),
+                _contract_text('  unless(equal(crescLastCandidate "%s") error("Crescendo cleanup candidate mismatch\\n"))') % _skill_quote(identity["candidate_id"]),
+                _contract_text("  unless(isCallable('axlRemoveSimulationResults) error(\"Crescendo result cleanup API is unavailable\\n\"))"),
+                _contract_text("  historySDB = axlGetHistoryEntry(mainSDB crescLastHistoryName)"),
+                _contract_text("  unless(historySDB error(\"Crescendo completed history entry is unavailable\\n\"))"),
                 "  removalResult = axlRemoveSimulationResults(historySDB)",
-                "  unless(removalResult error(\"Crescendo simulator result cleanup was rejected\\n\"))",
+                _contract_text("  unless(removalResult error(\"Crescendo simulator result cleanup was rejected\\n\"))"),
                 "  maeWaitUntilDone('All ?session session)",
-                "  crescLastRunId = nil",
-                "  crescLastHistoryName = nil",
-                "  crescLastEpoch = nil",
-                "  crescLastSequence = nil",
-                "  crescLastNonce = nil",
-                "  crescLastCandidate = nil",
+                _contract_text("  crescLastRunId = nil"),
+                _contract_text("  crescLastHistoryName = nil"),
+                _contract_text("  crescLastEpoch = nil"),
+                _contract_text("  crescLastSequence = nil"),
+                _contract_text("  crescLastNonce = nil"),
+                _contract_text("  crescLastCandidate = nil"),
                 "  t",
                 ") t)",
                 "if(cleanupResult then",
@@ -2433,12 +2480,12 @@ class PersistentMaestroWorker(object):
                 "    cdfResult = nil",
                 "    baseCdf = nil",
                 "    cdfParam = nil",
-                "    crescCallbackEffectiveValue = nil",
-                "    crescCallbackDefaultValue = nil",
-                "    crescCallbackDefaultPresent = nil",
-                "    crescCallbackFreshCdf = nil",
-                "    crescCallbackFreshParam = nil",
-                "    crescCallbackOaProp = nil",
+                _contract_text("    crescCallbackEffectiveValue = nil"),
+                _contract_text("    crescCallbackDefaultValue = nil"),
+                _contract_text("    crescCallbackDefaultPresent = nil"),
+                _contract_text("    crescCallbackFreshCdf = nil"),
+                _contract_text("    crescCallbackFreshParam = nil"),
+                _contract_text("    crescCallbackOaProp = nil"),
                 "    existingProp = nil",
                 "    schematicProp = nil",
                 "    schematicValue = nil",
@@ -2458,19 +2505,19 @@ class PersistentMaestroWorker(object):
                 "    callbackResult = nil",
                 "    callbackStatus = nil",
                 "    updateResult = nil",
-                "    crescVerify = nil",
+                _contract_text("    crescVerify = nil"),
                 "    cleanupResult = nil",
                 "    gc()",
                 "    " + status + ' "CLEANUP_DONE" "")',
                 "  )",
                 "else",
-                "  crescWorkerTainted = t",
+                _contract_text("  crescWorkerTainted = t"),
                 "  " + status + ' "CLEANUP_ERROR" "result cleanup failed")',
                 ")",
             ]
             if candidate.get("shared_history") and candidate.get("batch_tests"):
                 from .maestro_batch import snapshot_cleanup_lines
-                insertion = lines.index("  crescLastRunId = nil")
+                insertion = lines.index(_contract_text("  crescLastRunId = nil"))
                 lines[insertion:insertion] = ["  " + line for line in snapshot_cleanup_lines(candidate)]
             opening = lines.index("cleanupResult = errset(progn(")
             closing = lines.index(") t)", opening + 1)
@@ -2513,7 +2560,7 @@ class PersistentMaestroWorker(object):
                     "states": [row["state"] for row in rows],
                     "ok": terminal == "CLEANUP_DONE", "tainted": bool(self.tainted),
                 }
-                atomic_write_json(os.path.join(candidate["candidate_root"], "persistent_worker_cleanup.json"), result)
+                atomic_write_json(os.path.join(candidate["candidate_root"], _contract_text("persistent_worker_cleanup.json")), result)
                 self._write_state()
                 return result
             except Exception as error:
@@ -2790,7 +2837,7 @@ class PersistentMaestroWorker(object):
             atomic_write_text(self.shutdown_marker, "")
             script_path = os.path.join(self.control_root, "shutdown.il")
             status = (
-                'crescWriteWorkerStatus("%s" "%s" %d "%s" "%s"' % (
+                _contract_text('crescWriteWorkerStatus("%s" "%s" %d "%s" "%s"') % (
                     _skill_quote(self.shutdown_marker), _skill_quote(identity["epoch"]), identity["sequence"],
                     _skill_quote(identity["nonce"]), _skill_quote(identity["candidate_id"]),
                 )

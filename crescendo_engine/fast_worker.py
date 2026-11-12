@@ -4,6 +4,9 @@ import hashlib
 import os
 import threading
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .hierarchy import parse_physical_number
 from .utils import atomic_write_json, ensure_dir, utc_timestamp
 
@@ -150,7 +153,7 @@ def _generated_design_variable(parameter):
         "hierarchy_path", "owner_library", "owner_cell", "name", "parameter_id",
     ))
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
-    return "CRESCENDOFW_%s" % digest
+    return _contract_text("CRESCENDOFW_%s") % digest
 
 
 def _plan_entry(parameter):
@@ -204,7 +207,7 @@ def build_parametric_plan(parameters):
         counts[entry["classification"]] += 1
     blocking = [entry for entry in entries if entry["classification"] in (REQUIRES_RECOMPILE, UNSUPPORTED)]
     return {
-        "schema_version": "crescendo.fast_worker.plan.v1",
+        "schema_version": _contract_text("crescendo.fast_worker.plan.v1"),
         "created_at": utc_timestamp(),
         "eligible": bool(entries) and not blocking,
         "counts": counts,
@@ -261,7 +264,7 @@ def validate_initialization_evidence(plan, evidence):
             )
         verified.append(entry["parameter_id"])
     return {
-        "schema_version": "crescendo.fast_worker.initialization_evidence.v1",
+        "schema_version": _contract_text("crescendo.fast_worker.initialization_evidence.v1"),
         "validated_parameter_ids": sorted(verified),
         "raw": evidence,
     }
@@ -332,8 +335,8 @@ class ParametricWorker(object):
 
     def _write_state(self):
         ensure_dir(self.worker_root)
-        atomic_write_json(os.path.join(self.worker_root, "fast_worker_state.json"), {
-            "schema_version": "crescendo.fast_worker.state.v1",
+        atomic_write_json(os.path.join(self.worker_root, _contract_text("fast_worker_state.json")), {
+            "schema_version": _contract_text("crescendo.fast_worker.state.v1"),
             "state": self.state,
             "reason": self.reason,
             "plan": self.plan,

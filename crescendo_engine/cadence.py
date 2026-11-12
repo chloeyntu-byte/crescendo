@@ -12,6 +12,9 @@ import sys
 import threading
 import time
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .pdk import (
     GENERIC_ADAPTER_ID, adapter_identity, build_adapter_evidence,
     discover_pdk_contexts, hierarchy_library_references, normalize_adapter_policy,
@@ -61,7 +64,7 @@ SPECTRE_LIBRARY_RELATIVES = [
 
 
 GUARDIAN_CHILD_ENVIRONMENT_KEYS = GUI_ENV_NAMES
-GUARDIAN_CHILD_ENVIRONMENT_PREFIX = "CRESCENDO_GUARDIAN_CHILD_"
+GUARDIAN_CHILD_ENVIRONMENT_PREFIX = _contract_text("CRESCENDO_GUARDIAN_CHILD_")
 
 
 class CommandCancelled(RuntimeError):
@@ -378,29 +381,29 @@ def discover_eda_environment(overrides=None, validate=True, environ=None):
                 return _executable(found)
         return None
 
-    cadence_root = choose("cadence_root", ("CRESCENDO_CADENCE_ROOT", "CDSHOME"))
-    spectre_root = choose("spectre_root", ("CRESCENDO_SPECTRE_ROOT", "MMSIMHOME"))
-    cadence_root_explicit = bool(overrides.get("cadence_root") or environ.get("CRESCENDO_CADENCE_ROOT") or environ.get("CDSHOME"))
-    spectre_root_explicit = bool(overrides.get("spectre_root") or environ.get("CRESCENDO_SPECTRE_ROOT") or environ.get("MMSIMHOME"))
-    virtuoso = choose("virtuoso_bin", ("CRESCENDO_VIRTUOSO_BIN",), None if cadence_root_explicit else "virtuoso")
-    ocean = choose("ocean_bin", ("CRESCENDO_OCEAN_BIN",), None if cadence_root_explicit else "ocean")
-    spectre = choose("spectre_bin", ("CRESCENDO_SPECTRE_BIN",), None if spectre_root_explicit else "spectre")
+    cadence_root = choose("cadence_root", (_contract_text("CRESCENDO_CADENCE_ROOT"), "CDSHOME"))
+    spectre_root = choose("spectre_root", (_contract_text("CRESCENDO_SPECTRE_ROOT"), "MMSIMHOME"))
+    cadence_root_explicit = bool(overrides.get("cadence_root") or environ.get(_contract_text("CRESCENDO_CADENCE_ROOT")) or environ.get("CDSHOME"))
+    spectre_root_explicit = bool(overrides.get("spectre_root") or environ.get(_contract_text("CRESCENDO_SPECTRE_ROOT")) or environ.get("MMSIMHOME"))
+    virtuoso = choose("virtuoso_bin", (_contract_text("CRESCENDO_VIRTUOSO_BIN"),), None if cadence_root_explicit else "virtuoso")
+    ocean = choose("ocean_bin", (_contract_text("CRESCENDO_OCEAN_BIN"),), None if cadence_root_explicit else "ocean")
+    spectre = choose("spectre_bin", (_contract_text("CRESCENDO_SPECTRE_BIN"),), None if spectre_root_explicit else "spectre")
     explicit_binaries = dict((key, bool(overrides.get(key) or environ.get(env_name)))
-                             for key, env_name in (("virtuoso_bin", "CRESCENDO_VIRTUOSO_BIN"),
-                                                   ("ocean_bin", "CRESCENDO_OCEAN_BIN"),
-                                                   ("spectre_bin", "CRESCENDO_SPECTRE_BIN")))
+                             for key, env_name in (("virtuoso_bin", _contract_text("CRESCENDO_VIRTUOSO_BIN")),
+                                                   ("ocean_bin", _contract_text("CRESCENDO_OCEAN_BIN")),
+                                                   ("spectre_bin", _contract_text("CRESCENDO_SPECTRE_BIN"))))
     simulator = str(overrides.get("simulator") or "spectre").strip().lower()
     if simulator not in ("spectre", "alps"):
         raise ValueError("Simulator must be spectre or alps")
-    alps_explicit = bool(overrides.get("alps_bin") or environ.get("CRESCENDO_ALPS_BIN"))
-    alps_root_explicit = bool(overrides.get("alps_root") or environ.get("CRESCENDO_ALPS_ROOT") or environ.get("ALPS_HOME"))
-    alps_root = choose("alps_root", ("CRESCENDO_ALPS_ROOT", "ALPS_HOME"))
-    alps = choose("alps_bin", ("CRESCENDO_ALPS_BIN",), None if alps_root_explicit else "alps")
+    alps_explicit = bool(overrides.get("alps_bin") or environ.get(_contract_text("CRESCENDO_ALPS_BIN")))
+    alps_root_explicit = bool(overrides.get("alps_root") or environ.get(_contract_text("CRESCENDO_ALPS_ROOT")) or environ.get("ALPS_HOME"))
+    alps_root = choose("alps_root", (_contract_text("CRESCENDO_ALPS_ROOT"), "ALPS_HOME"))
+    alps = choose("alps_bin", (_contract_text("CRESCENDO_ALPS_BIN"),), None if alps_root_explicit else "alps")
     alps_search_roots = overrides.get("alps_search_roots") or [
         "/software/empyrean/alps", "/opt/eda/empyrean/alps", "/opt/empyrean/alps"]
     alps_resolution = None
     if not alps and alps_explicit:
-        declared_binary = overrides.get("alps_bin") or environ.get("CRESCENDO_ALPS_BIN")
+        declared_binary = overrides.get("alps_bin") or environ.get(_contract_text("CRESCENDO_ALPS_BIN"))
         attempted = _expand(declared_binary, environ)
         candidate = _alps_binary_candidate(attempted)
         alps_resolution = {"status": "invalid_explicit_binary", "origin": sources.get("alps_bin"),
@@ -419,7 +422,7 @@ def discover_eda_environment(overrides=None, validate=True, environ=None):
                            "message": "Configured/PATH ALPS launcher is an executable file; native execution is not yet qualified"}
     if alps_resolution is not None and alps_root_explicit:
         alps_resolution['declared_root'] = (overrides.get('alps_root') or
-            environ.get('CRESCENDO_ALPS_ROOT') or environ.get('ALPS_HOME'))
+            environ.get(_contract_text('CRESCENDO_ALPS_ROOT')) or environ.get('ALPS_HOME'))
     if alps:
         if not alps_root:
             parent = os.path.dirname(alps)
@@ -459,18 +462,18 @@ def discover_eda_environment(overrides=None, validate=True, environ=None):
         if spectre:
             sources.setdefault("spectre_bin", "derived from spectre_root")
 
-    cds_lib = overrides.get("cds_lib") or environ.get("CRESCENDO_CDS_LIB")
+    cds_lib = overrides.get("cds_lib") or environ.get(_contract_text("CRESCENDO_CDS_LIB"))
     if cds_lib:
         cds_lib = _expand(cds_lib)
-        sources["cds_lib"] = "manual" if overrides.get("cds_lib") else "environment:CRESCENDO_CDS_LIB"
+        sources["cds_lib"] = "manual" if overrides.get("cds_lib") else _contract_text("environment:CRESCENDO_CDS_LIB")
     elif cadence_root:
         cds_lib = _first_existing(cadence_root, ("share/cdssetup/cds.lib",))
         if cds_lib:
             sources["cds_lib"] = "derived from cadence_root"
 
-    license_value = overrides.get("license_file") or environ.get("CRESCENDO_LICENSE_FILE")
+    license_value = overrides.get("license_file") or environ.get(_contract_text("CRESCENDO_LICENSE_FILE"))
     if license_value:
-        sources["license_file"] = "manual" if overrides.get("license_file") else "environment:CRESCENDO_LICENSE_FILE"
+        sources["license_file"] = "manual" if overrides.get("license_file") else _contract_text("environment:CRESCENDO_LICENSE_FILE")
     else:
         for env_name in ("CDS_LIC_FILE", "LM_LICENSE_FILE"):
             if environ.get(env_name):
@@ -499,7 +502,7 @@ def discover_eda_environment(overrides=None, validate=True, environ=None):
     )
     def model_directory(simulator_name):
         key = simulator_name + "_model_dir"
-        env_name = "CRESCENDO_" + simulator_name.upper() + "_MODEL_DIR"
+        env_name = _contract_text("CRESCENDO_") + simulator_name.upper() + "_MODEL_DIR"
         if overrides.get(key):
             sources[key] = (overrides.get("_model_dir_origins") or {}).get(simulator_name, "manual")
             return _expand(overrides[key], environ)
@@ -537,7 +540,7 @@ def discover_eda_environment(overrides=None, validate=True, environ=None):
         "extra_binary_paths": paths["binary_paths"],
         "extra_library_paths": paths["library_paths"],
         "pdk_name": overrides.get("pdk_name"),
-        "pdk_dir": _expand(overrides.get("pdk_dir")) if overrides.get("pdk_dir") else None,
+        _contract_text("pdk_dir"): _expand(overrides.get(_contract_text("pdk_dir"))) if overrides.get(_contract_text("pdk_dir")) else None,
         "pdk_adapter": overrides.get("pdk_adapter") or "generic-cdf",
         "pdk_adapter_policy": overrides.get("pdk_adapter_policy"),
         "pdk_profiles": list(overrides.get("pdk_profiles") or []),
@@ -571,7 +574,7 @@ def discover_eda_environment(overrides=None, validate=True, environ=None):
                        "message": "Empty inherits the existing common Ocean reader; each solver may override independently"})
         key = simulator_name + "_model_dir"
         value = effective[key]
-        explicit = bool(overrides.get(key) or environ.get("CRESCENDO_" + simulator_name.upper() + "_MODEL_DIR"))
+        explicit = bool(overrides.get(key) or environ.get(_contract_text("CRESCENDO_") + simulator_name.upper() + "_MODEL_DIR"))
         checks.append({"name": key, "ok": bool(value and os.path.isdir(value) and os.access(value, os.R_OK | os.X_OK)),
                        "value": value, "optional": not explicit and (simulator_name != "alps" or simulator != "alps"),
                        "message": "Model format/section identity is qualified by the private netlist; directories are discovered independently"})
@@ -579,11 +582,11 @@ def discover_eda_environment(overrides=None, validate=True, environ=None):
 
     recommendations = []
     if any(name in missing for name in ("virtuoso_bin", "ocean_bin", "cadence_root")):
-        recommendations.append("Source the vendor Cadence setup before starting Crescendo, or set Cadence Root and binaries in Advanced EDA Setup.")
+        recommendations.append(_contract_text("Source the vendor Cadence setup before starting Crescendo, or set Cadence Root and binaries in Advanced EDA Setup."))
     if any(name in missing for name in ("spectre_bin", "spectre_root")):
         recommendations.append("Set MMSIMHOME/Spectre Root or select the Spectre executable in Advanced EDA Setup.")
     if any(name in missing for name in ("alps_bin", "alps_root")):
-        recommendations.append("Select the ALPS executable/root in EDA Settings, or set CRESCENDO_ALPS_BIN/ALPS_HOME. ALPS and Spectre are discovered independently.")
+        recommendations.append(_contract_text("Select the ALPS executable/root in EDA Settings, or set CRESCENDO_ALPS_BIN/ALPS_HOME. ALPS and Spectre are discovered independently."))
     if any(name in missing for name in ("alps_model_dir", "spectre_model_dir")):
         recommendations.append("Select the solver's readable model directory, or inherit PDK with independent spectre/alps subdirectories; model-format conversion still requires an explicit file mapping.")
     if "cds_lib" in missing:
@@ -604,7 +607,7 @@ def discover_eda_environment(overrides=None, validate=True, environ=None):
         version_checks = [_version_probe(name, effective[name], validation_env) for name in version_names]
     validation_ok = not missing and (not validate or all(row["ok"] for row in version_checks))
     return {
-        "schema_version": "crescendo.eda_discovery.v1",
+        "schema_version": _contract_text("crescendo.eda_discovery.v1"),
         "discovered_at": utc_timestamp(),
         "ok": validation_ok,
         "effective": effective,
@@ -628,7 +631,7 @@ def _native_pdk_discovery_fallback(result, setup, hierarchy, configured, profile
     native = configured.get("_native_library_mappings")
     if (not isinstance(native, dict) or not native or not cds_lib
             or not os.path.isfile(cds_lib) or not os.access(cds_lib, os.R_OK)
-            or (hierarchy or {}).get("schema_version") != "crescendo.hierarchy.v1"
+            or (hierarchy or {}).get("schema_version") != _contract_text("crescendo.hierarchy.v1")
             or (hierarchy or {}).get("read_only") is not True):
         return result
     designs = hierarchy.get("designs") or []
@@ -726,7 +729,7 @@ def detect_pdk_context(setup, hierarchy=None, configured=None):
             libraries = list(profile.get("reference_libraries") or unresolved) if profile else unresolved
             package_root = profile.get("package_root") if profile else None
             context = {
-                "schema_version": "crescendo.pdk_context.v2",
+                "schema_version": _contract_text("crescendo.pdk_context.v2"),
                 "id": profile.get("id") if profile else "legacy:%s" % unresolved[0],
                 "name": profile.get("name") if profile else unresolved[0],
                 "package_root": package_root,
@@ -750,7 +753,7 @@ def detect_pdk_context(setup, hierarchy=None, configured=None):
             context["adapter_evidence"] = build_adapter_evidence(context)
             contexts.append(context)
         result = {
-            "schema_version": "crescendo.pdk_contexts.v2",
+            "schema_version": _contract_text("crescendo.pdk_contexts.v2"),
             "ok": bool(contexts), "blocking": False, "contexts": contexts,
             "candidate_libraries": unresolved,
             "design_libraries": sorted(design_libraries),
@@ -807,8 +810,8 @@ def detect_pdk_context(setup, hierarchy=None, configured=None):
         recommendations.append("Fix the configured custom PDK adapter path before enabling fallback.")
     result.update({
         "pdk_name": single.get("name") or configured.get("pdk_name"),
-        "pdk_dir": single.get("package_root") or (
-            _expand(configured.get("pdk_dir")) if configured.get("pdk_dir") else None
+        _contract_text("pdk_dir"): single.get("package_root") or (
+            _expand(configured.get(_contract_text("pdk_dir"))) if configured.get(_contract_text("pdk_dir")) else None
         ),
         "pdk_adapter": effective_adapter,
         "pdk_adapter_policy": normalize_adapter_policy(top_policy),
@@ -855,7 +858,8 @@ def child_environment(config, home, include_runtime_ld=True, extra=None):
     # A caller's explicit nograph selection (including empty) remains authoritative.
     if "CDS_NOGRAPH_DISPLAY" not in env and env.get("DISPLAY"):
         env["CDS_NOGRAPH_DISPLAY"] = env["DISPLAY"]
-    return env
+    from .runtime import child_environment as runtime_environment
+    return runtime_environment(env)
 
 
 def guardian_termination_grace(termination_grace_seconds):
@@ -1036,6 +1040,44 @@ def _run_command_impl(argv, cwd, env, timeout_seconds, stdout_path=None, stderr_
         if progress_path and progress_timeout_seconds and progress_timeout_seconds > 0 else None
     )
     progress_signature = None
+    output_drain_deadline = None
+    output_drain_timed_out = False
+    output_drain_incomplete = False
+    guarded_output = [None, None]
+
+    def collect_guarded_output(timeout):
+        # Python 3.6 re-registers pipes already closed by an earlier timed
+        # communicate. Hide only those closed handles during the next poll;
+        # retain their already-read bytes and restore the public attributes.
+        hidden = []
+        for name in ("stdout", "stderr"):
+            stream = getattr(process, name, None)
+            if stream is not None and stream.closed:
+                # This Python's TimeoutExpired also omits partial output.
+                # Its closed stream can only be recovered from Popen's
+                # existing byte fragments before hiding the handle.
+                fragments = getattr(process, "_fileobj2output", {}).get(stream)
+                if isinstance(fragments, list) and all(isinstance(value, bytes) for value in fragments):
+                    guarded_output[0 if name == "stdout" else 1] = b"".join(fragments)
+                hidden.append((name, stream))
+                setattr(process, name, None)
+        try:
+            try:
+                output = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired as error:
+                output = (error.output, error.stderr)
+                for index, value in enumerate(output):
+                    if value is not None:
+                        guarded_output[index] = value
+                raise
+            for index, value in enumerate(output):
+                if value is not None:
+                    guarded_output[index] = value
+            return tuple(guarded_output)
+        finally:
+            for name, stream in hidden:
+                setattr(process, name, stream)
+
     try:
         while True:
             if lock_held and ready_path and os.path.isfile(ready_path):
@@ -1074,8 +1116,24 @@ def _run_command_impl(argv, cwd, env, timeout_seconds, stdout_path=None, stderr_
                 waits.append(max(0.01, progress_deadline - now))
             if guarded:
                 if process.poll() is not None:
-                    stdout, stderr = process.communicate(timeout=0.1)
-                    break
+                    # Exiting the wrapper does not imply EOF on both pipes.
+                    # communicate's short poll can expire even after waitpid
+                    # succeeded. Drain under a separate bounded exit allowance,
+                    # while the original command deadline and Stop stay active.
+                    if output_drain_deadline is None:
+                        output_drain_deadline = time.monotonic() + max(
+                            0.01, float(termination_grace_seconds))
+                    remaining_drain = output_drain_deadline - time.monotonic()
+                    if remaining_drain <= 0:
+                        output_drain_timed_out = True
+                        timed_out = True
+                        break
+                    try:
+                        stdout, stderr = collect_guarded_output(
+                            min(0.1, min(waits), remaining_drain))
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
                 time.sleep(min(min(waits), 0.1))
             else:
                 try:
@@ -1097,7 +1155,7 @@ def _run_command_impl(argv, cwd, env, timeout_seconds, stdout_path=None, stderr_
             pass
         process.stdin = None
         try:
-            stdout, stderr = process.communicate(timeout=max(0.01, float(termination_grace_seconds)))
+            stdout, stderr = collect_guarded_output(timeout=max(0.01, float(termination_grace_seconds)))
         except subprocess.TimeoutExpired:
             try:
                 if process_group_id is not None:
@@ -1107,10 +1165,11 @@ def _run_command_impl(argv, cwd, env, timeout_seconds, stdout_path=None, stderr_
             except OSError:
                 pass
             try:
-                stdout, stderr = process.communicate(timeout=max(0.01, float(termination_kill_seconds)))
+                stdout, stderr = collect_guarded_output(timeout=max(0.01, float(termination_kill_seconds)))
             except subprocess.TimeoutExpired as error:
-                stdout = error.output or b""
-                stderr = error.stderr or b""
+                output_drain_incomplete = True
+                stdout = guarded_output[0] or b""
+                stderr = guarded_output[1] or b""
                 try:
                     if process_group_id is not None:
                         os.killpg(process_group_id, signal.SIGKILL)
@@ -1193,6 +1252,18 @@ def _run_command_impl(argv, cwd, env, timeout_seconds, stdout_path=None, stderr_
             process.poll() is None or owned_process_group_alive() or
             (direct_process_was_running and not group_identity_proven)
         )
+    # Unclosed wrapper pipes are not a proven clean completion, including
+    # unlimited candidate runs. Never replace the guardian's owned-process
+    # inspection below with the wrapper return code or with pipe EOF.
+    termination_failed = termination_failed or output_drain_incomplete
+    if guarded and (timed_out or cancelled):
+        # A retained inherited writer must not retain our reader descriptors.
+        for stream in (getattr(process, "stdout", None), getattr(process, "stderr", None)):
+            if stream is not None:
+                try:
+                    stream.close()
+                except (IOError, OSError):
+                    pass
     stdout = stdout or b""
     stderr = stderr or b""
     wrapper_stdout_text = stdout.decode("utf-8", "replace")
@@ -1255,6 +1326,7 @@ def _run_command_impl(argv, cwd, env, timeout_seconds, stdout_path=None, stderr_
         "timed_out": timed_out,
         "startup_timed_out": startup_timed_out,
         "progress_timed_out": progress_timed_out,
+        "output_drain_timed_out": output_drain_timed_out,
         "cancelled": cancelled,
         "termination_failed": termination_failed,
         "lock_wait_seconds": lock_wait_seconds,
@@ -1347,6 +1419,6 @@ def write_readonly_cds_context(workdir, library_name, library_root, installation
     atomic_write_text(os.path.join(workdir, "cds.lib"), "\n".join(lines) + "\n")
     atomic_write_text(
         os.path.join(workdir, ".cdsinit"),
-        '; Crescendo read-only probe context. No source library write calls are allowed.\n',
+        _contract_text('; Crescendo read-only probe context. No source library write calls are allowed.\n'),
     )
     return {"source_cds_lib": source_cds_lib, "local_cds_lib": os.path.join(workdir, "cds.lib")}

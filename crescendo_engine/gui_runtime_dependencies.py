@@ -3,6 +3,9 @@
 Only a demonstrated missing SONAME or Tcl/Tk script permits an overlay.
 Pure stdlib; no installations, global changes, or dependency cache writes.
 """
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 import os
 from pathlib import Path
 import re
@@ -16,7 +19,7 @@ _MISSING = re.compile(r'(?P<name>[A-Za-z0-9_.+\-]+\.so(?:\.[A-Za-z0-9_.+\-]+)*)'
 _ABI = re.compile(r'lib(?P<kind>tcl|tk)(?P<version>[0-9]+\.[0-9]+)', re.I)
 
 def _note(diagnostics, stage, message):
-    diagnostics.append('Crescendo GUI dependency stage=%s: %s' % (stage, message))
+    diagnostics.append(_contract_text('Crescendo GUI dependency stage=%s: %s') % (stage, message))
 
 
 def _canonical_directory(value):
@@ -159,7 +162,7 @@ def _candidate_directories(candidate, metadata, environment, diagnostics):
                        'lib64/tcl-tk', 'lib64/tcl-tk/lib', 'share/tcltk', 'share'):
             _add_directory(directories, prefix / suffix)
     # Old loader values are clues, never a loader environment to restore.
-    original = environment.get('CRESCENDO_DEPENDENCY_LOADER_HINT', '')
+    original = environment.get(_contract_text('CRESCENDO_DEPENDENCY_LOADER_HINT'), '')
     for part in original.split(':'):
         if part and Path(part).is_absolute():
             resolved = _canonical_directory(part)

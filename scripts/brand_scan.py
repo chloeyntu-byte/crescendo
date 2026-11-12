@@ -8,6 +8,7 @@ import argparse
 import os
 import re
 import sys
+import subprocess
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -16,6 +17,28 @@ from crescendo import demo_smoke  # noqa: E402
 
 LEGACY = "m" + "co"  # the predecessor name, spelled out so renames cannot rewrite it
 WORD = re.compile(LEGACY + "|[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]", re.I)
+
+
+# Split spellings keep this scanner's own source from matching its rule.
+TRACKED_WORD = re.compile(r"\bHH_" + r"[A-Z]|\b(?:" + "|".join(
+    ("S" + "MIC", "T" + "SMC", "U" + "MC", "Global" + "Foundries",
+     "do" + "nau", "d" + "sub", "d" + "job", "d" + "kill")) + r")\b", re.I)
+
+
+def tracked_text_hits():
+    names = subprocess.check_output(['git', 'ls-files', '-z'], cwd=ROOT).decode('utf-8').split('\0')
+    for name in names:
+        if not name:
+            continue
+        with open(os.path.join(ROOT, name), 'rb') as stream:
+            raw = stream.read()
+        if b'\0' in raw:
+            continue
+        text = raw.decode('utf-8', errors='replace')
+        for number, line in enumerate(text.splitlines(), 1):
+            match = TRACKED_WORD.search(line)
+            if match:
+                yield ('tracked', name, str(number), match.group(0))
 
 
 def texts(root):
@@ -58,7 +81,8 @@ def texts(root):
                     yield path, "canvas", widget.itemcget(item, "text")
 
 
-args = argparse.Namespace(latency=0.0, speed=14.0, generations=6, population=8, cells=None,
+# Use the normal smoke-test budget so the scan can exercise Stop before completion.
+args = argparse.Namespace(latency=0.0, speed=14.0, generations=12, population=16, cells=None,
                           profile=False, withdraw=False, ui="crescendo")
 probe = demo_smoke.Probe("small", args)
 probe.close_original = probe.close
@@ -75,8 +99,9 @@ cid = next((c["candidate_id"] for c in app.live_candidates if c.get("status") ==
 if cid:
     app.open_candidate_logs(cid)
 app._show_text_details("Crescendo Diagnostic Details", app.last_diagnostic_detail)
+app.show_timing_details()
 probe.pump(1.5)
-hits = []
+hits = list(tracked_text_hits())
 for page in list(app.pages):
     app.show_page(page)
     probe.pump(0.3)

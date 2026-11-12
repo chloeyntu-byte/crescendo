@@ -14,7 +14,8 @@ def main(argv=None):
         print("Crescendo {} (engine {})".format(__version__, engine_version))
         return 0
     from crescendo_engine.__main__ import main as kernel_main
-    return kernel_main(arguments)
+    from .app import gui_factory
+    return kernel_main(arguments, gui_factory=gui_factory)
 
 
 if __name__ == "__main__":

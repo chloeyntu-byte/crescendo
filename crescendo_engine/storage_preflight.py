@@ -5,6 +5,9 @@ import math
 import os
 import shutil
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .workspace import (
     _library_copy_ignore, _source_fingerprint_scopes, _workspace_copy_cells,
     copy_ignore, resolve_copy_libraries, reference_copy_ignore, workspace_reference_plan,
@@ -88,7 +91,7 @@ def estimate_workspace_copy_bytes(setup, hierarchy, config=None, parameters=None
                                         ((config or {}).get("runtime") or {}).get("run_root") or os.getcwd(),
                                         parameters, same_library=True)
         estimate_root = os.path.join(((config or {}).get("runtime") or {}).get("run_root") or os.getcwd(),
-                                     "_cr_estimate_only")
+                                     _contract_text("_cr_estimate_only"))
         workspace = dict(plan, root=estimate_root, copy_policy="same_library_views",
                          same_library_objects=True, source_libraries=sources,
                          copied_libraries=dict(sources),
@@ -120,7 +123,7 @@ def estimate_workspace_copy_bytes(setup, hierarchy, config=None, parameters=None
         # branches in headroom instead of pretending that initial Python copies
         # account for the complete private workspace cost.
         estimate_root = os.path.join(((config or {}).get("runtime") or {}).get("run_root") or os.getcwd(),
-                                     "_cr_estimate_only", "libraries")
+                                     _contract_text("_cr_estimate_only"), "libraries")
         workspace = dict(plan, root=os.path.dirname(estimate_root), copy_policy="same_library_views" if same_library else "source_reference",
                          source_libraries=sources,
                          copied_libraries=dict((library, os.path.join(estimate_root, library))
@@ -274,7 +277,7 @@ def startup_storage_preflight(run_root, checkpoint_anchor_root, min_free_disk_mi
             "startup disk-space preflight failed before checkpoint/workspace creation: %s" % details
         )
     return {
-        "schema_version": "crescendo.startup_storage_preflight.v1",
+        "schema_version": _contract_text("crescendo.startup_storage_preflight.v1"),
         "ok": True,
         "minimum_free_disk_mib": minimum_mib,
         "estimated_workspace_copy_bytes": workspace_bytes,

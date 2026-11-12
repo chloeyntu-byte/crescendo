@@ -8,6 +8,9 @@ import re
 import uuid
 
 from . import setup_private_session as sessions
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .utils import atomic_write_json
 from .settings_state import REVISION_UNCHECKED
 
@@ -87,7 +90,7 @@ class PrivateSuiteServiceMixin(object):
             'baseline': copy.deepcopy(prepared['setup']['baseline'])}
         scopes = [row for row in cell_scope_records(prepared['hierarchy'], setup=prepared['setup'],
                                                    config=self.config) if row.get('selectable')]
-        preview = {'schema_version': 'crescendo.cell_inspection.v1', 'setup': prepared['setup'],
+        preview = {'schema_version': _contract_text('crescendo.cell_inspection.v1'), 'setup': prepared['setup'],
             'setup_path': source, 'setup_locator': prepared['setup_locator'],
             'hierarchy': prepared['hierarchy'], 'cell_scopes': scopes,
             'job_policy': prepared.get('job_policy'), 'eda_context': prepared.get('eda_context'),
@@ -106,7 +109,7 @@ class PrivateSuiteServiceMixin(object):
             'prepared': prepared if ready else None, 'ready_for_settings': ready,
             'selected_cell_scope_ids': list((prepared.get('cell_selection') or {}).get('scope_ids') or []),
             'warnings': list(warnings or []), 'eda_setup': self.eda_setup(prepared['setup'])}
-        path = os.path.join(reference['root'], 'configuration.json')
+        path = os.path.join(reference['root'], _contract_text('configuration.json'))
         if os.path.isfile(path):
             try:
                 from .unified_configuration import read_configuration, match_configuration
@@ -244,7 +247,7 @@ class PrivateSuiteServiceMixin(object):
         from .unified_configuration import configuration_revision
         reference = self._suite_reference_for_id(suite_id)
         sessions._controller(reference)
-        return configuration_revision(os.path.join(reference['root'], 'configuration.json'))
+        return configuration_revision(os.path.join(reference['root'], _contract_text('configuration.json')))
 
     def save_private_suite_configuration(self, suite_id, document, expected_revision=REVISION_UNCHECKED):
         from .unified_configuration import normalize_configuration, save_configuration
@@ -260,7 +263,7 @@ class PrivateSuiteServiceMixin(object):
             saved_source = (cleaned.get('source_setup') or {}).get('path')
             if not saved_source or os.path.realpath(saved_source) != os.path.realpath(origin_setup_path(controller.prepared['setup'])):
                 raise ValueError('Configuration belongs to another source setup')
-            result = save_configuration(os.path.join(reference['root'], 'configuration.json'), cleaned,
+            result = save_configuration(os.path.join(reference['root'], _contract_text('configuration.json')), cleaned,
                                         retain_backups=0, expected_revision=expected_revision, return_result=True)
             result['saved'] = True
             return result
@@ -289,14 +292,14 @@ class PrivateSuiteServiceMixin(object):
             self.setup_private_sessions.pop(suite_id, None)
             self._remember_setup_private_session(replacement)
             prepared = sessions.setup_private_session_snapshot(replacement)
-            old_config = os.path.join(reference['root'], 'configuration.json')
+            old_config = os.path.join(reference['root'], _contract_text('configuration.json'))
             warnings = []
             if os.path.isfile(old_config):
                 try:
                     from .unified_configuration import read_configuration
                     document = read_configuration(old_config)
                     document['private_suite'] = suite_reference(dict(prepared, setup_private_session=replacement))
-                    atomic_write_json(os.path.join(replacement['root'], 'configuration.json'), document)
+                    atomic_write_json(os.path.join(replacement['root'], _contract_text('configuration.json')), document)
                 except Exception as error:
                     warnings.append('Renamed suite is ready; configuration draft copy failed: ' + str(error))
             if active:
@@ -429,7 +432,7 @@ class PrivateSuiteServiceMixin(object):
                 from .settings_state import _cell_evidence
                 saved = [{'scope_id': row.get('scope_id'), 'selected': True, 'evidence': _cell_evidence(row)}
                          for row in (old.get('cell_selection') or {}).get('scopes') or []]
-                match = match_configuration_cells({'schema_version': 'crescendo.configuration.v1',
+                match = match_configuration_cells({'schema_version': _contract_text('crescendo.configuration.v1'),
                     'settings': {'cells': saved}, 'selection': {'provided': True}}, choices)
                 selected = [row for row in choices if row.get('scope_id') in match['scope_ids']]
                 if selected:

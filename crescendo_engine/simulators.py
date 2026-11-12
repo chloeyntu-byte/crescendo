@@ -4,6 +4,9 @@ Solver commands use explicit simulator contracts. Results are
 qualified by the owned receipt and the native reader, never an invented log
 summary. A model-format bridge is a new execution identity, not relocation.
 """
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 import copy
 import hashlib
 import json
@@ -14,7 +17,7 @@ import shlex
 import stat
 
 
-SCHEMA = "crescendo.simulator_execution.v1"
+SCHEMA = _contract_text("crescendo.simulator_execution.v1")
 
 
 class SimulatorConfigurationError(ValueError):
@@ -147,7 +150,7 @@ def execution_contract(config, capture_source_simulator="spectre", model_referen
     models = []
     for reference in model_references or []:
         source = reference.get("file")
-        if source == "cr_candidate_parameters.scs":
+        if source == _contract_text("cr_candidate_parameters.scs"):
             continue
         source_identity = _file_identity(source)
         source_section = reference.get("section")
@@ -364,7 +367,7 @@ def simulator_configuration_identity(config, spec=None):
             model["sections"] = copy.deepcopy(sections)
         models.append(model)
     models.sort(key=lambda row: json.dumps(row, sort_keys=True))
-    payload = {"schema_version": "crescendo.simulator_configuration_identity.v1",
+    payload = {"schema_version": _contract_text("crescendo.simulator_configuration_identity.v1"),
                "simulator": simulator, "executable_sha256": executable["sha256"],
                "threads": cadence.get("simulator_threads"),
                "result_reader": selected_result_reader(cadence, simulator),

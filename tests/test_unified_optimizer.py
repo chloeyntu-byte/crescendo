@@ -299,7 +299,7 @@ class UnifiedAdapterEvidenceTests(unittest.TestCase):
             adapter = PrivateNetlistOptimizer(root, spec, prepared, parameters, config, runner._failure_metrics)
             with mock.patch('crescendo_engine.netlist_optimizer.NetlistExecutionContext', return_value=context) as executor, \
                     mock.patch('crescendo_engine.shared_maestro.SharedMaestroProducer.generate',
-                        side_effect=lambda values, root, candidate_id:
+                        side_effect=lambda values, root, candidate_id, **kwargs:
                         numeric(prepared, parameters, values, config, root, candidate_id)) as provider, \
                     mock.patch('crescendo_engine.netlist_optimizer.prepare_private_netlist') as template, \
                     mock.patch('crescendo_engine.netlist_optimizer.materialize_candidate') as edit, \

@@ -7,6 +7,9 @@ installation.  Matching uses the same identity rules as the earlier UI state.
 from __future__ import print_function
 
 import copy
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .gui_performance import snapshot_copy
 import datetime
 import json
@@ -18,11 +21,11 @@ import uuid
 from . import settings_state as state
 from .config import MANUAL_KEYS
 
-SCHEMA = "crescendo.configuration.v1"
-LEGACY_DESIGN_SCHEMA = "crescendo.design_config.v1"
+SCHEMA = _contract_text("crescendo.configuration.v1")
+LEGACY_DESIGN_SCHEMA = _contract_text("crescendo.design_config.v1")
 SUPPORTED_SCHEMAS = (SCHEMA, state.SCHEMA, LEGACY_DESIGN_SCHEMA)
 TIMEOUT_NAMES = ("start_seconds", "configure_seconds", "run_seconds", "linger_seconds")
-PROFILE_FIELDS = ("schema_version", "id", "name", "pdk_name", "package_root", "pdk_dir", "custom_adapter", "pdk_adapter")
+PROFILE_FIELDS = ("schema_version", "id", "name", "pdk_name", "package_root", _contract_text("pdk_dir"), "custom_adapter", "pdk_adapter")
 PROFILE_LIST_FIELDS = ("reference_libraries", "libraries", "technology_libraries", "technology_library", "model_roots", "startup_extensions")
 PORTABLE_MANUAL_KEYS = tuple(key for key in MANUAL_KEYS if key != "license_file")
 LIST_OVERRIDES = ("extra_binary_paths", "extra_library_paths", "search_roots", "alps_search_roots", "model_roots", "startup_extensions")
@@ -546,7 +549,7 @@ def normalize_configuration(document, current_context=None):
     if isinstance(document, dict) and "document" in document and "schema_version" not in document:
         document = document["document"]
     if not isinstance(document, dict) or document.get("schema_version") not in SUPPORTED_SCHEMAS:
-        raise ValueError("Unsupported configuration file; expected {} or an earlier Crescendo settings/config file.".format(SCHEMA))
+        raise ValueError(_contract_text("Unsupported configuration file; expected {} or an earlier Crescendo settings/config file.").format(SCHEMA))
     state._encoded(document)
     schema = document["schema_version"]
     warnings = []

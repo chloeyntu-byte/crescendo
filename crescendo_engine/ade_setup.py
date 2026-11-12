@@ -5,11 +5,14 @@ import os
 import re
 import xml.etree.ElementTree as ET
 
+from crescendo_engine.runtime import bind_text
+_contract_text = bind_text()
+
 from .utils import sha256_file
 
 
-SETUP_SCHEMA_VERSION = "crescendo.ade_setup.v1"
-SETUP_REFERENCE_SCHEMA_VERSION = "crescendo.ade_setup_reference.v1"
+SETUP_SCHEMA_VERSION = _contract_text("crescendo.ade_setup.v1")
+SETUP_REFERENCE_SCHEMA_VERSION = _contract_text("crescendo.ade_setup_reference.v1")
 SUPPORTED_BACKENDS = ("maestro", "adexl")
 
 
@@ -658,7 +661,7 @@ def native_settings_summary(setup, job_policy=None, workspace=None):
                           'selected Test and its native analyses' if selected else 'all Tests and analyses', 'per-Test corner masks',
                           'source Job Setup references and captured effective values'],
             'owned_overrides': ['private design bindings', 'run-local result and scratch paths',
-                                'explicit Crescendo execution selection and overrides'],
+                                _contract_text('explicit Crescendo execution selection and overrides')],
             'excluded': ['historical result data', 'copied history pointers', 'locks and backups'] +
                         (['unselected Tests in the native run copy', 'corners outside the current run selection'] if selected else []),
             'job_policies': rows, 'save_options': save,
