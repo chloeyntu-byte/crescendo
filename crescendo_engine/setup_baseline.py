@@ -77,10 +77,10 @@ def verify_setup_baseline(setup):
     if (baseline.get("schema_version") != SCHEMA or not root or
             not os.path.isabs(root) or os.path.realpath(root) != root or
             os.path.basename(root) != baseline.get("baseline_id")):
-        raise ValueError("Saved Maestro baseline identity is malformed")
+        raise ValueError("Saved Maestro reference identity is malformed")
     manifest_path = os.path.join(root, _contract_text("manifest.json"))
     if sha256_file(_regular(manifest_path)) != baseline.get("manifest_sha256"):
-        raise ValueError("Saved Maestro baseline manifest changed")
+        raise ValueError("Saved Maestro reference manifest changed")
     with open(manifest_path) as stream:
         manifest = json.load(stream)
     if (manifest.get("schema_version") != SCHEMA or manifest.get("baseline_id") != baseline.get("baseline_id") or
@@ -90,13 +90,13 @@ def verify_setup_baseline(setup):
             manifest.get("view_relative_path") != _view_relative(setup) or
             manifest.get("files") != _files(os.path.join(root, _view_relative(setup))) or
             _digest(manifest) != baseline.get("fingerprint")):
-        raise ValueError("Saved Maestro baseline contents changed")
+        raise ValueError("Saved Maestro reference contents changed")
     snapshot = os.path.join(root, _contract_text("setup.json"))
     if sha256_file(_regular(snapshot)) != manifest.get("setup_snapshot_sha256"):
-        raise ValueError("Saved Maestro baseline settings snapshot changed")
+        raise ValueError("Saved Maestro reference settings snapshot changed")
     expected = os.path.join(root, _view_relative(setup), manifest["setup_filename"])
     if baseline.get("setup_path") != expected:
-        raise ValueError("Saved Maestro baseline setup path changed")
+        raise ValueError("Saved Maestro reference setup path changed")
     return baseline
 
 
@@ -122,7 +122,7 @@ def freeze_setup_baseline(prepared, config):
     before = _files(source_dir)
     expected = (setup.get("source") or {}).get("sha256")
     if expected and sha256_file(source_path) != expected:
-        raise ValueError("Maestro changed before baseline capture; Load and Inspect again")
+        raise ValueError("Maestro changed before reference capture; Load and Inspect again")
     runtime = config.get("runtime") or {}
     parent = os.path.join(runtime.get("design_root") or runtime["run_root"], "setup_baselines")
     if not os.path.isdir(parent):
@@ -137,7 +137,7 @@ def freeze_setup_baseline(prepared, config):
         shutil.copytree(source_dir, view, ignore=lambda directory, names: [
             name for name in names if name == "results" or _ignored(name)], copy_function=_copy_private_file)
         if before != _files(source_dir) or before != _files(view):
-            raise ValueError("Maestro changed during baseline capture; Load and Inspect again")
+            raise ValueError("Maestro changed during reference capture; Load and Inspect again")
         # Prove the copied active.state and SDB describe the inspected scopes.
         from .ade_setup import inspect_setup
         copied = inspect_setup(os.path.join(view, os.path.basename(source_path)), backend="maestro")
@@ -145,7 +145,7 @@ def freeze_setup_baseline(prepared, config):
         from .single_test import source_setup
         source = source_setup(setup)
         if any(copied.get(key) != source.get(key) for key in fields):
-            raise ValueError("Saved Maestro baseline differs from inspected settings; Load and Inspect again")
+            raise ValueError("Saved Maestro reference differs from inspected settings; Load and Inspect again")
         snapshot = {"setup": copy.deepcopy(setup), "job_policy": copy.deepcopy(prepared.get("job_policy"))}
         atomic_write_json(os.path.join(root, _contract_text("setup.json")), snapshot)
         manifest = {"schema_version": SCHEMA, "baseline_id": token,
@@ -176,7 +176,7 @@ def load_bound_setup(path, config, backend="auto"):
                 snapshot = json.load(stream)
             setup = snapshot["setup"]
             if backend not in (None, "auto", setup.get("backend")):
-                raise ValueError("Saved Maestro baseline backend differs from requested backend")
+                raise ValueError("Saved Maestro reference backend differs from requested backend")
             setup["baseline"] = copy.deepcopy(binding["baseline"])
             setup["baseline_job_policy"] = snapshot.get("job_policy")
             return setup
@@ -203,12 +203,12 @@ def load_prepared_baseline(record):
     path = record.get("path")
     if (record.get("schema_version") != SCHEMA or not path or not os.path.isabs(path) or
             os.path.realpath(path) != path or sha256_file(_regular(path)) != record.get("sha256")):
-        raise ValueError("Checkpoint saved Maestro baseline snapshot is unavailable or changed")
+        raise ValueError("Checkpoint saved Maestro reference snapshot is unavailable or changed")
     with open(path) as stream:
         prepared = json.load(stream)
     baseline = verify_setup_baseline(prepared.get("setup") or {})
     if (not baseline or baseline["baseline_id"] != record.get("baseline_id") or
             os.path.dirname(path) != baseline["root"]):
-        raise ValueError("Checkpoint saved Maestro baseline snapshot identity differs")
+        raise ValueError("Checkpoint saved Maestro reference snapshot identity differs")
     prepared["setup_baseline_snapshot"] = copy.deepcopy(record)
     return prepared

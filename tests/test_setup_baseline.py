@@ -109,7 +109,7 @@ class SetupBaselineTests(unittest.TestCase):
     def test_snapshot_tampering_and_linked_source_are_rejected(self):
         baseline = self.freeze()
         self.write(baseline["setup_path"], self.xml + "changed")
-        with self.assertRaisesRegex(ValueError, "baseline contents changed"):
+        with self.assertRaisesRegex(ValueError, "reference contents changed"):
             verify_setup_baseline(self.prepared["setup"])
         fresh = copy.deepcopy(self.prepared)
         fresh["setup"].pop("baseline")
@@ -204,7 +204,7 @@ class SetupBaselineTests(unittest.TestCase):
             self.write(self.path, self.xml.replace('<value>3</value>', '<value>9</value>'))
             return result
         with mock.patch("crescendo_engine.workspace._copy_private_file", side_effect=save_during_copy):
-            with self.assertRaisesRegex(ValueError, "changed during baseline capture"):
+            with self.assertRaisesRegex(ValueError, "changed during reference capture"):
                 freeze_setup_baseline(self.prepared, self.config)
         self.assertNotIn("baseline", self.prepared["setup"])
         self.assertEqual(os.listdir(os.path.join(self.config["runtime"]["run_root"], "setup_baselines")), [])
@@ -215,7 +215,7 @@ class SetupBaselineTests(unittest.TestCase):
         readonly = "\n".join(workspace_test_design_lines(workspace, read_only=True))
         self.assertNotIn("axlSetTestToolArgs", readonly)
         self.assertIn("cr_private", readonly)
-        self.assertIn("Crescendo private test design readback mismatch", readonly)
+        self.assertIn("Crescendo working test design readback mismatch", readonly)
         self.assertIn("axlSetTestToolArgs", "\n".join(workspace_test_design_lines(workspace)))
 
     def test_workspace_setup_copy_uses_baseline_after_original_save(self):

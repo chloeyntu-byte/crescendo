@@ -774,7 +774,7 @@ class WorkspaceTest(unittest.TestCase):
                     "crescendo_engine.workspace.shutil.copytree", side_effect=copy_then_mutate):
                 with self.assertRaises(WorkspaceBuildFailure) as raised:
                     build_workspace(setup, {}, config, workspace)
-            self.assertIn("changed during private workspace copy", str(raised.exception.cause))
+            self.assertIn("changed during working workspace copy", str(raised.exception.cause))
             self.assertFalse(raised.exception.cleanup["ok"])
             self.assertTrue(os.path.isdir(workspace))
 

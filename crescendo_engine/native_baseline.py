@@ -56,7 +56,7 @@ def _record_storage_evidence(driver):
         if (os.path.dirname(root) != expected_parent or
                 not re.fullmatch(r"[a-f0-9]{32}", os.path.basename(root)) or
                 os.path.realpath(root) != root):
-            raise ValueError("native diagnostic storage is not this candidate's direct private directory")
+            raise ValueError("native diagnostic storage is not this candidate's direct working directory")
         identity = os.lstat(root)
         if not stat.S_ISDIR(identity.st_mode) or identity.st_uid != os.getuid():
             raise ValueError("native diagnostic storage identity differs")
@@ -86,11 +86,11 @@ def _read_protocol(path, nonce):
     if not os.path.isfile(path):
         return []
     if os.path.islink(path) or os.path.getsize(path) > 1024 * 1024:
-        raise NativeBaselineError("Invalid native baseline protocol file")
+        raise NativeBaselineError("Invalid Native Run protocol file")
     with open(path, encoding="utf-8") as stream:
         rows = [line.rstrip("\n").split("\t") for line in stream]
     if any(len(row) != 3 or row[0] != nonce for row in rows):
-        raise NativeBaselineError("Native baseline protocol identity mismatch")
+        raise NativeBaselineError("Native Run protocol identity mismatch")
     return [{"state": row[1], "value": row[2], "sequence": index} for index, row in enumerate(rows)]
 
 
@@ -100,7 +100,7 @@ class _NativeSession(object):
         self.control = ensure_dir(os.path.join(root, "native_baseline"))
         self.path = os.path.join(self.control, _contract_text("native_baseline_state.json"))
         if os.path.lexists(self.path):
-            raise NativeBaselineError("Native baseline request directory already used; no replay allowed")
+            raise NativeBaselineError("Native Run request directory already used; no replay allowed")
         self.nonce = uuid.uuid4().hex
         self.protocol = os.path.join(self.control, "native_baseline_protocol.tsv")
         self.process = None
@@ -132,15 +132,15 @@ class _NativeSession(object):
                 if row["state"] in terminal:
                     return row
                 if row["state"] == "STOP_ERROR" or (row["state"] == "ERROR" and "STOP_DONE" not in terminal):
-                    raise NativeBaselineError("Native baseline failed: " + row["value"])
+                    raise NativeBaselineError("Native Run failed: " + row["value"])
             if cancel_check and cancel_check():
-                error = NativeBaselineError("Native baseline cancelled")
+                error = NativeBaselineError("Native Run cancelled")
                 error.cancelled = True
                 raise error
             if self.process is None or self.process.poll() is not None:
                 raise NativeBaselineError("Owned Ocean exited before native terminal evidence")
             if deadline is not None and time.monotonic() >= deadline:
-                raise NativeBaselineError("Native baseline exceeded its total operation deadline")
+                raise NativeBaselineError("Native Run exceeded its total operation deadline")
             time.sleep(0.1)
 
     def launch(self, script):
@@ -203,7 +203,7 @@ class _NativeSession(object):
         if not closed and self.process is not None and self.process.poll() is None:
             script = os.path.join(self.control, "stop.il")
             atomic_write_text(script, '\n'.join([
-                _contract_text('unless(equal(crescBaselineNonce %s) error("Crescendo baseline Stop nonce mismatch\\n"))') % _quote(self.nonce),
+                _contract_text('unless(equal(crescBaselineNonce %s) error("Crescendo reference Stop nonce mismatch\\n"))') % _quote(self.nonce),
                 _contract_text('crescBaselineStopping=t'),
                 _contract_text('crescBaselineRecord("STOP_BEGIN" "")'),
                 _contract_text('crescBaselineStop=errset(progn('),
@@ -276,7 +276,7 @@ def reconcile_native_baseline(root, request_cancel=True, timeout_seconds=12):
                 "cleanup_pending": True, "reason": "native launch record missing; termination cannot be established"}
     state = _load(path)
     if state.get("schema_version") != SCHEMA_VERSION or state.get("request_root") != root:
-        raise NativeBaselineError("Native baseline recovery protocol mismatch")
+        raise NativeBaselineError("Native Run recovery protocol mismatch")
     if not state.get("launch_attempted"):
         return dict(state, cleanup_proven=True, cleanup_pending=False)
     if state.get("cleanup_proven") and state.get("native_session_closed"):
@@ -404,7 +404,7 @@ def _scripts(driver, rows, plan, run_setup, execution_selection, corner_selectio
         'envSetVal("adexl.historyNamePrefix" "showNameHistoryForm" \'boolean nil)',
         'envSetVal("adexl.simulation" "saveLastNHistoryEntries" \'int 1000)',
         'session=maeOpenSetup(%s %s %s ?mode "a")' % tuple(_quote(workspace[key]) for key in ("primary_library", "setup_cell", "setup_view")),
-        'unless(session error("Cannot open owned private Maestro\\n"))',
+        'unless(session error("Cannot open owned Maestro working copy\\n"))',
         'mainSDB=axlGetMainSetupDB(session)',
         'unless(isCallable(\'maeStopSimulation) && isCallable(\'maeWaitUntilDone) error("Native Stop/Wait unavailable\\n"))',
     ]
@@ -430,7 +430,7 @@ def _scripts(driver, rows, plan, run_setup, execution_selection, corner_selectio
     bounded, generation = bounded_skill_body_lines(body, _contract_text("crescBaselineBootstrap"))
     startup = os.path.join(driver.control, "startup.il")
     atomic_write_text(startup, '\n'.join(definitions + bounded + [
-        _contract_text('unless(crescBaselineBootstrap crescBaselineRecord("ERROR" "private setup initialization failed"))')]) + '\n')
+        _contract_text('unless(crescBaselineBootstrap crescBaselineRecord("ERROR" "working setup initialization failed"))')]) + '\n')
     atomic_write_json(os.path.join(driver.control, _contract_text("generation.json")), generation)
     run = os.path.join(driver.control, "run.il")
     atomic_write_text(run, '\n'.join([
@@ -485,20 +485,20 @@ def evaluate_native_baseline(candidate_id, values, parameters, spec, prepared, c
         qualify_deterministic(prepared["setup"])
         qualify_shared_inputs(_batch, prepared)
     if not prepared.get("setup_private_session"):
-        raise NativeBaselineError("Native baseline requires an applied private Maestro suite")
+        raise NativeBaselineError("Native Run requires an applied Maestro working copy")
     if not parameters or set(values) != {row["parameter_id"] for row in parameters}:
-        raise NativeBaselineError("Native baseline selected parameter identity mismatch")
+        raise NativeBaselineError("Native Run selected parameter identity mismatch")
     if any(row.get("backend", "schematic") != "schematic" for row in parameters):
-        raise NativeBaselineError("Native baseline supports selected Device Parameters only")
+        raise NativeBaselineError("Native Run supports selected Device Parameters only")
     from .simulators import selected_simulator
     selected = str(spec.get("simulator") or selected_simulator(config)).lower()
     saved = {(row.get("simulator") or "spectre").lower() for row in prepared["setup"].get("tests", [])
              if row.get("enabled", True)}
     if saved != {selected}:
-        raise NativeBaselineError("Native baseline simulator must match the saved Maestro Tests")
+        raise NativeBaselineError("Native Run simulator must match the saved Maestro Tests")
     timing = {"phases": {}}
     phase_scopes = {
-        "build": "private storage, parameter plan, setup identity and SKILL scripts",
+        "build": "working storage, parameter plan, setup identity and SKILL scripts",
         "worker_setup": "Cadence startup lock through owned Ocean READY",
         "native_setup_readback": "native variable, parameter, storage and Job Setup readback",
         "execution": "native Run dispatch through observed SIM_DONE, including native queue and solve",
@@ -614,7 +614,7 @@ def evaluate_native_baseline(candidate_id, values, parameters, spec, prepared, c
                 "job_policy_timeouts_are_independent": True}
             driver.persist()
             if cancel_check and cancel_check():
-                error = NativeBaselineError("Native baseline cancelled before Run")
+                error = NativeBaselineError("Native Run cancelled before Run")
                 error.cancelled = True
                 raise error
             if progress_callback:
@@ -713,7 +713,7 @@ def evaluate_native_baseline(candidate_id, values, parameters, spec, prepared, c
                 parameter_application.update(settings=settings, solver_completion_proven=True)
                 guard = compact_source_guard(verify_sources_unchanged(owned))
                 if not guard.get("ok"):
-                    error = NativeBaselineError("Source changed during native baseline evaluation")
+                    error = NativeBaselineError("Source changed during Native Run evaluation")
                     error.detail = {"failure_stage": "source_guard", "source_guard": guard}
                     raise error
                 pipeline = {"schema_version": SCHEMA_VERSION, "solver": "native_maestro",

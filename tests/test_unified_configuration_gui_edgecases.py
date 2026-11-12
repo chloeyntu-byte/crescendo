@@ -128,7 +128,7 @@ class UnifiedConfigurationGuiEdgeTests(unittest.TestCase):
         def cancel(_document, **kwargs):
             error = CommandCancelled('stop')
             error.configuration_import = {'document': read_configuration(path), 'cancelled': True,
-                'warnings': ['Cancellation retained private suite resources and source binding for recovery.']}
+                'warnings': ['Cancellation retained working-copy resources and source binding for recovery.']}
             raise error
         self.service.load_configuration = cancel
         self._load(path)

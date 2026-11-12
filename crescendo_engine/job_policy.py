@@ -534,7 +534,7 @@ def capture_setup_job_policy(setup, config):
 def job_policy_override_definitions(overrides=None):
     """Generate public-API clone/apply/readback helpers for an owned session.
 
-    The caller guarantees the session uses a private setup. Copying an effective
+    The caller guarantees the session uses a working setup. Copying an effective
     per-test policy avoids assuming that newly cloned tests inherit it. Batch
     callers must qualify source policies before cloning: dedicated test policies
     can start separate ICRPs even when their policy names are the same.
@@ -625,7 +625,7 @@ procedure(crescRequireJobPolicyMatch(original readback)
     while(cursor && cdr(cursor)
       key = car(cursor) oldValue = cadr(cursor) newValue = get(readback key)
       unless(equal(oldValue newValue)
-        error("Crescendo: private job policy readback mismatch for %%L (%%L / %%L).\\n" key oldValue newValue)
+        error("Crescendo: working job policy readback mismatch for %%L (%%L / %%L).\\n" key oldValue newValue)
       )
       cursor = cddr(cursor)
     )
@@ -652,7 +652,7 @@ procedure(crescCloneJobPolicy(sess original targetTest name)
     when(targetTest args = append(args list(?tests list(targetTest))))
 %s
     accepted = apply('maeSetJobPolicy args)
-    unless(accepted error("Crescendo: private job policy update was rejected.\\n"))
+    unless(accepted error("Crescendo: working job policy update was rejected.\\n"))
     readback = if(targetTest then maeGetJobPolicy(?session sess ?testName targetTest)
                             else maeGetJobPolicy(?session sess))
     ; Public generic property setter covers native fields not listed in
@@ -845,7 +845,7 @@ def job_policy_application_skill(policy=None, overrides=None, session_expr="sess
     """Apply the captured policy to an owned setup, then explicit overrides.
 
     Named native policy fields not exposed by the public setter must already be
-    preserved by the private clone, or the exact readback fails before running.
+    preserved by the working clone, or the exact readback fails before running.
     No mismatch is silently converted into a local submission.
     """
     if not re.match(r"^[A-Za-z][A-Za-z0-9_]*$", session_expr):
@@ -890,11 +890,11 @@ def job_policy_application_skill(policy=None, overrides=None, session_expr="sess
         lines.extend([
             _contract_text('unless(isCallable(\'axlSetRunDistributeOptions) && isCallable(\'axlGetRunDistributeOptions) error("Crescendo: native Run Options cannot be applied/read back; no simulation submitted.\\n"))'),
             _contract_text('crescRunOptionsSetup = axlGetActiveSetup(axlGetMainSetupDB(%s))') % sess,
-            _contract_text('unless(axlSetRunDistributeOptions(crescRunOptionsSetup %s) error("Crescendo: private Run Options were rejected; no simulation submitted.\\n"))') % " ".join(args),
+            _contract_text('unless(axlSetRunDistributeOptions(crescRunOptionsSetup %s) error("Crescendo: working Run Options were rejected; no simulation submitted.\\n"))') % " ".join(args),
             _contract_text('crescRunOptionsReadback = axlGetRunDistributeOptions(crescRunOptionsSetup)'),
         ])
         for key, value in option_values.items():
-            lines.append(_contract_text('unless(equal(get(crescRunOptionsReadback \'%s) %s) error("Crescendo: private Run Options readback differs for %s; no simulation submitted.\\n"))') % (key, "stringToSymbol(%s)" % _skill_scalar(value) if key in ("RunIn", "DivideJobs") and isinstance(value, str) else _skill_scalar(value), key))
+            lines.append(_contract_text('unless(equal(get(crescRunOptionsReadback \'%s) %s) error("Crescendo: working Run Options readback differs for %s; no simulation submitted.\\n"))') % (key, "stringToSymbol(%s)" % _skill_scalar(value) if key in ("RunIn", "DivideJobs") and isinstance(value, str) else _skill_scalar(value), key))
     # Wrappers are an exact argv observer only; native policy still supplies the
     # ICRP/simulation arguments. Unsupported shell syntax stays native unchanged.
     lines.extend(job_policy_observation_skill(command_wrappers, session_expr=sess).splitlines())

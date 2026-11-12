@@ -19,6 +19,22 @@ class I18nEnDataTest(unittest.TestCase):
         for zh, en in i18n_en_data.PAIRS:
             self.assertIsNone(CJK.search(en), (zh, en))
 
+    def test_display_terminology_excludes_retired_words(self):
+        retired = re.compile(r"\b(?:baseline|private|privatization)\b", re.I)
+        for zh, en in i18n_en_data.PAIRS:
+            self.assertIsNone(retired.search(en), (zh, en))
+
+    def test_mode_names_keep_original_translation_keys(self):
+        from crescendo.i18n import tr
+        expected = {
+            "私有 Maestro（Baseline）": "Native Run",
+            "私有网表 CLI": "Template Netlist CLI",
+            "私有 Maestro 生成网表": "Maestro Netlist",
+            "私有套件": "Working Copies",
+        }
+        for original, display in expected.items():
+            self.assertEqual(tr(original), display)
+
     def test_keys_contain_cjk(self):
         for zh, en in i18n_en_data.PAIRS:
             self.assertTrue(CJK.search(zh), zh)

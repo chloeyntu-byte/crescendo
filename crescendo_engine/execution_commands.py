@@ -278,7 +278,7 @@ def _build_solver_command(contract, template_argv, netlist, psf, log, ahdl, comm
     else:
         argv = _render(template, solver_bindings(contract, netlist, psf, log, ahdl))
         if argv[0] != contract["executable"]["path"] or argv[1:].count(netlist) != 1:
-            raise ExecutionCommandError("Solver command must invoke the frozen simulator with exactly this private netlist")
+            raise ExecutionCommandError("Solver command must invoke the frozen simulator with exactly this run netlist")
         output_flag = "-raw" if simulator == "spectre" else "-o"
         if _flag_values(argv, output_flag) != [psf]:
             raise ExecutionCommandError("Solver output flag must bind exactly the owned {psf} directory")

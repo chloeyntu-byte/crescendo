@@ -178,7 +178,7 @@ def _open_launch_lock(path, create=False):
     try:
         value = os.fstat(descriptor)
         if not stat.S_ISREG(value.st_mode) or value.st_nlink != 1:
-            raise ValueError("legacy guardian launch lock is not a private regular file")
+            raise ValueError("legacy guardian launch lock is not an owner-only regular file")
         current = os.stat(path)
         if current.st_dev != value.st_dev or current.st_ino != value.st_ino:
             raise ValueError("legacy guardian launch lock changed while opening")

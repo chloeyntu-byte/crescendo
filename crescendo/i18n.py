@@ -138,7 +138,7 @@ _REVERSE = {
     "Load and Inspect": "新建 / Load and Inspect", "Apply Selected Cells  →": "Apply Selected Cells",
     "Clear": "Clear Cell Selection", "Select All": "Select All Cells", "Match Details…": "Details...",
     "Details…": "Details...", "▶  Start Optimization": "Start", "+ Add Objective": "Add Objective",
-    "+ Add Constraint": "Add Constraint", "Manage / Load Private Suites…": "管理 / 加载私有套件…",
+    "+ Add Constraint": "Add Constraint", "Manage / Load Working Copies…": "管理 / 加载私有套件…",
 }
 
 

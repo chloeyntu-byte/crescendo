@@ -105,7 +105,7 @@ def _source_resource(path, group, parts):
     info = os.lstat(directory)
     if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
             info.st_mode & 0o077 or os.path.realpath(directory) != directory):
-        raise ValueError('Runtime template cache is not private')
+        raise ValueError('Runtime template cache is not owner-only')
     destination = os.path.join(directory, parts[0])
     if os.path.lexists(destination):
         flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)

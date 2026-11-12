@@ -61,7 +61,7 @@ def _write_log(message):
     try:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-            raise ValueError("Launch log must be an owned private regular file")
+            raise ValueError("Launch log must be an owner-only regular file")
         # Bootstrap diagnostics are small garbage, never a simulation log.
         if info.st_size > 256 * 1024:
             os.ftruncate(descriptor, 0)

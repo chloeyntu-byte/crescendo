@@ -281,7 +281,7 @@ def patch_private_design_variables(workspace, assignments):
     setup_dir = os.path.realpath(setup_dir)
     root = os.path.realpath(root)
     if setup_dir != root and not setup_dir.startswith(root + os.sep):
-        raise FastWorkerError("worker setup escapes private workspace")
+        raise FastWorkerError("worker setup escapes working workspace")
     changes = []
     for current, _directories, files in os.walk(setup_dir):
         for name in files:
@@ -291,13 +291,13 @@ def patch_private_design_variables(workspace, assignments):
     missing = sorted(set(assignments) - changed_names)
     if missing:
         raise FastWorkerError(
-            "private Maestro setup does not define design variable(s): %s" % ", ".join(missing)
+            "Maestro working copy setup does not define design variable(s): %s" % ", ".join(missing)
         )
     return {"changes": changes, "design_variables": sorted(changed_names)}
 
 
 class ParametricWorker(object):
-    """One private OA workspace with fresh Maestro execution per candidate.
+    """One working OA workspace with fresh Maestro execution per candidate.
 
     ``oa_initializer`` owns the Cadence-specific one-time operation: occurrence cloning,
     symbolic CDF assignment, callbacks, and two-sentinel netlist validation. It must

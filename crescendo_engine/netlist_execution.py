@@ -1,4 +1,4 @@
-"""Execute either private netlist producer through one solver/submission chain.
+"""Execute either Template Netlist producer through one solver/submission chain.
 
 The optimizer still owns population, checkpoints, penalty policy and live rows.
 This module owns only simulator tasks and native scalar evaluation.  Command
@@ -210,7 +210,7 @@ def execution_policy(prepared, spec, config):
         if commands["submission_template"]:
             distribution = "command"
         if distribution not in ("local", "command", ""):
-            raise NetlistExecutionError("Private netlist execution supports Local or Command job distribution",
+            raise NetlistExecutionError("Template Netlist execution supports Local or Command job distribution",
                                         {"distribution": distribution})
         command = str(row.get("jobsubmitcommand") or "")
         argv = []
@@ -240,8 +240,8 @@ def execution_policy(prepared, spec, config):
             timeouts["fields"][field].update(applicable=False, effective_cli_seconds=None,
                 cli_status="not_applicable_no_reusable_icrp" if field == "linger_seconds" else "native_maestro_capture_only")
         timeouts["phase_mapping"] = {
-            "start": "native Maestro ICRP startup; private capture only",
-            "configure": "native Maestro ICRP configuration; private capture only",
+            "start": "native Maestro ICRP startup; working capture only",
+            "configure": "native Maestro ICRP configuration; working capture only",
             "pending": "CLI queue has no inherited Job Setup timeout",
             "run": "accumulated exact Scheduler RUNNING intervals; Local owned solver-start until terminal receipt",
             "linger": "source ICRP idle retention; CLI job exits immediately after its solver",
@@ -369,7 +369,7 @@ def _owned_file(path, root, label, must_exist=True):
         except OSError:
             raise NetlistExecutionError("%s is missing" % label, {"path": absolute})
         if not stat.S_ISREG(mode):
-            raise NetlistExecutionError("%s is not a private regular file" % label, {"path": absolute})
+            raise NetlistExecutionError("%s is not a owner-only regular file" % label, {"path": absolute})
     return absolute
 
 
@@ -765,11 +765,11 @@ def reconcile_previous_ownership(ownership_root, owned_run_root, request_cancel=
         return {"cleanup_proven": True, "active_task_count": 0, "retained": [], "path": path,
                 "reason": "no_previous_private_netlist_ownership"}
     if os.path.islink(path) or not os.path.isfile(path) or os.path.getsize(path) > 16 * 1024 * 1024:
-        raise NetlistExecutionError("Previous private netlist ownership record is unsafe")
+        raise NetlistExecutionError("Previous Template Netlist ownership record is unsafe")
     with open(path, "r", encoding="utf-8") as stream:
         previous = json.load(stream)
     if not isinstance(previous, dict) or previous.get("schema_version") != _contract_text("crescendo.private_netlist_ownership.v1"):
-        raise NetlistExecutionError("Previous private netlist ownership schema is invalid")
+        raise NetlistExecutionError("Previous Template Netlist ownership schema is invalid")
     if os.path.realpath(previous.get("owned_run_root") or "") != boundary:
         raise NetlistExecutionError("Previous ownership record identifies another run boundary")
     rows = dict(previous.get("active") or {})
@@ -778,7 +778,7 @@ def reconcile_previous_ownership(ownership_root, owned_run_root, request_cancel=
     for key, row in rows.items():
         files, token = row.get("files") or {}, row.get("token")
         if not isinstance(token, str) or not re.match(r"^[0-9a-f]{32}$", token):
-            raise NetlistExecutionError("Previous private netlist task token is invalid")
+            raise NetlistExecutionError("Previous Template Netlist task token is invalid")
         for name in ("terminal.receipt", "cancel", "owner_heartbeat"):
             value = files.get(name)
             if not isinstance(value, str) or not is_under(os.path.realpath(value), boundary):
@@ -884,7 +884,7 @@ class NetlistExecutionContext(object):
         self.ownership_root = os.path.realpath(os.path.abspath(ownership_root)) if ownership_root else None
         self.owned_run_root = os.path.realpath(os.path.abspath(owned_run_root)) if owned_run_root else None
         if self.ownership_root and not self.owned_run_root:
-            raise NetlistExecutionError("Private netlist ownership requires an explicit run boundary")
+            raise NetlistExecutionError("Template Netlist ownership requires an explicit run boundary")
         self.ownership_path = os.path.join(self.ownership_root, _contract_text("ownership.json")) if self.ownership_root else None
         self.owner_token = uuid.uuid4().hex
         self.heartbeat_stop = threading.Event()
@@ -892,10 +892,10 @@ class NetlistExecutionContext(object):
             list(self.spec.get("objectives") or []) + list(self.spec.get("constraints") or []))) or None
         for prior in prior_ownership_roots or []:
             if not isinstance(prior, dict) or not prior.get("ownership_root") or not prior.get("owned_run_root"):
-                raise NetlistExecutionError("Prior private netlist ownership boundary is incomplete")
+                raise NetlistExecutionError("Prior Template Netlist ownership boundary is incomplete")
             proof = reconcile_previous_ownership(prior["ownership_root"], prior["owned_run_root"])
             if not proof["cleanup_proven"]:
-                raise NetlistExecutionError("Previous private netlist jobs have unproven cleanup; duplicate submission is blocked",
+                raise NetlistExecutionError("Previous Template Netlist jobs have unproven cleanup; duplicate submission is blocked",
                                             dict(proof, termination_failed=True))
         self._recover_previous_ownership()
         self.task_pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.policy["max_jobs"])
@@ -919,7 +919,7 @@ class NetlistExecutionContext(object):
         proof = reconcile_previous_ownership(self.ownership_root, self.owned_run_root)
         if not proof["cleanup_proven"]:
             self.unsafe.set()
-            raise NetlistExecutionError("Previous private netlist jobs have unproven cleanup; retained evidence blocks duplicate submission", {
+            raise NetlistExecutionError("Previous Template Netlist jobs have unproven cleanup; retained evidence blocks duplicate submission", {
                 "termination_failed": True, "path": self.ownership_path,
                 "tasks": [row["identity"] for row in proof["retained"]], "proof": proof})
         self._persist_ownership_locked()
@@ -1409,7 +1409,7 @@ class NetlistExecutionContext(object):
                 with self.lock:
                     self.unresolved[active_key] = active
                     self._persist_ownership_locked()
-                raise NetlistExecutionError("Simulator cleanup is unproven; retained private files prevent unsafe reuse", {
+                raise NetlistExecutionError("Simulator cleanup is unproven; retained working files prevent unsafe reuse", {
                     "failure_stage": "termination",
                     "primary_failure": {"failure_stage": failure_stage,
                         "submission_returncode": submit_result.get("returncode"),

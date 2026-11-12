@@ -1,4 +1,4 @@
-"""UI-owned private Maestro/config views borrowed by every SCS producer.
+"""UI-owned Maestro working copy/config views borrowed by every SCS producer.
 
 Only this module's exact registry authorizes retention and final cleanup.
 The JSON reference is serializable; locks and native ownership stay in process.
@@ -39,20 +39,20 @@ _TOKEN = re.compile(r"^[a-f0-9]{32}$")
 
 def _load(path, max_bytes=4 * 1024 * 1024):
     if os.path.realpath(path) != os.path.abspath(path):
-        raise ValueError("Private setup identity traverses a symbolic link")
+        raise ValueError("Working-copy setup identity traverses a symbolic link")
     before = os.lstat(path)
     if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > max_bytes:
-        raise ValueError("Private setup identity is not a bounded regular file")
+        raise ValueError("Working-copy setup identity is not a bounded regular file")
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     with os.fdopen(descriptor, "r") as stream:
         if not os.path.samestat(before, os.fstat(stream.fileno())):
-            raise ValueError("Private setup identity changed while opening")
+            raise ValueError("Working-copy setup identity changed while opening")
         return json.load(stream)
 
 
 def _owner(reference):
     if not isinstance(reference, dict):
-        raise ValueError("Private setup session reference is not an object")
+        raise ValueError("Working-copy setup session reference is not an object")
     token = reference.get("session_id") if isinstance(reference, dict) else None
     root = reference.get("root") if isinstance(reference, dict) else None
     if (reference.get("schema_version") != SCHEMA or not isinstance(token, str)
@@ -60,13 +60,13 @@ def _owner(reference):
             or not os.path.isabs(root) or os.path.basename(root) != token
             or os.path.basename(os.path.dirname(root)) != "setup_private_sessions"
             or os.path.realpath(root) != root):
-        raise ValueError("Private setup session reference is invalid")
+        raise ValueError("Working-copy setup session reference is invalid")
     owner = _load(os.path.join(root, OWNER))
     keys = ("schema_version", "session_id", "root", "workspace_root", "owner_uid")
     if (any(reference.get(key) != owner.get(key) for key in keys)
             or owner.get("workspace_root") != os.path.join(root, "workspace")
             or owner.get("owner_uid") != os.getuid()):
-        raise ValueError("Private setup session owner differs from its durable registry")
+        raise ValueError("Working-copy setup session owner differs from its durable registry")
     return owner
 
 
@@ -111,7 +111,7 @@ def _controller(reference):
     with _REGISTRY_LOCK:
         controller = _SESSIONS.get(owner["session_id"])
     if controller is None or controller.owner != owner or controller.closed:
-        raise ValueError(_contract_text("Private setup session is no longer owned by this Crescendo window; Load and Inspect again"))
+        raise ValueError(_contract_text("Working-copy setup session is no longer owned by this Crescendo window; Load and Inspect again"))
     return controller
 
 
@@ -131,9 +131,9 @@ def write_session_reference(root, reference, kind=None):
         raise RuntimeError(_contract_text("CRESCENDO-SUITE-RECOVERY: Suite is isolated"))
     root = os.path.abspath(root)
     if os.path.realpath(root) != root or not os.path.isdir(root):
-        raise ValueError("Private setup capture root is unsafe")
+        raise ValueError("Working-copy setup capture root is unsafe")
     if kind not in (None, "native_baseline"):
-        raise ValueError("Unknown private session capture kind")
+        raise ValueError("Unknown working-copy session capture kind")
     record = dict(controller.owner, capture_root=root)
     if kind is not None:
         record["capture_kind"] = kind
@@ -151,12 +151,12 @@ def _reconcile_owned_capture(root, request_cancel, timeout_seconds=12):
     kind = reference.get("capture_kind")
     state = _load(os.path.join(owner["root"], _contract_text("session_state.json")), max_bytes=128 * 1024 * 1024)
     if (state.get("capture_kinds") or {}).get(root) != kind:
-        raise ValueError("Private session capture kind does not match durable registry")
+        raise ValueError("Working-copy session capture kind does not match durable registry")
     if kind == "native_baseline":
         from .native_baseline import reconcile_native_baseline
         return reconcile_native_baseline(root, request_cancel=request_cancel, timeout_seconds=timeout_seconds)
     if kind is not None:
-        raise ValueError("Unknown private session capture kind")
+        raise ValueError("Unknown working-copy session capture kind")
     from .private_netlist import reconcile_preparation
     return reconcile_preparation(root, request_cancel=request_cancel, timeout_seconds=timeout_seconds)
 
@@ -169,12 +169,12 @@ def preparation_session_reference(root):
     reference = _load(path)
     owner = _owner(reference)
     if reference.get("capture_root") != os.path.abspath(root):
-        raise ValueError("Private setup capture reference belongs to another preparation")
+        raise ValueError("Working-copy setup capture reference belongs to another preparation")
     # The owner's append-only list binds this otherwise arbitrary capture path.
     state = _load(os.path.join(owner["root"], _contract_text("session_state.json")), max_bytes=128 * 1024 * 1024)
     if (state.get("session_id") != owner["session_id"]
             or os.path.abspath(root) not in state.get("capture_roots", [])):
-        raise ValueError("Private setup capture is absent from its session registry")
+        raise ValueError("Working-copy setup capture is absent from its session registry")
     return owner
 
 
@@ -220,11 +220,11 @@ def _acquire_lease(root):
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
-            raise ValueError("Private suite lease identity is invalid")
+            raise ValueError("Working copy lease identity is invalid")
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            raise RuntimeError(_contract_text("CRESCENDO-SUITE-LEASE: Private suite is in use by another process"))
+            raise RuntimeError(_contract_text("CRESCENDO-SUITE-LEASE: Working copy is in use by another process"))
         return fd
     except BaseException:
         os.close(fd)
@@ -306,17 +306,17 @@ def _read_suite(reference, deep=True, require_snapshot=True, allow_missing=False
                    or workspace.get("same_library_registry") not in (old, new))) or
                 (registry is not None and (registry.get("token") != candidate.get("same_library_token")
                    or registry.get("views") not in (old, new)))):
-            raise ValueError("Private suite exact view registry differs from workspace")
+            raise ValueError("Working copy exact view registry differs from workspace")
         from .same_library_views import owns_view
         if not all(owns_view(candidate, row.get("target") or [], role=row.get("role")) for row in new):
-            raise ValueError("Private suite registry intent ownership is invalid")
+            raise ValueError("Working copy registry intent ownership is invalid")
         # Existing workspace may contain later valid fields; only reconcile registry.
         workspace = dict(workspace or candidate, same_library_registry=new)
         registry = {"schema_version": _contract_text("crescendo.same_library_views.v1"), "token": candidate["same_library_token"], "views": new}
     if state.get("session_id") != owner["session_id"] or workspace.get("root") != owner["workspace_root"]:
-        raise ValueError("Private suite workspace identity differs from registry")
+        raise ValueError("Working copy workspace identity differs from registry")
     if workspace.get("setup_private_session") != owner:
-        raise ValueError("Private suite workspace owner differs from registry")
+        raise ValueError("Working copy workspace owner differs from registry")
     if deep:
         pending_stages = _pending_creation_stages(owner, workspace)
         if pending_stages:
@@ -325,19 +325,19 @@ def _read_suite(reference, deep=True, require_snapshot=True, allow_missing=False
         _inventory(_deletion_access_workspace(workspace) if allow_missing else workspace)
         for row in workspace.get("same_library_registry") or []:
             if not os.path.isdir(row["path"]) and not (allow_missing and not os.path.lexists(row["path"])):
-                raise ValueError("Private suite registered view is missing: " + row["path"])
+                raise ValueError("Working copy registered view is missing: " + row["path"])
     snapshot_hash = state.get("prepared_hash")
     if snapshot_hash:
         if not re.fullmatch(r"[a-f0-9]{64}", snapshot_hash):
-            raise ValueError(_contract_text("CRESCENDO-SUITE-SNAPSHOT: Private suite snapshot identity is invalid"))
+            raise ValueError(_contract_text("CRESCENDO-SUITE-SNAPSHOT: Working copy snapshot identity is invalid"))
         if require_snapshot:
             path = os.path.join(owner["root"], "prepared-" + snapshot_hash + ".json")
             try:
                 snapshot = _load(path, max_bytes=128 * 1024 * 1024)
             except (OSError, ValueError) as error:
-                raise ValueError(_contract_text("CRESCENDO-SUITE-SNAPSHOT: Private suite snapshot unavailable or invalid: ") + str(error))
+                raise ValueError(_contract_text("CRESCENDO-SUITE-SNAPSHOT: Working copy snapshot unavailable or invalid: ") + str(error))
             if _snapshot_hash(snapshot) != snapshot_hash:
-                raise ValueError(_contract_text("CRESCENDO-SUITE-SNAPSHOT: Private suite snapshot changed"))
+                raise ValueError(_contract_text("CRESCENDO-SUITE-SNAPSHOT: Working copy snapshot changed"))
             state["prepared"] = snapshot
     if require_snapshot and not isinstance(state.get("prepared"), dict):
         raise ValueError(_contract_text("CRESCENDO-SUITE-SNAPSHOT: Legacy suite has no persisted inspected snapshot; cannot safely reopen"))
@@ -355,7 +355,7 @@ def _suite_bases(config):
         if base not in bases:
             bases.append(base)
     if not bases:
-        raise ValueError("Private suite storage root is not configured")
+        raise ValueError("Working copy storage root is not configured")
     return bases
 
 
@@ -460,20 +460,20 @@ def reopen_setup_private_session(reference, config, for_delete=False):
     try:
         owner, state, workspace = _read_suite(owner, require_snapshot=not for_delete, allow_missing=for_delete)
         if state.get("refresh_pending") or (not for_delete and (state.get("unsafe") or state.get("status") not in ("ready", "released", "closed"))) or state.get("status") == "deleted":
-            raise ValueError("Private suite has unresolved native activity or incomplete setup")
+            raise ValueError("Working copy has unresolved native activity or incomplete setup")
         from .legacy_guardian import quiesce_legacy_guardian_attempt
         for root in state.get("capture_roots") or []:
             if (not os.path.isdir(root) and (state.get("capture_kinds") or {}).get(root) == "native_baseline"
                     and (state.get("capture_proofs") or {}).get(root, {}).get("cleanup_proven") is not True):
-                raise ValueError("Private suite native baseline evidence directory is missing")
+                raise ValueError("Working copy native reference evidence directory is missing")
             if os.path.isdir(root) and not _reconcile_owned_capture(root, request_cancel=False).get("cleanup_proven"):
-                raise ValueError("Private suite prior native activity is not proven stopped")
+                raise ValueError("Working copy prior native activity is not proven stopped")
         for control in state.get("operations") or []:
             if os.path.lexists(os.path.join(control, _contract_text("legacy_guardian_launch.json"))):
                 proof = quiesce_legacy_guardian_attempt(control, expected_workspace_root=owner["workspace_root"],
                                                         timeout_seconds=0, terminate_owned=False)
                 if proof.get("state") != "dead":
-                    raise ValueError("Private suite prior native activity is not proven stopped")
+                    raise ValueError("Working copy prior native activity is not proven stopped")
         # Under the exclusive lease, reconcile an interrupted metadata/registry mirror.
         mirror_state = dict(state)
         mirror_state.pop("prepared", None)
@@ -533,7 +533,7 @@ def update_setup_private_session_snapshot(reference, prepared):
         original = verify_setup_baseline(controller.prepared["setup"])
         current = verify_setup_baseline(prepared["setup"])
         if not original or not current or original["fingerprint"] != current["fingerprint"]:
-            raise ValueError("Cannot replace a suite's frozen baseline")
+            raise ValueError("Cannot replace a suite's frozen reference")
         controller.prepared = copy.deepcopy(prepared)
         controller.prepared.pop("setup_private_session", None)
         controller.persist()
@@ -608,7 +608,7 @@ class _PrivateSession(object):
         token = uuid.uuid4().hex
         base = ensure_dir(_suite_bases(config)[0])
         if os.path.realpath(base) != base:
-            raise ValueError("Private setup session directory is linked")
+            raise ValueError("Working-copy setup session directory is linked")
         root = os.path.join(base, token)
         os.mkdir(root, 0o700)
         self.owner = {"schema_version": SCHEMA, "session_id": token, "id": token, "token": token,
@@ -765,14 +765,14 @@ class _PrivateSession(object):
             if row["role"] == "maestro" or not os.path.exists(row["path"]):
                 continue
             if not owns_view(self.workspace, row["target"], role=row["role"], require_marker=True):
-                raise ValueError("Private config/schematic ownership changed")
+                raise ValueError("Config/schematic working-copy ownership changed")
             result[row["path"]] = tree_content_fingerprint(row["path"])["fingerprint"]
         return result
 
     def _lock(self, cancel_check=None, allow_failed=False):
         while not self.lock.acquire(timeout=0.05):
             if cancel_check and cancel_check():
-                raise RuntimeError("Private setup operation cancelled while waiting")
+                raise RuntimeError("Working-copy setup operation cancelled while waiting")
         try:
             isolated = bool(_quarantine(self.owner))
         except BaseException:
@@ -781,7 +781,7 @@ class _PrivateSession(object):
         if (isolated or self.closed or self.unsafe or (not allow_failed and self.status != "ready")
                 or (cancel_check and cancel_check())):
             self.lock.release()
-            raise RuntimeError("Private setup session is closed, unsafe, or cancelled")
+            raise RuntimeError("Working-copy setup session is closed, unsafe, or cancelled")
 
     def _native_bind(self, parameters, config, cancel_check):
         from .cadence import child_environment, run_command
@@ -811,14 +811,14 @@ class _PrivateSession(object):
         from .single_test import native_selection, native_selection_lines
         selected_plan = native_selection(workspace['setup'])
         body = _workspace_startup_load_lines(workspace) + aliases + [
-            _contract_text('unless(errset(load("%s") t) error("Crescendo Setup private config creation failed\\n"))') % _skill_quote(patch),
-            _contract_text('unless(crescSchematicPatchResult error("Crescendo Setup private binding incomplete\\n"))'),
+            _contract_text('unless(errset(load("%s") t) error("Crescendo Working-copy setup config creation failed\\n"))') % _skill_quote(patch),
+            _contract_text('unless(crescSchematicPatchResult error("Crescendo Working-copy setup binding incomplete\\n"))'),
             'session=maeOpenSetup("%s" "%s" "%s" ?mode "a")' % tuple(
                 _skill_quote(workspace[key]) for key in ("primary_library", "setup_cell", "setup_view")),
-            _contract_text('unless(session error("Crescendo Setup private Maestro could not open\\n"))'),
+            _contract_text('unless(session error("Crescendo Working-copy setup Maestro could not open\\n"))'),
             'mainSDB=axlGetMainSetupDB(session)'] + policies + workspace_test_design_lines(workspace) + native_selection_lines(selected_plan) + metadata_lines + storage_lines + [
-            _contract_text('unless(maeSaveSetup(?session session) error("Crescendo Setup private Maestro save rejected\\n"))'),
-            _contract_text('unless(maeCloseSession(?session session ?forceClose t) error("Crescendo Setup private Maestro close rejected\\n"))'),
+            _contract_text('unless(maeSaveSetup(?session session) error("Crescendo Working-copy setup Maestro save rejected\\n"))'),
+            _contract_text('unless(maeCloseSession(?session session ?forceClose t) error("Crescendo Working-copy setup Maestro close rejected\\n"))'),
             _contract_text('printf("CRESCENDO_SETUP_PRIVATE_BINDING_DONE\\n")')]
         script, ready = os.path.join(control, "setup.il"), os.path.join(control, "ready")
         body.insert(0, _contract_text('crescReady=outfile("%s") when(crescReady close(crescReady))') % _skill_quote(ready))
@@ -837,17 +837,17 @@ class _PrivateSession(object):
         if (command.get("returncode") != 0 or command.get("timed_out") or command.get("cancelled")
                 or command.get("termination_failed") or command.get("guardian_cleanup", {}).get("state") != "dead"):
             self.unsafe = command.get("guardian_cleanup", {}).get("state") != "dead"
-            raise RuntimeError("Private Setup binding failed; inspect " + os.path.join(control, "ocean.stdout"))
+            raise RuntimeError("Working-copy setup binding failed; inspect " + os.path.join(control, "ocean.stdout"))
         if selected_plan:
             workspace["_native_execution_selection_applied"] = selected_plan
         verification = validate_schematic_application(plan)
         if verification.get("ok") is not True:
-            raise RuntimeError("Private Setup config or schematic readback did not qualify")
+            raise RuntimeError("Working-copy setup config or schematic readback did not qualify")
         self.metadata_warnings = []
         load_native_storage_readback(workspace, required=False)
         storage = workspace.get("native_storage") or {}
         if storage.get("readback_error"):
-            self.metadata_warnings.append("Native private save path readback unavailable: " + storage["readback_error"])
+            self.metadata_warnings.append("Native working-copy save path readback unavailable: " + storage["readback_error"])
         try:
             schedule = parse_native_corner_schedule(corner_metadata)
             from .ade_setup import apply_native_corner_schedule
@@ -874,11 +874,11 @@ class _PrivateSession(object):
         self._recover_restore_files()
         record = workspace.get("setup_owned_view") or {}
         if not owns_view(workspace, record.get("target") or [], role="maestro", require_marker=True):
-            raise ValueError("Private Maestro restore ownership is unproven")
+            raise ValueError("Maestro working copy restore ownership is unproven")
         path = record["path"]
         for directory, directories, names in os.walk(path):
             if os.path.islink(directory) or any(os.path.islink(os.path.join(directory, name)) for name in directories + names):
-                raise ValueError("Private Maestro restore encountered a symbolic link")
+                raise ValueError("Maestro working copy restore encountered a symbolic link")
             locks = [{"path": os.path.join(directory, name), "view_path": path}
                      for name in directories + names if ".cdslck" in name]
             if locks:
@@ -888,7 +888,7 @@ class _PrivateSession(object):
         stage, old = path + "__restore_" + nonce, path + "__previous_" + nonce
         pending = {"nonce": nonce, "live": path, "stage": stage, "previous": old}
         if os.path.lexists(stage) or os.path.lexists(old):
-            raise ValueError("Private Maestro restore destination already exists")
+            raise ValueError("Maestro working copy restore destination already exists")
         self.restore_pending.append(pending)
         self.persist()
         def ignore(directory, names):
@@ -921,7 +921,7 @@ class _PrivateSession(object):
         if _files(path) != staged_files or not owns_view(workspace, record["target"], role="maestro", require_marker=True):
             self.unsafe = True
             self.persist()
-            raise ValueError("Restored private Maestro verification failed; previous copy retained")
+            raise ValueError("Restored Maestro working copy verification failed; previous copy retained")
         shutil.rmtree(old)
         self.restore_pending.remove(pending)
         workspace["setup"] = copy.deepcopy(prepared["setup"])
@@ -948,23 +948,23 @@ class _PrivateSession(object):
             if (not isinstance(nonce, str) or not _TOKEN.fullmatch(nonce)
                     or row.get("live") != live or row.get("stage") != live + "__restore_" + nonce
                     or row.get("previous") != live + "__previous_" + nonce):
-                raise ValueError("Private Maestro restore registry is ambiguous")
+                raise ValueError("Maestro working copy restore registry is ambiguous")
             for path in (row["stage"], row["previous"]):
                 if not os.path.lexists(path):
                     continue
                 if os.path.realpath(path) != path or not os.path.isdir(path):
-                    raise ValueError("Private Maestro restore copy escaped its reserved directory")
+                    raise ValueError("Maestro working copy restore copy escaped its reserved directory")
                 marker = _load(os.path.join(path, MARKER))
                 if marker.get("token") != record.get("token") or marker.get("target") != record.get("target"):
-                    raise ValueError("Private Maestro restore copy ownership changed")
+                    raise ValueError("Maestro working copy restore copy ownership changed")
                 for directory, directories, names in os.walk(path):
                     if (os.path.islink(directory) or any(os.path.islink(os.path.join(directory, name))
                             for name in directories + names) or any(".cdslck" in name for name in names)):
-                        raise ValueError("Private Maestro restore copy contains a live lock or link")
+                        raise ValueError("Maestro working copy restore copy contains a live lock or link")
             if not os.path.lexists(live) and os.path.isdir(row["previous"]):
                 os.rename(row["previous"], live)
             if not owns_view(workspace, record.get("target") or [], role="maestro", require_marker=True):
-                raise ValueError("Private Maestro live view is not recoverable; restore copies retained")
+                raise ValueError("Maestro working copy live view is not recoverable; restore copies retained")
             for path in (row["stage"], row["previous"]):
                 if os.path.isdir(path):
                     shutil.rmtree(path)
@@ -997,7 +997,7 @@ def create_setup_private_session(prepared, config, cancel_check=None, label=None
             controller.owner["workspace_root"], expected_source_identity=prepared.get("source_identity"),
             parameters=_design_descriptors(prepared))
         if controller.workspace.get("copy_policy") != "same_library_views":
-            raise ValueError("Setup private sessions require the same-library-view adapter")
+            raise ValueError("Working-copy setup sessions require the same-library-view adapter")
         controller.workspace["setup_private_session"] = copy.deepcopy(controller.owner)
         with controller.writable_views():
             from .single_test import project_native_files
@@ -1025,7 +1025,7 @@ def _require_matching_test(controller, prepared):
     if (not isinstance(owner_name, str) or not owner_name or request_name != owner_name
             or len(owner_rows) != 1 or owner_rows[0].get("name") != owner_name
             or len(request_rows) != 1 or request_rows[0].get("name") != request_name):
-        raise ValueError("Private setup session belongs to a different or unqualified Test; Load and Inspect again")
+        raise ValueError("Working-copy setup session belongs to a different or unqualified Test; Load and Inspect again")
 
 
 def apply_setup_private_cells(reference, prepared, config, cancel_check=None):
@@ -1104,16 +1104,16 @@ def borrow_setup_private_session(prepared, config, root, cancel_check=None,
         expected = verify_setup_baseline(controller.prepared["setup"])
         actual = verify_setup_baseline(prepared["setup"])
         if not expected or not actual or expected["fingerprint"] != actual["fingerprint"]:
-            raise ValueError("Private setup session belongs to another saved Maestro baseline")
+            raise ValueError("Working-copy setup session belongs to another saved Maestro reference")
         from .workspace import verify_sources_unchanged, source_change_summary, compact_source_guard
         source_proof = verify_sources_unchanged(controller.workspace)
         if not source_proof.get("ok"):
-            error = ValueError(source_change_summary(source_proof) + "; Load and Inspect to refresh the source baseline")
+            error = ValueError(source_change_summary(source_proof) + "; Load and Inspect to refresh the source reference")
             error.detail = {"failure_stage": "source_freshness", "execution_started": False,
                 "native_run_invoked": False, "source_guard": compact_source_guard(source_proof)}
             raise error
         if controller.view_identity() != controller.view_fingerprints:
-            raise ValueError("Private schematic/config changed after native readback; Apply Selected Cells again")
+            raise ValueError("Schematic/config working copy changed after native readback; Apply Selected Cells again")
         with controller.writable_views():
             body_error = None
             try:
@@ -1131,7 +1131,7 @@ def borrow_setup_private_session(prepared, config, root, cancel_check=None,
                     if completion_reconciler is not None:
                         proof = completion_reconciler(root, request_cancel=True, timeout_seconds=12)
                         if not isinstance(proof, dict) or proof.get("cleanup_proven") is not True:
-                            error = RuntimeError("Private Maestro native stop is unproven; suite retained")
+                            error = RuntimeError("Maestro working copy native stop is unproven; suite retained")
                             error.detail = {"cleanup_proof": proof}
                             raise error
                         if controller.capture_kinds.get(os.path.abspath(root)) == "native_baseline":
@@ -1171,7 +1171,7 @@ def close_setup_private_session(reference, timeout_seconds=12):
     if controller is None or controller.owner != owner:
         if owner["session_id"] in _CLOSED:
             return {"cleanup_proven": True, "state": "released", "session_id": owner["session_id"], "removed": [], "warnings": []}
-        raise ValueError(_contract_text("Private setup session is not owned by this Crescendo process"))
+        raise ValueError(_contract_text("Working-copy setup session is not owned by this Crescendo process"))
     if controller.closed:
         return {"cleanup_proven": True, "state": "closed", "session_id": owner["session_id"], "removed": []}
     deadline = time.monotonic() + max(0.0, float(timeout_seconds))
@@ -1202,7 +1202,7 @@ def close_setup_private_session(reference, timeout_seconds=12):
                 restore_private_views(controller.workspace)
                 controller.private_views_read_only = False
             except Exception as error:
-                warnings.append("Private view permissions could not be restored: " + str(error))
+                warnings.append("Working-copy view permissions could not be restored: " + str(error))
         controller.closed = True
         if controller.status == "ready":
             controller.status = "released"
@@ -1302,7 +1302,7 @@ def refresh_setup_private_session(reference, prepared, config, cancel_check=None
                 old_lines = "\n".join(native_storage_init_lines(prior_storage))
                 new_lines = "\n".join(native_storage_init_lines(new_storage))
                 if not old_lines or old_init.count(old_lines) != 1:
-                    raise ValueError("Private workspace storage initialization cannot be updated safely")
+                    raise ValueError("Working-copy workspace storage initialization cannot be updated safely")
                 atomic_write_text(init_path, old_init.replace(old_lines, new_lines, 1))
                 controller.workspace["native_storage"] = new_storage
                 if expected_identity:
@@ -1491,9 +1491,9 @@ def recover_setup_private_session(reference, config):
             if not os.path.isdir(root):
                 if ((state.get("capture_kinds") or {}).get(root) == "native_baseline" and
                         (state.get("capture_proofs") or {}).get(root, {}).get("cleanup_proven") is not True):
-                    raise ValueError("Private suite native baseline evidence directory is missing")
+                    raise ValueError("Working copy native reference evidence directory is missing")
             elif not _reconcile_owned_capture(root, request_cancel=False).get("cleanup_proven"):
-                raise ValueError("Private suite prior native activity is not proven stopped")
+                raise ValueError("Working copy prior native activity is not proven stopped")
         from .legacy_guardian import quiesce_legacy_guardian_attempt
         for control in state.get("operations") or []:
             if state.get("unsafe") and not os.path.lexists(os.path.join(control, _contract_text("legacy_guardian_launch.json"))):
@@ -1502,7 +1502,7 @@ def recover_setup_private_session(reference, config):
                 proof = quiesce_legacy_guardian_attempt(control, expected_workspace_root=owner["workspace_root"],
                                                         timeout_seconds=0, terminate_owned=False)
                 if proof.get("state") != "dead":
-                    raise ValueError("Private suite prior native activity is not proven stopped")
+                    raise ValueError("Working copy prior native activity is not proven stopped")
         # Partial compatibility removals may already lack their marker. Native
         # stop proof above plus exact move receipts authorize only those trees.
         for member in workspace.get("same_library_registry") or []:

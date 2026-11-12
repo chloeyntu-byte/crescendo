@@ -360,7 +360,7 @@ def selected_setup_config(origin_config, current_config, locator):
 
     The invoking toolchain remains authoritative. A loaded native map is useful
     only when it contains the selected library; another workspace gets its own
-    cds.lib and immutable private mapping, rather than the invoking namespace.
+    cds.lib and immutable working mapping, rather than the invoking namespace.
     """
     from .cadence import nearest_cds_lib
     from .config import DEFAULTS, PDK_KEYS, deep_merge

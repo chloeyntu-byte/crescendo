@@ -234,7 +234,7 @@ def prepare_snapshot_batch(worker, candidates, batch_root, identity):
             if top not in top_map:
                 target = (private_library_name(source_workspace, top[0]), _name(worker.epoch, identity["sequence"], slot, top), top[2])
                 if top[0] not in source_workspace["copied_libraries"]:
-                    raise MaestroBatchUnsupported("selected top is not in private workspace")
+                    raise MaestroBatchUnsupported("selected top is not in working workspace")
                 top_map[top] = target
                 roots.append({"source": top, "target": target})
                 lines.extend(_copy_view_lines(private_design_identity(source_workspace, top), target))
@@ -372,7 +372,7 @@ def _prepare_same_library_snapshot_batch(worker, candidates, batch_root, identit
         for design in sorted(selected_designs):
             config = config_designs.get(design)
             if not config:
-                raise MaestroBatchUnsupported("selected design lacks private config")
+                raise MaestroBatchUnsupported("selected design lacks working config")
             source_config = private_design_identity(source_workspace, design)
             if source_workspace.get("same_library_objects"):
                 owned_config = register_view(source_workspace, source_config,

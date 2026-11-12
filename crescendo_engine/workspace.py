@@ -418,13 +418,13 @@ def workspace_test_design_lines(workspace, read_only=False):
             continue
         binding_lines = [
             _contract_text('crescPrivateTest = axlGetTest(mainSDB "%s")') % _skill_quote(test["name"]),
-            _contract_text('unless(crescPrivateTest error("Crescendo cannot find test for private design binding\\n"))'),
+            _contract_text('unless(crescPrivateTest error("Crescendo cannot find test for working design binding\\n"))'),
             _contract_text('crescPrivateArgs = axlGetTestToolArgs(crescPrivateTest)'),
             _contract_text('unless(crescPrivateArgs error("Crescendo cannot obtain source test design arguments\\n"))'),
             _contract_text('crescPrivateArgs = append(list(list("lib" "%s") list("cell" "%s") list("view" "%s")) setof(item crescPrivateArgs !member(car(item) list("lib" "cell" "view"))))') % tuple(_skill_quote(v) for v in target),
-            _contract_text('unless(axlSetTestToolArgs(crescPrivateTest crescPrivateArgs) error("Crescendo cannot bind private test design\\n"))'),
+            _contract_text('unless(axlSetTestToolArgs(crescPrivateTest crescPrivateArgs) error("Crescendo cannot bind working test design\\n"))'),
             _contract_text('crescPrivateReadback = axlGetTestToolArgs(crescPrivateTest)'),
-            _contract_text('unless(equal(cadr(assoc("lib" crescPrivateReadback)) "%s") && equal(cadr(assoc("cell" crescPrivateReadback)) "%s") && equal(cadr(assoc("view" crescPrivateReadback)) "%s") error("Crescendo private test design readback mismatch\\n"))') % tuple(_skill_quote(v) for v in target),
+            _contract_text('unless(equal(cadr(assoc("lib" crescPrivateReadback)) "%s") && equal(cadr(assoc("cell" crescPrivateReadback)) "%s") && equal(cadr(assoc("view" crescPrivateReadback)) "%s") error("Crescendo working test design readback mismatch\\n"))') % tuple(_skill_quote(v) for v in target),
         ]
         if read_only:
             binding_lines = [line for line in binding_lines if not (
@@ -455,32 +455,32 @@ def _assert_private_tree_has_no_symlinks(root):
             check_command_cancellation()
             path = os.path.join(current, name)
             if os.path.islink(path):
-                raise ValueError("private workspace still contains a symbolic link: %s" % path)
+                raise ValueError("working workspace still contains a symbolic link: %s" % path)
 
 
 def _make_private_tree_owner_writable(root):
     root = os.path.abspath(root)
     if os.path.islink(root):
-        raise ValueError("private workspace tree is a symbolic link: %s" % root)
+        raise ValueError("working workspace tree is a symbolic link: %s" % root)
     for current, directories, files in os.walk(root, topdown=True, followlinks=False):
         check_command_cancellation()
         current_stat = os.lstat(current)
         if not stat.S_ISDIR(current_stat.st_mode):
-            raise ValueError("private workspace tree contains a non-directory: %s" % current)
+            raise ValueError("working workspace tree contains a non-directory: %s" % current)
         os.chmod(current, stat.S_IMODE(current_stat.st_mode) | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
         for name in directories:
             check_command_cancellation()
             path = os.path.join(current, name)
             path_stat = os.lstat(path)
             if not stat.S_ISDIR(path_stat.st_mode) or stat.S_ISLNK(path_stat.st_mode):
-                raise ValueError("private workspace tree contains an unsupported directory: %s" % path)
+                raise ValueError("working workspace tree contains an unsupported directory: %s" % path)
             os.chmod(path, stat.S_IMODE(path_stat.st_mode) | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
         for name in files:
             check_command_cancellation()
             path = os.path.join(current, name)
             path_stat = os.lstat(path)
             if not stat.S_ISREG(path_stat.st_mode) or stat.S_ISLNK(path_stat.st_mode):
-                raise ValueError("private workspace tree contains an unsupported file: %s" % path)
+                raise ValueError("working workspace tree contains an unsupported file: %s" % path)
             os.chmod(path, stat.S_IMODE(path_stat.st_mode) | stat.S_IRUSR | stat.S_IWUSR)
 
 
@@ -854,7 +854,7 @@ def _materialize_startup_extensions(setup, hierarchy, config, workspace_root):
         )
         shutil.copy2(source, destination)
         if _sha256_file(destination) != digest:
-            raise ValueError("private startup extension copy failed content verification: %s" % source)
+            raise ValueError("working startup extension copy failed content verification: %s" % source)
         records.append({
             "source": source,
             "private_copy": destination,
@@ -1090,7 +1090,7 @@ def _cleanup_partial_workspace(root, run_root, sources, snapshots):
             is_under(root, private_root)
             and os.path.realpath(root) != os.path.realpath(private_root)
             for private_root in private_roots):
-        result["cleanup_error"] = "partial workspace is not strictly under a private run directory"
+        result["cleanup_error"] = "partial workspace is not strictly under a working run directory"
         return result
     if set(sources) != set(snapshots):
         result["cleanup_error"] = "source snapshots are incomplete"
@@ -1307,7 +1307,7 @@ def build_workspace(setup, hierarchy, config=None, root=None, expected_source_id
             setup, hierarchy, copies, scopes=copy_scopes,
         )
         if copied_source_identity.get("fingerprint") != materialized_source_identity.get("fingerprint"):
-            raise ValueError("private workspace source copy identity does not match its source")
+            raise ValueError("working workspace source copy identity does not match its source")
         post_copy_snapshots = dict(
             (library, tree_content_fingerprint(source, fingerprint_scopes.get(library)))
             for library, source in sorted(sources.items())
@@ -1318,7 +1318,7 @@ def build_workspace(setup, hierarchy, config=None, root=None, expected_source_id
         ]
         if changed_sources:
             raise ValueError(
-                "source libraries changed during private workspace copy: %s"
+                "source libraries changed during working workspace copy: %s"
                 % ", ".join(changed_sources)
             )
         copy_identity_seconds = time.monotonic() - copy_identity_started
@@ -1422,7 +1422,7 @@ def build_workspace(setup, hierarchy, config=None, root=None, expected_source_id
         if setup.get("baseline"):
             from .setup_baseline import effective_setup_dir
             if not is_under(workspace["setup_dir"], root) or workspace["setup_dir"] == root:
-                raise ValueError("private baseline setup copy escaped its owned workspace")
+                raise ValueError("working reference setup copy escaped its owned workspace")
             if os.path.isdir(workspace["setup_dir"]):
                 shutil.rmtree(workspace["setup_dir"])
             shutil.copytree(effective_setup_dir(setup), workspace["setup_dir"], copy_function=_copy_private_file)
@@ -1657,7 +1657,7 @@ def source_change_summary(proof):
         reasons.append("additional changed libraries recorded in source guard evidence")
     baseline = proof.get("setup_baseline") or {}
     if baseline.get("ok") is False:
-        reasons.append("frozen Maestro baseline changed: %s" % str(baseline.get("error") or "unavailable")[:240])
+        reasons.append("frozen Maestro reference changed: %s" % str(baseline.get("error") or "unavailable")[:240])
     return "; ".join(reasons)[:2200] or "source dependency identity could not be verified (changed scope unavailable)"
 
 
@@ -1746,7 +1746,7 @@ def _workspace_startup_load_lines(workspace):
         '  load("%s")' % _skill_quote(init_path),
         ")",
         _contract_text("unless(boundp('crescWorkspaceStartupLoaded) && crescWorkspaceStartupLoaded "
-        'error("Crescendo private workspace startup did not complete\\n"))'),
+        'error("Crescendo working workspace startup did not complete\\n"))'),
     ]
 
 
@@ -1906,9 +1906,9 @@ def build_occurrence_clone_plan(workspace, parameters, values, clone_state="abse
             clone_names[clone_identity] = occurrence_key
             clone_exists = os.path.exists(os.path.join(copied[library], clone_cell))
             if clone_state == "absent" and clone_exists:
-                raise ParameterApplicationFailure("clone cell already exists in private workspace: %s/%s" % clone_identity)
+                raise ParameterApplicationFailure("clone cell already exists in working workspace: %s/%s" % clone_identity)
             if clone_state == "existing" and not clone_exists:
-                raise ParameterApplicationFailure("expected clone cell is missing from private workspace: %s/%s" % clone_identity)
+                raise ParameterApplicationFailure("expected clone cell is missing from working workspace: %s/%s" % clone_identity)
             clone_by_occurrence[occurrence_key] = {
                 "design_library": parameter.get("design_library"),
                 "design_cell": parameter.get("design_cell"),
@@ -2032,7 +2032,7 @@ def _schematic_parameter_rows(workspace, parameters, values, target_mode="patche
         else:
             clone = clone_lookup.get(_design_key(parameter) + (owner_occurrence_path,))
             if not clone:
-                raise ParameterApplicationFailure("no private clone exists for owner occurrence %s" % owner_occurrence_path)
+                raise ParameterApplicationFailure("no working clone exists for owner occurrence %s" % owner_occurrence_path)
             target_library = clone["clone_library"]
             target_cell = clone["clone_cell"]
         instance_name = (parameter.get("hierarchy_path") or "").rstrip("/").split("/")[-1]
@@ -2660,13 +2660,13 @@ def merge_parameter_verification(application, baseline, post):
         after = post_by_id.get(parameter_id)
         if not before or not after:
             raise ParameterApplicationFailure(
-                "baseline/post verification is incomplete for %s" % row["parameter_id"]
+                "reference/post verification is incomplete for %s" % row["parameter_id"]
             )
         before_aliases = sorted(set(before.get("effective_aliases") or []))
         after_aliases = sorted(set(after.get("effective_aliases") or []))
         if before_aliases != after_aliases:
             raise ParameterApplicationFailure(
-                "baseline/post Spectre propMapping changed for %s" % row["parameter_id"],
+                "reference/post Spectre propMapping changed for %s" % row["parameter_id"],
                 code="cdf_parameter_mapping_incompatible",
             )
         effective_aliases = sorted(set(
@@ -2804,7 +2804,7 @@ def apply_candidate(workspace, config, parameters, values, candidate_root, timeo
                 ]
                 if changed:
                     raise ParameterApplicationFailure(
-                        "read-only baseline phase changed private copied libraries: %s" % ", ".join(changed)
+                        "read-only reference phase changed working copied libraries: %s" % ", ".join(changed)
                     )
                 verification = validate_parameter_snapshot(
                     baseline_plan, allow_effective_adjustment=allow_effective_adjustment,
@@ -2952,7 +2952,7 @@ def reset_results(workspace):
     for path in sorted(set(paths)):
         if os.path.isdir(path) and is_under(path, workspace["root"]):
             if os.path.islink(path) or not is_under(os.path.realpath(path), os.path.realpath(workspace["root"])):
-                raise ValueError("private result reset path escapes its owned workspace")
+                raise ValueError("working result reset path escapes its owned workspace")
             shutil.rmtree(path)
             removed.append(path)
     return removed
@@ -2986,7 +2986,7 @@ def write_batch_files(workspace, config, history_name=None):
     simulator = selected_simulator(config)
     saved = set((row.get("simulator") or "spectre").lower() for row in (workspace.get("setup") or {}).get("tests", []) if row.get("enabled", True))
     if saved and saved != {simulator}:
-        raise ValueError("Maestro saved simulator integration differs from selected " + simulator.upper() + "; select a matching native setup or Private Netlist with explicit model mapping")
+        raise ValueError("Maestro saved simulator integration differs from selected " + simulator.upper() + "; select a matching native setup or Template Netlist with explicit model mapping")
     wrapper_path = os.path.join(local_bin, simulator)
     real_spectre = config["cadence"].get(simulator + "_bin")
     if not real_spectre:

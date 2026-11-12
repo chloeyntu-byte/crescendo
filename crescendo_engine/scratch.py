@@ -45,10 +45,10 @@ def _process_start(pid):
 def _root_info(path):
     path = os.path.abspath(path)
     if (os.path.realpath(path) != path or not _PREFIX.match(os.path.basename(path))):
-        raise ScratchSafetyError(_contract_text('scratch path must be an explicit private Crescendo temporary directory'))
+        raise ScratchSafetyError(_contract_text('scratch path must be an explicit owner-only Crescendo temporary directory'))
     info = os.lstat(path)
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-        raise ScratchSafetyError('scratch directory must be private and owned by this user')
+        raise ScratchSafetyError('scratch directory must be accessible only to its owner and owned by this user')
     return path, info
 
 

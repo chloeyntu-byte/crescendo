@@ -1,7 +1,7 @@
 """One portable configuration for both unfinished UI drafts and ready designs.
 
 This module only reads, cleans and matches JSON.  It never grants authority to a
-saved private session, opens a design, restores a checkpoint, or validates an EDA
+saved working session, opens a design, restores a checkpoint, or validates an EDA
 installation.  Matching uses the same identity rules as the earlier UI state.
 """
 from __future__ import print_function

@@ -1,6 +1,6 @@
 """Native netlist capture and qualified templates for the common CLI pipeline.
 
-A private Spectre Maestro exports netlists through an owned invocation wrapper,
+A working Spectre Maestro exports netlists through an owned invocation wrapper,
 which records the command and exits before solving or submitting a job. ALPS
 native-addon capture remains blocked until its interception is qualified. The
 numeric producer runs CDF callbacks for each candidate; the template producer
@@ -429,7 +429,7 @@ def parameter_symbols(parameters):
             raise PrivateNetlistUnsupported("selected parameter identity is missing or duplicated")
         result[key] = SYMBOL_PREFIX + hashlib.sha256(key.encode("utf-8")).hexdigest()[:20]
     if len(set(result.values())) != len(result):
-        raise PrivateNetlistError("private netlist parameter symbol collision")
+        raise PrivateNetlistError("Template Netlist parameter symbol collision")
     return result
 
 
@@ -859,12 +859,12 @@ def _without_symbol_declarations(text, symbols):
 
 def validate_manifest(manifest, verify_files=True, require_current_qualification=True):
     if not isinstance(manifest, dict) or manifest.get("schema_version") != SCHEMA:
-        raise PrivateNetlistError("private netlist manifest schema is invalid")
+        raise PrivateNetlistError("Template Netlist manifest schema is invalid")
     root = os.path.abspath(manifest.get("root") or "")
     if not os.path.isdir(root) or os.path.realpath(root) != root:
-        raise PrivateNetlistError("private netlist root is not an owned independent directory")
+        raise PrivateNetlistError("Template Netlist root is not an owned independent directory")
     if not manifest.get("qualification", {}).get("ok"):
-        raise PrivateNetlistUnsupported("private netlist mapping has not been qualified")
+        raise PrivateNetlistUnsupported("Template Netlist mapping has not been qualified")
     if require_current_qualification:
         from .native_qualification import require_current_native_qualification
         try:
@@ -872,10 +872,10 @@ def validate_manifest(manifest, verify_files=True, require_current_qualification
         except ValueError as error:
             raise PrivateNetlistUnsupported(str(error))
     if manifest.get("manifest_sha256") != _manifest_digest(manifest):
-        raise PrivateNetlistError("private netlist manifest identity changed")
+        raise PrivateNetlistError("Template Netlist manifest identity changed")
     tasks = manifest.get("tasks") or []
     if not tasks or len(set(row.get("task_id") for row in tasks)) != len(tasks):
-        raise PrivateNetlistError("private netlist task identities are missing or duplicated")
+        raise PrivateNetlistError("Template Netlist task identities are missing or duplicated")
     for row in tasks:
         if row.get("simulator_contract"):
             from .simulators import validate_execution_contract
@@ -884,10 +884,10 @@ def validate_manifest(manifest, verify_files=True, require_current_qualification
                 from .execution_commands import validate_solver_command_plan
                 validate_solver_command_plan(row["solver_command_plan"], row["simulator_contract"], row)
         if not isinstance(row.get("task_id"), str) or not re.match(r"^[A-Za-z0-9_.-]{1,128}$", row["task_id"]) or row["task_id"] in (".", ".."):
-            raise PrivateNetlistError("private netlist task identity is unsafe")
+            raise PrivateNetlistError("Template Netlist task identity is unsafe")
         for name in ("netlist_path", "cwd", "psf_dir", "spectre_log"):
             if not row.get(name) or not is_under(os.path.abspath(row[name]), root):
-                raise PrivateNetlistError("private netlist task path is outside its root")
+                raise PrivateNetlistError("Template Netlist task path is outside its root")
         if verify_files:
             from .shared_maestro import validate_static_file_inputs
             try:
@@ -897,10 +897,10 @@ def validate_manifest(manifest, verify_files=True, require_current_qualification
             for path, digest in row.get("artifact_sha256", {}).items():
                 _regular(path, root=root)
                 if _digest(path) != digest:
-                    raise PrivateNetlistError("private netlist artifact changed: %s" % path)
+                    raise PrivateNetlistError("Template Netlist artifact changed: %s" % path)
             _regular(row["netlist_path"], root=root)
             if _digest(row["netlist_path"]) != row["netlist_sha256"]:
-                raise PrivateNetlistError("private netlist text changed")
+                raise PrivateNetlistError("Template Netlist text changed")
     return True
 
 
@@ -1396,7 +1396,7 @@ def _symbolize_native_dpar_phase(numeric, symbols, root):
 
 def _check_cancel(cancel_check):
     if cancel_check and cancel_check():
-        raise PrivateNetlistError("private netlist preparation was cancelled")
+        raise PrivateNetlistError("Template Netlist preparation was cancelled")
 
 
 def _saved_corner_contract(path):
@@ -1548,9 +1548,9 @@ def _normalize_private_corner_paths(contract, workspace, source_work_dir=None):
         if (not original or
                 not identity.get("sha256") or not os.path.isfile(resolved) or
                 os.path.getsize(resolved) != identity.get("size") or _digest(resolved) != identity["sha256"]):
-            raise PrivateNetlistUnsupported("recorded private model path remap lost its content identity")
+            raise PrivateNetlistUnsupported("recorded working model path remap lost its content identity")
         if resolved in replacements and replacements[resolved] != original:
-            raise PrivateNetlistUnsupported("private model path remap has ambiguous source identity")
+            raise PrivateNetlistUnsupported("working model path remap has ambiguous source identity")
         replacements[resolved] = original
         source_identity = None
         original_file = original if os.path.isabs(original) else (os.path.join(source_work_dir, original) if source_work_dir else None)
@@ -1741,7 +1741,7 @@ def _normalize_projected_default_slot(original, full_original, private, workspac
     return normalized, {"reason": "saved empty disabled nominal slot restored by native setup after selected-corner projection",
                         "ignored_corner": copy.deepcopy(slots[0]),
                         "selected_corners": list(selected), "source_slot_identical": True,
-                        "scope": "comparison only; raw source and private snapshots retained"}
+                        "scope": "comparison only; raw source and working snapshots retained"}
 
 
 def _capture_setup_identity(workspace, root, owned_symbols=None, config=None):
@@ -1811,7 +1811,7 @@ def _capture_setup_identity(workspace, root, owned_symbols=None, config=None):
         source_variables.update(row["name"] for corner in full_original["corners"] for row in corner["variables"])
         source_variables.update(row["name"] for row in full_original.get("global_variables") or [])
         if source_variables & owned_symbols:
-            raise PrivateNetlistUnsupported("private template symbol collides with an original design variable")
+            raise PrivateNetlistUnsupported("working template symbol collides with an original design variable")
         if source.get("sha256") and source["sha256"] != full_original["sha256"]:
             detail["differences"].append({"field": "source_sha256", "reason": "inspected_source_is_stale",
                                           "expected": source["sha256"], "actual": full_original["sha256"]})
@@ -1854,7 +1854,7 @@ def _capture_setup_identity(workspace, root, owned_symbols=None, config=None):
                                               "reason": "private_setup_clone_changed_semantics",
                                               "expected": expected, "actual": actual})
         if detail["differences"]:
-            raise PrivateNetlistUnsupported("saved/private corner setup differs from the inspected snapshot")
+            raise PrivateNetlistUnsupported("saved/working corner setup differs from the inspected snapshot")
         detail["ok"] = True
     except (OSError, TypeError, ValueError, PrivateNetlistError) as error:
         detail.update(ok=False, error="%s: %s" % (error.__class__.__name__, error))
@@ -2022,8 +2022,8 @@ def qualify_native_corner_mapping(setup, tasks, parsed, snapshot, schedule):
     """Prove native group/point coverage only, for an independent EDA verifier.
 
     This does not replace model, netlist, variable, PSF or output identity
-    checks. Callers must already verify the saved/private setup snapshot and
-    retain their native variable checks. Private-netlist capture uses the
+    checks. Callers must already verify the saved/working setup snapshot and
+    retain their native variable checks. Working-netlist capture uses the
     stronger ``validate_capture_corners`` including native constants.
     """
     groups = copy.deepcopy(setup)
@@ -2052,7 +2052,7 @@ def _qualify_setup_capture(setup, capture_source_simulator="spectre"):
         raise PrivateNetlistUnsupported("this Maestro run mode requires the original execution mode")
     for test in setup.get("tests") or []:
         if test.get("enabled", True) and (test.get("simulator") or "spectre") != capture_source_simulator:
-            raise PrivateNetlistUnsupported("private netlist capture requires matching saved %s tests" % capture_source_simulator)
+            raise PrivateNetlistUnsupported("Template Netlist capture requires matching saved %s tests" % capture_source_simulator)
     if capture_source_simulator not in ("spectre", "alps"):
         raise PrivateNetlistUnsupported("saved simulator requires a qualified native capture adapter")
     source = setup.get("source") or {}
@@ -2126,12 +2126,12 @@ def capture_rdb_root(workspace):
         if directory != registry["path"]:
             raise PrivateNetlistError("native capture Maestro result path does not match its owned view")
     elif not is_under(os.path.realpath(directory), os.path.realpath(workspace["root"])):
-        raise PrivateNetlistError("native capture Maestro results are outside the private workspace")
+        raise PrivateNetlistError("native capture Maestro results are outside the working workspace")
     return os.path.join(directory, "results", "maestro")
 
 
 def _capture_timeout_profiles(config, tests):
-    """Record private native capture timeout overrides without changing scope.
+    """Record working native capture timeout overrides without changing scope.
 
     Zero is invalid. An explicit UI blank is normalized to the internal -1
     unlimited value by the common policy parser; native readback must prove it.
@@ -2592,7 +2592,7 @@ def _capture_failure_text(native_diagnostics, worker_diagnostics):
 def _raise_capture_failure(cancelled, command, native_diagnostics, worker_diagnostics,
                            capture_diagnostics, failure_inputs, root):
     primary_text = _capture_failure_text(native_diagnostics, worker_diagnostics)
-    error = (PrivateNetlistError("private netlist preparation was cancelled") if cancelled else
+    error = (PrivateNetlistError("Template Netlist preparation was cancelled") if cancelled else
              PrivateNetlistUnsupported(primary_text + "; see " + os.path.join(root, "ocean.stdout")))
     error.native_diagnostic = (command.get("stdout_tail") or "") + "\n" + (command.get("stderr_tail") or "")
     error.detail = {"failure_stage": "native_netlist_cancelled" if cancelled else "native_capture_worker_generation_error" if not worker_diagnostics["ok"] else "native_capture_skill_error" if native_diagnostics.get("syntax_error") or native_diagnostics.get("native_error") else "native_netlist_preparation", "command": command,
@@ -2608,9 +2608,9 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
                    verify_numeric_application=False, private_config_initialized=False,
                    baseline_only=False, allow_effective_adjustment=False, batch_plan=None):
     require_unique_run_variables(workspace.get("setup") or {},
-                                 action="capture private SCS", multiplicity_only=True)
+                                 action="capture working SCS", multiplicity_only=True)
     if baseline_only and (values or symbols or seeds or symbolic or verify_numeric_application):
-        raise PrivateNetlistError("unchanged baseline capture cannot apply candidate values or template symbols")
+        raise PrivateNetlistError("unchanged reference capture cannot apply candidate values or template symbols")
     ensure_dir(root)
     _check_cancel(cancel_check)
     if (workspace.get("setup") or {}).get("selected_test"):
@@ -2629,7 +2629,7 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
                                  selected_corners=wanted)
             workspace[_contract_text("_cr_selected_corners")] = wanted
         elif previous != wanted:
-            raise PrivateNetlistUnsupported("Corner selection changed without rebuilding the private setup")
+            raise PrivateNetlistUnsupported("Corner selection changed without rebuilding the working setup")
     setup_identity = _capture_setup_identity(workspace, root, symbols.values(), config=config)
     from .corner_selection import effective_setup, selection_skill_lines, capture_selection_plan
     corner_selection = capture_selection_plan(workspace["setup"], config.get("_capture_corner_selection"),
@@ -2654,7 +2654,7 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
     if len(clone_selection) != len(parameters):
         raise PrivateNetlistError("native capture parameter identities are duplicated")
     if not baseline_only and set(values) != set(clone_selection):
-        raise PrivateNetlistError("native candidate differs from selected private parameter identities")
+        raise PrivateNetlistError("native candidate differs from selected working parameter identities")
     plan = write_schematic_patch(workspace, patch_parameters, clone_selection, patch, records,
                                  pdk_adapter="generic-cdf", emit_parameters=False,
                                  emit_clones=emit_clones, exit_after=False,
@@ -2700,10 +2700,10 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
     for field in ("interactiveA", "interactiveE"):
         body.append(_contract_text('crescCaptureRecord("ENV" "child" "%s" "envGetVal" t envGetVal("maestro.simulation" "%s"))') % (field, field))
     body.extend([
-                  _contract_text('unless(errset(load("%s") t) error("Crescendo private netlist parameterization failed\\n"))') % _skill_quote(patch),
-                  _contract_text('unless(crescSchematicPatchResult error("Crescendo private netlist parameter patch did not complete\\n"))'),
+                  _contract_text('unless(errset(load("%s") t) error("Crescendo Template Netlist parameterization failed\\n"))') % _skill_quote(patch),
+                  _contract_text('unless(crescSchematicPatchResult error("Crescendo Template Netlist parameter patch did not complete\\n"))'),
                   'session=maeOpenSetup("%s" "%s" "%s" ?mode "a")' % tuple(_skill_quote(workspace[key]) for key in ("primary_library", "setup_cell", "setup_view")),
-                  _contract_text('unless(session error("Crescendo private Maestro could not open\\n"))'),
+                  _contract_text('unless(session error("Crescendo Maestro working copy could not open\\n"))'),
                   'mainSDB=axlGetMainSetupDB(session)'])
     if config.get("_diagnostic_native_run_trace") is True:
         body.extend(_capture_environment_observation_skill(tests))
@@ -2730,7 +2730,7 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
                                                 if name in workspace[_contract_text("_cr_selected_corners")]]
     body.extend(selection_skill_lines(native_corner_selection))
     for key in sorted(symbols):
-        body.append(_contract_text('unless(maeSetVar("%s" "%.17g" ?session session) error("Crescendo private netlist symbol seed failed\\n"))') % (symbols[key], seeds[key]))
+        body.append(_contract_text('unless(maeSetVar("%s" "%.17g" ?session session) error("Crescendo Template Netlist symbol seed failed\\n"))') % (symbols[key], seeds[key]))
     schedule_path = os.path.join(root, "native_corner_schedule.tsv")
     body.extend(native_corner_schedule_skill(run_setup, schedule_path, include_members=True))
     if native_plan:
@@ -3069,10 +3069,10 @@ def capture_unmodified_baseline(workspace, parameters, config, root,
     This separate entry does not qualify numeric candidates or a template.
     It preserves the saved Maestro variables/Parameters and relies on the
     existing native Run capture, setup identity and point coverage gates.
-    Callers retain the private workspace until owned capture is quiescent.
+    Callers retain the working workspace until owned capture is quiescent.
     """
     if os.path.lexists(root):
-        raise PrivateNetlistError("unchanged baseline capture requires a fresh root")
+        raise PrivateNetlistError("unchanged reference capture requires a fresh root")
     _qualify_setup_capture(workspace["setup"], config.get("_capture_source_simulator", "spectre"))
     result = _capture_phase(workspace, parameters, {}, {}, {}, config, root,
                             emit_clones=emit_clones, cancel_check=cancel_check,
@@ -3081,7 +3081,7 @@ def capture_unmodified_baseline(workspace, parameters, config, root,
                             baseline_only=True)
     result["source_guard"] = verify_sources_unchanged(workspace)
     if not result["source_guard"].get("ok"):
-        error = PrivateNetlistError("source design changed during unchanged baseline generation: " +
+        error = PrivateNetlistError("source design changed during unchanged reference generation: " +
                                     source_change_summary(result["source_guard"]))
         error.detail = {"failure_stage": "source_freshness", "capture_only": True,
                         "solver_execution_started": False,
@@ -3102,10 +3102,10 @@ def _prepare_private_netlist(prepared, parameters, config, root, cancel_check=No
     """Create one isolated, native-qualified immutable template for a run."""
     from .native_qualification import NATIVE_QUALIFICATION_REVISION
     require_unique_run_variables((prepared or {}).get("setup") or {},
-                                 action="prepare private netlist template", multiplicity_only=True)
+                                 action="prepare Template Netlist template", multiplicity_only=True)
     root = os.path.abspath(root)
     if os.path.lexists(root):
-        raise PrivateNetlistError("private netlist preparation requires a fresh root")
+        raise PrivateNetlistError("Template Netlist preparation requires a fresh root")
     ensure_dir(root)
     if session_workspace is not None:
         from .setup_private_session import write_session_reference
@@ -3289,7 +3289,7 @@ def _prepare_private_netlist(prepared, parameters, config, root, cancel_check=No
         task["argv"] = list(task["solver_command_plan"]["argv"])
     guard = verify_sources_unchanged(workspace)
     if not guard.get("ok"):
-        error = PrivateNetlistError("source changed during private netlist preparation: " +
+        error = PrivateNetlistError("source changed during Template Netlist preparation: " +
                                     source_change_summary(guard))
         error.detail = {"failure_stage": "source_freshness", "capture_only": True,
                         "solver_execution_started": False, "source_guard": compact_source_guard(guard)}

@@ -332,7 +332,7 @@ class UnifiedConfigurationServiceTests(unittest.TestCase):
             self.service.load_configuration(self.document)
         self.assertIn('pending', self.service.setup_private_sessions)
         self.assertEqual(self.service.config['_selected_setup_path'], self.path)
-        self.assertTrue(any('retained private suite resources' in item for item in
+        self.assertTrue(any('retained working-copy resources' in item for item in
                             raised.exception.configuration_import['warnings']))
         self.assertEqual(self.service.lifecycle_operations, 0)
         result = self.service.load_configuration(self.document)

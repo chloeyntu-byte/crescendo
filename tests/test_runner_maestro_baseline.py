@@ -16,7 +16,7 @@ class BaselineDispatchTests(unittest.TestCase):
                          {'execution_protocol': 'crescendo.maestro_baseline.v1', 'execution_backend': 'maestro_netlist'},
                          {'execution_backend': 'maestro_baseline', 'execution_protocol': 'crescendo.unified_execution.v1'}):
                 with self.subTest(spec=spec):
-                    with self.assertRaisesRegex(ValueError, 'baseline checkpoint'):
+                    with self.assertRaisesRegex(ValueError, 'Native Run checkpoint'):
                         runner.validate_checkpoint({'spec': spec}, {})
 
     def run_candidate(self, result=None, error=None):

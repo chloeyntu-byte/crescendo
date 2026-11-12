@@ -375,7 +375,7 @@ def metric_definition_label(definition):
 
 
 _FAILURE_STAGE_LABELS = {
-    "workspace_build": "Private workspace build",
+    "workspace_build": "Workspace copy build",
     "pdk_callback": "PDK / CDF callback",
     "parameter_application": "Parameter application",
     "parameter_verification": "Parameter verification after simulation",

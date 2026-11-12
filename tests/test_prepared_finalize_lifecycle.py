@@ -108,7 +108,7 @@ class PreparedFinalizeLifecycleTests(unittest.TestCase):
             apply_native(prepared, reference)
             self.fixture.write(self.fixture.schematic, 'actual source edit during native Apply')
         with mock.patch.object(self.service, '_apply_setup_private_cells', side_effect=changed):
-            with self.assertRaisesRegex(ValueError, 'Source design changed during private Apply'):
+            with self.assertRaisesRegex(ValueError, 'Source design changed during working Apply'):
                 self.service.prepare_cells(token, ['root'])
         self.assertEqual(self.captures, [])
         self.assertEqual(self.persists, [])
@@ -128,7 +128,7 @@ class PreparedFinalizeLifecycleTests(unittest.TestCase):
                 stream.write(b'changed native snapshot')
         try:
             with mock.patch.object(self.service, '_apply_setup_private_cells', side_effect=changed):
-                with self.assertRaisesRegex(ValueError, 'baseline contents changed'):
+                with self.assertRaisesRegex(ValueError, 'reference contents changed'):
                     self.service.prepare_cells(token, ['root'])
             self.assertEqual(self.captures, [])
             self.assertEqual(self.persists, [])

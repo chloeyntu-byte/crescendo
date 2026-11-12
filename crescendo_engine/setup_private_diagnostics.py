@@ -25,7 +25,7 @@ def write_setup_diagnostic_log(reference, error=None):
         "owned_views": len(info.get("views") or []), "operation_count": len(operations),
         "binding_verification": info.get("binding_verification"),
         "native_run_invoked": False, "solver_invocations": 0,
-        "scope": "Setup creates and binds private views; candidate capture belongs to its run log"}
+        "scope": "Setup creates and binds working views; candidate capture belongs to its run log"}
     lines = [_contract_text("Crescendo Setup 私有化诊断"), "setup_summary " + json.dumps(summary, ensure_ascii=False, sort_keys=True)]
     if error is not None:
         lines.append("first_cause " + json.dumps({"type": type(error).__name__, "message": str(error)[:8192]}, ensure_ascii=False))

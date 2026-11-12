@@ -473,7 +473,7 @@ def _template_qualification_summary(manifest):
         'source_fingerprint': (manifest.get('source_identity') or {}).get('fingerprint'),
         'candidate_value_policy': manifest.get('candidate_value_policy'),
         'candidate_cdf_callback_verification': 'NOT_TESTED',
-        'scope': 'frozen native expression mapping and baseline/low/high reference readbacks; not per-candidate CDF application proof'}
+        'scope': 'frozen native expression mapping and reference/low/high reference readbacks; not per-candidate CDF application proof'}
 
 
 def _point_termination_qualification(task):
@@ -580,7 +580,7 @@ def pipeline_qualification(candidate, engine, simulator):
     if pipeline.get('netlist_source') != expected_source:
         problems.append('netlist source does not match this diagnostic case')
     if generation.get('source_mode') != expected_mode or not generation.get('private_identity'):
-        problems.append('private netlist generation identity missing or mismatched')
+        problems.append('Generated netlist identity missing or mismatched')
     if generation.get('solver_invocations') != 0 or generation.get('remote_submissions') != 0:
         problems.append('netlist generation did not prove capture-only isolation')
     tasks = pipeline.get('points') or pipeline.get('tasks') or []
@@ -626,7 +626,7 @@ def _baseline_pipeline_qualification(candidate, completion, pipeline, simulator)
     if pipeline.get('schema_version') != _contract_text('crescendo.maestro_baseline.v1'):
         problems.append('native Maestro execution protocol missing or mismatched')
     if pipeline.get('solver') != 'native_maestro' or pipeline.get('submission') != 'native_job_setup':
-        problems.append('baseline did not use native Maestro Run and Job Setup')
+        problems.append('Native Run did not use native Maestro Run and Job Setup')
     for key in ('native_run_invoked', 'native_wait_completed', 'native_session_closed', 'solver_completion_proven'):
         if pipeline.get(key) is not True:
             problems.append('native completion evidence missing: ' + key)
@@ -722,7 +722,7 @@ def _candidate_manifest_summary(document):
             for task in tasks[:MAX_ROWS] if isinstance(task, dict)],
         'omitted_point_count': max(0, len(tasks) - MAX_ROWS),
         'tasks_sha256': _sha(_serialized(tasks).encode('utf-8')),
-        'scope': 'private generated netlist identities; solve/submit commands are indexed in the shared pipeline'}
+        'scope': 'working generated netlist identities; solve/submit commands are indexed in the shared pipeline'}
 
 
 def _pipeline_artifact_summary(document):
@@ -1141,13 +1141,13 @@ def _native_run_failure_context(script, capture, prepared, netlists,
                 entry.update(statement=matches[0][:1600], statement_sha256=_sha(matches[0].encode('utf-8')),
                              statement_truncated=len(matches[0]) > 1600)
             if entry['status'] == 'UNKNOWN':
-                entry['reason'] = 'SCS excerpt is incomplete' if netlist['read_truncated'] else 'exact private library/cell/view/instance is missing or ambiguous; no alias guessed'
+                entry['reason'] = 'SCS excerpt is incomplete' if netlist['read_truncated'] else 'exact working library/cell/view/instance is missing or ambiguous; no alias guessed'
             devices.append(entry)
         point_rows.append({'path': netlist['path'], 'sha256': netlist['sha256'], 'selected_devices': devices,
             'settings_reference': 'diagnostic.netlist_points: same netlist_sha256',
             'selected_devices_omitted': max(0, len(rows) - len(devices))})
     return {'label': '原生 Run 失败上下文：参数、配置绑定与已生成网表',
-        'scope': 'current generated script and SCS observations only; source config is the inspected snapshot, not private binding readback; none proves native callbacks, point qualification or solver success',
+        'scope': 'current generated script and SCS observations only; source config is the inspected snapshot, not working binding readback; none proves native callbacks, point qualification or solver success',
         'phase': phase,
         'selected_native_parameters': selected, 'selected_count': len(rows),
         'selected_omitted': max(0, len(rows) - len(selected)), 'selected_unavailable_reason': unavailable,
@@ -1186,7 +1186,7 @@ def _setup_private_summary(reference):
         'native_binding_receipt': {key: verification.get(key) for key in
             ('ok', 'records', 'config_records', 'command_root', 'native_run_invoked', 'solver_invocations')
             if key in verification},
-        'scope': 'saved Setup native binding producer receipt; no new HDB probe, run, solve or private-view cleanup'}
+        'scope': 'saved Setup native binding producer receipt; no new HDB probe, run, solve or working-view cleanup'}
 
 
 
@@ -1702,7 +1702,7 @@ def _missing_output_state(data, requested, deadline=None, stop_check=None):
                     if not re.search(r'token|password|secret|credential|cookie|api[_-]?key|cds_lic_file|lm_license_file',name,re.I):
                         item['value'] = literal(child.text)
                     else:
-                        item['value'] = {'literal':'<redacted-private-field>'}
+                        item['value'] = {'literal':'<redacted-sensitive-field>'}
                     fields.append(item)
                 expression = (parsed or {}).get('expression')
                 row['matches'].append({'xml_path':path,'slot':field_name,
@@ -2153,7 +2153,7 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
                     os.path.abspath(path) not in declared_sdb_paths
                 if result_placeholder:
                     excluded_non_contract.append({'path': relative,
-                        'reason': 'zero-byte native simulation result placeholder; not declared source/private SetupDB'})
+                        'reason': 'zero-byte native simulation result placeholder; not declared source/working SetupDB'})
                 else:
                     add('settings', dict(_settings_xml(path, data, metadata), path=relative))
             elif name == _contract_text('input.scs'):

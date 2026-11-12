@@ -1932,14 +1932,14 @@ class OptimizerGui(object):
         self.native_settings_detail = summary
         source = (summary.get("save_options") or {}).get("effective") or {}
         private = summary.get("private_storage") or {}
-        lines = ["Private Maestro uses the selected Test; its analysis parameters inherit the saved settings.",
-            "Private netlist capture: Local, 2 workers; actual solver command/jobs/timeouts follow source Job Setup unless overridden.",
+        lines = ["The Maestro working copy uses the selected Test; its analysis parameters inherit the saved settings.",
+            "Maestro netlist capture: Local, 2 workers; actual solver command/jobs/timeouts follow source Job Setup unless overridden.",
             "Native/plugin Job properties outside the CLI mapping remain in the copy; observed unsupported fields are listed in Details.",
             "Source simulation root: " + str(source.get("simulation_root") or "Unavailable"),
             "Source RDB root: " + str(source.get("rdb_root") or "Unavailable"),
-            "Private simulation root: " + str(private.get("save_res_dir") or "Awaiting private native readback"),
-            "Private RDB root: " + str(private.get("save_dir") or "Awaiting private native readback"),
-            "Private paths: " + ("native readback verified" if private.get("configured_roots_verified") else "readback pending / unavailable"),
+            "Working-copy simulation root: " + str(private.get("save_res_dir") or "Awaiting working-copy native readback"),
+            "Working-copy RDB root: " + str(private.get("save_dir") or "Awaiting working-copy native readback"),
+            "Working-copy paths: " + ("native readback verified" if private.get("configured_roots_verified") else "readback pending / unavailable"),
             "History data and locks are excluded. External startup/plugin settings remain environment dependencies."]
         self.private_settings_summary_var.set("\n".join(lines))
         for warning in list(summary.get("warnings") or []) + list(reference.get("metadata_warnings") or []):
@@ -2129,7 +2129,7 @@ class OptimizerGui(object):
             row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
         ttk.Label(card, text=(
             "Both netlist sources use these commands. Blank solver fields use qualified automatic defaults; "
-            "blank submission uses Local or the original Job Setup prefix. Baseline disables these fields and retains their drafts."
+            "blank submission uses Local or the original Job Setup prefix. Native Run disables these fields and retains their drafts."
         ), style="Help.TLabel", wraplength=1000).grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 8))
         self.command_mode_notice_var = tk.StringVar(value="")
         ttk.Label(card, textvariable=self.command_mode_notice_var, style="Help.TLabel", wraplength=900).grid(
@@ -2205,9 +2205,9 @@ class OptimizerGui(object):
         if scheduler is not None:
             scheduler.configure(state="disabled" if baseline else "readonly")
         if hasattr(self, "job_mode_notice_var"):
-            self.job_mode_notice_var.set("Baseline uses Command distribution and the Job Setup input values below." if baseline else "Job Setup input values apply directly to the selected mode.")
+            self.job_mode_notice_var.set("Native Run uses Command distribution and the Job Setup input values below." if baseline else "Job Setup input values apply directly to the selected mode.")
         self.command_mode_notice_var.set(
-            "Baseline uses the source simulator and Job Setup fields below; CLI solver templates are retained for other modes."
+            "Native Run uses the source simulator and Job Setup fields below; CLI solver templates are retained for other modes."
             if baseline else "CLI commands apply to the two netlist modes.")
         self._render_simulator_profiles()
 
@@ -3116,7 +3116,7 @@ class OptimizerGui(object):
         if window is not None:
             try:
                 window.title("Environment Test · {}".format(
-                    {"spectre": "Spectre Log", "alps": "ALPS Log", "persistent_maestro": "Maestro Log", "private_netlist": "Private Netlist Log"}.get(engine, "诊断总日志")))
+                    {"spectre": "Spectre Log", "alps": "ALPS Log", "persistent_maestro": "Maestro Log", "private_netlist": "Template Netlist Log"}.get(engine, "诊断总日志")))
                 window.lift()
                 self._render_environment_test_progress(self.environment_test_payload)
                 self._poll_environment_test()
@@ -3125,7 +3125,7 @@ class OptimizerGui(object):
                 pass
         window = tk.Toplevel(self.root)
         window.title("Environment Test · {}".format(
-            {"spectre": "Spectre Log", "alps": "ALPS Log", "persistent_maestro": "Maestro Log", "private_netlist": "Private Netlist Log"}.get(engine, "诊断总日志")))
+            {"spectre": "Spectre Log", "alps": "ALPS Log", "persistent_maestro": "Maestro Log", "private_netlist": "Template Netlist Log"}.get(engine, "诊断总日志")))
         window.geometry("1040x640")
         text = tk.Text(window, wrap="none", state="disabled", font=("TkFixedFont", 10), undo=False)
         y_scroll = ttk.Scrollbar(window, orient="vertical", command=text.yview)
@@ -3242,19 +3242,19 @@ class OptimizerGui(object):
         self.pareto_plots = []
 
     def _build_settings_page(self, parent):
-        self._page_heading(parent, "Settings", _contract_text("Private Maestro settings, EDA environment and Crescendo diagnostics. Automatic values are retained unless explicitly overridden."))
+        self._page_heading(parent, "Settings", _contract_text("Maestro working-copy settings, EDA environment and Crescendo diagnostics. Automatic values are retained unless explicitly overridden."))
         tabs = ttk.Notebook(parent)
         tabs.pack(fill="both", expand=True, padx=22, pady=(4, 14))
         self.settings_sections = {}
-        for key, label in (("maestro", "Private Maestro"), ("eda", "EDA"), (_contract_text("crescendo"), _contract_text("Crescendo / Diagnostics"))):
+        for key, label in (("maestro", "Maestro Working Copy"), ("eda", "EDA"), (_contract_text("crescendo"), _contract_text("Crescendo / Diagnostics"))):
             section = ttk.Frame(tabs, style="Page.TFrame")
             tabs.add(section, text=label)
             self.settings_sections[key] = section
         self.settings_notebook = tabs
         private = self.settings_sections["maestro"]
         inherited = self._card(private)
-        ttk.Label(inherited, text="Private setup inheritance", style="CardTitle.TLabel").pack(anchor="w")
-        self.private_settings_summary_var = tk.StringVar(value="Load and Inspect reads the saved Maestro settings and creates an owned private copy.")
+        ttk.Label(inherited, text="Working-copy setup inheritance", style="CardTitle.TLabel").pack(anchor="w")
+        self.private_settings_summary_var = tk.StringVar(value="Load and Inspect reads the saved Maestro settings and creates an owned working copy.")
         ttk.Label(inherited, textvariable=self.private_settings_summary_var, style="Help.TLabel", wraplength=1000).pack(anchor="w", pady=(4, 0))
         ttk.Button(inherited, text="Native Settings Details...", command=self._show_native_settings).pack(anchor="w", pady=(6, 0))
         self._build_job_policy_card(private)
@@ -3273,9 +3273,9 @@ class OptimizerGui(object):
         self.execution_backend_var = tk.StringVar(value="auto")
         mode_choices = ttk.Frame(engine, style="Card.TFrame")
         mode_choices.grid(row=1, column=0, columnspan=2, sticky="w")
-        for mode_text, mode_value in (("Private Maestro", "auto"),
-                                      ("Private Netlist", "private_netlist"),
-                                      ("Private Maestro (Baseline)", "maestro_baseline")):
+        for mode_text, mode_value in (("Maestro Netlist", "auto"),
+                                      ("Template Netlist", "private_netlist"),
+                                      ("Native Run", "maestro_baseline")):
             ttk.Radiobutton(mode_choices, text=mode_text, variable=self.execution_backend_var,
                             value=mode_value).pack(anchor="w", pady=2)
         self.simulator_var = tk.StringVar(value=(getattr(self.service, "config", {}).get("cadence") or {}).get("simulator", "spectre"))
@@ -3288,8 +3288,8 @@ class OptimizerGui(object):
                   wraplength=950, justify="left").grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
         self.simulator_combo.bind("<<ComboboxSelected>>", lambda _event: self._render_simulator_profiles())
         ttk.Label(engine, text=(
-            "Private Maestro regenerates a numeric .scs for each candidate from its private schematic and config. "
-            "Private Netlist modifies a qualified frozen template. Baseline runs native Maestro with the source simulator policy and reads native results. "
+            "Maestro Netlist regenerates a numeric .scs for each candidate from its schematic and config working copies. "
+            "Template Netlist modifies a qualified frozen template. Native Run runs native Maestro with the source simulator policy and reads native results. "
             "Set each simulator executable and model directory in Settings / EDA."
         ), style="Help.TLabel", wraplength=950).grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
@@ -3330,7 +3330,7 @@ class OptimizerGui(object):
             "cadence_root": "Cadence installation root. Empty keeps the detected native installation.",
             "spectre_root": "Spectre installation root; executable overrides below take precedence.",
             "virtuoso_bin": "Virtuoso used for schematic and hierarchy inspection.",
-            "ocean_bin": "Ocean used to read the saved setup and run owned private sessions.",
+            "ocean_bin": "Ocean used to read the saved setup and run owned working-copy sessions.",
             "spectre_bin": "Spectre solver executable; no system installation is changed.",
             "alps_bin": "ALPS solver executable for the ALPS selection.",
             "alps_root": "ALPS installation directory used when automatic discovery needs a hint.",
@@ -3340,7 +3340,7 @@ class OptimizerGui(object):
             "simulator_result_reader": "Default Ocean interface for reading native simulation results.",
             "spectre_result_reader": "Override the default reader only for Spectre results.",
             "alps_result_reader": "Override the default reader only for ALPS results.",
-            "cds_lib": "Library mapping for this selected saved Maestro and its private copy.",
+            "cds_lib": "Library mapping for this selected saved Maestro and its working copy.",
             "license_file": "License input inherited by owned EDA processes; empty retains discovery.",
             "pdk_name": "PDK profile name used to select model and parameter adapters.",
             _contract_text("pdk_dir"): "PDK files used by this design; empty keeps the detected root.",
@@ -3595,7 +3595,7 @@ class OptimizerGui(object):
                     if key == "linger_seconds":
                         text += " · native ICRP idle reuse; CLI: not applicable"
                     elif key in ("start_seconds", "configure_seconds"):
-                        text += " · private native capture only; CLI: not applicable"
+                        text += " · working-copy native capture only; CLI: not applicable"
                     else:
                         text += " · CLI: exact RUNNING / owned local solver start"
                     self.job_timeout_effective_vars[key].set(text)
@@ -4646,7 +4646,7 @@ class OptimizerGui(object):
                 item = tree.insert(parent, "end", text=row.get("hierarchy_path") or "?",
                                    values=("/".join(str(part or "?") for part in target), mode))
                 owned = views.get(target) or {}
-                descriptions[item] = "Occurrence: {}\nBound view: {}\nPrivate view path: {}\nSource: {}\nStop: {}\nScan traversable: {}".format(
+                descriptions[item] = "Occurrence: {}\nBound view: {}\nWorking-copy view path: {}\nSource: {}\nStop: {}\nScan traversable: {}".format(
                     row.get("hierarchy_path"), "/".join(str(part or "?") for part in target), owned.get("path") or "原有绑定（未私有化）",
                     "/".join(owned.get("source") or []) or "继承原 config", row.get("stop"), row.get("scan_traversable"))
         def selected(_event=None):
@@ -6127,7 +6127,7 @@ class OptimizerGui(object):
         }
         backend = self.execution_backend_var.get() if hasattr(self, "execution_backend_var") else "auto"
         if backend not in ("auto", "maestro_netlist", "persistent_maestro", "legacy", "adexl", "private_netlist", "maestro_baseline"):
-            raise ValueError("Select Maestro or Private Netlist as the execution method.")
+            raise ValueError("Select Maestro or Template Netlist as the execution method.")
         result["execution_backend"] = backend if backend in ("private_netlist", "maestro_baseline") else "maestro_netlist"
         if backend != "maestro_baseline":
             result["execution_commands"] = self._collect_execution_commands()
@@ -6618,7 +6618,7 @@ class OptimizerGui(object):
                 for warning in warnings:
                     self._activity_event(str(warning), "WARN")
                 message = "配置加载已取消；现有界面设置保留。"
-                if any("retained private suite resources" in str(item) for item in warnings):
+                if any("retained working-copy resources" in str(item) for item in warnings):
                     message += " 私有套件资源及其来源已保留，请在 Private Suites 中检查。"
                 self.settings_status_var.set(message)
                 self._set_status(message)
@@ -8127,7 +8127,7 @@ class OptimizerGui(object):
                 "\n结果读取接口只负责打开 PSF，不代表实际求解器；ALPS 可选 Spectre/PSF 接口，能否读取本轮结果以诊断证据为准。模型、求解与结果仍分别核验。")
         if hasattr(self, "simulator_profile_var"):
             if getattr(self, "_baseline_mode_active", False):
-                self.simulator_profile_var.set("Baseline uses the selected Test’s native simulator and Maestro Job Setup. CLI simulator and model profiles below are not applied to this mode.")
+                self.simulator_profile_var.set("Native Run uses the selected Test’s native simulator and Maestro Job Setup. CLI simulator and model profiles below are not applied to this mode.")
                 return
             self.simulator_profile_var.set(selected_text + "\n" + "\n\n".join(rows) +
                 "\nThe selected executable, models, mapped sections, command and reader apply to every candidate in the next run. Active runs retain their frozen configuration. 结果读取接口只负责打开 PSF；ALPS 可选 Spectre/PSF 接口，不代表改用 Spectre 求解。")

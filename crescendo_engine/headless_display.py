@@ -120,6 +120,6 @@ def owned_headless_display(environment, root, startup_timeout_seconds=5, max_att
                 "attempts": attempts, "manifest_path": manifest_path}
     atomic_write_json(manifest_path, manifest)
     raise HeadlessDisplayUnavailable(
-        "Could not start a private read-only CDF display after %d bounded attempts; "
+        "Could not start an isolated read-only CDF display after %d bounded attempts; "
         "see %s" % (int(max_attempts), manifest_path)
     )

@@ -1,8 +1,8 @@
-# Crescendo 1.1.1
+# Crescendo 1.1.2
 
 Crescendo is a guided circuit optimizer for Cadence Maestro. Each release contains the window, the optimization engine, the Virtuoso menu loader and a synthetic demo.
 
-This release evaluates a whole generation at once instead of one candidate at a time. On local real-EDA runs with identical results, Maestro Baseline became 4.3x faster and Private Maestro 2.1x faster; Private Netlist needs batching only when it falls back to native netlist generation (1.5x there). Pro mode adds Local solver slots, reader workers and a batching selector; old checkpoints keep their original behaviour. Per-candidate and per-generation timings show where the time goes. Batch schedulers, complex process models and large-scale throughput still need qualification on your own site. 1.1.1 only widens test timeouts for slower CI runners. See CHANGELOG.md.
+Version 1.1.2 names the execution modes Native Run, Maestro Netlist and Template Netlist, and calls owned setup/view copies working copies. The English and Chinese READMEs explain what is created, where data lives, what survives Stop/exit, and how to recover or clean up. Existing configuration keys, backend IDs and checkpoint behavior are unchanged. See CHANGELOG.md.
 
 Try it without any EDA tools:
 

@@ -65,12 +65,12 @@ def _number(value):
 
 def build_native_parameter_plan(parameter_rows, corners, inherited_parameters=None,
                                 owned_paths=None, allowed_symbols=None):
-    """Consume resolved private owner-CV rows, never original source rows.
+    """Consume resolved working owner-CV rows, never original source rows.
 
     Each row has parameter_id/library/cell/view/instance/property/value, as
-    produced by the private schematic clone plan.  The caller must prove that
-    this CV is private and reachable from its private config.  A non-private
-    source path is not made private by this function.
+    produced by the working schematic clone plan.  The caller must prove that
+    this CV is working and reachable from its working config.  A non-working
+    source path is not made working by this function.
     """
     rows, corners = list(parameter_rows or []), list(corners or [])
     if not rows or len(rows) > MAX_SELECTED or len(corners) > MAX_CORNERS:
@@ -123,12 +123,12 @@ def build_native_parameter_plan(parameter_rows, corners, inherited_parameters=No
 
 def native_parameter_skill_lines(plan, verification_path,
                                  session_expr="session", main_sdb_expr="mainSDB"):
-    """Configure owned Parameters in the private Maestro; Run applies callbacks.
+    """Configure owned Parameters in the Maestro working copy; Run applies callbacks.
 
     Only an empty source Parameters set or paths registered by an earlier
     successful capture in this same workspace are compatible.  This permits
     enabling the top Parameters switch without activating unrelated entries.
-    A later failure taints the caller's private generation workspace.
+    A later failure taints the caller's working generation workspace.
     """
     if plan.get("schema_version") != SCHEMA:
         raise ValueError("Unknown native device parameter plan")
@@ -136,7 +136,7 @@ def native_parameter_skill_lines(plan, verification_path,
     for row in plan.get("selected") or []:
         parts = str(row.get("path") or "").split("/")
         if len(parts) != 5:
-            raise ValueError("Native private owner parameter path is invalid")
+            raise ValueError("Native working owner parameter path is invalid")
         raw = dict(zip(("library", "cell", "view", "instance", "property"), parts))
         raw.update(parameter_id=row.get("parameter_id"), value=row.get("value"))
         raw_rows.append(raw)
@@ -144,7 +144,7 @@ def native_parameter_skill_lines(plan, verification_path,
         owned_paths=plan.get("owned_paths"), allowed_symbols=plan.get("allowed_symbols"))
     selected_paths = {row["path"] for row in verified["selected"]}
     if any(path not in selected_paths for path in verified["owned_paths"]):
-        raise ValueError("Owned native parameter path differs from the selected private design")
+        raise ValueError("Owned native parameter path differs from the selected working design")
     for expression in (session_expr, main_sdb_expr):
         if not isinstance(expression, str) or not _IDENTIFIER.match(expression):
             raise ValueError("Native session/database expression must be an identifier")
@@ -250,7 +250,7 @@ def parse_native_parameter_settings(path, plan):
 
 
 def _native_rdb_input(row, task, parsed):
-    """Read one native device input by full private identity and point.
+    """Read one native device input by full working identity and point.
 
     parameterValue records the chosen Run input, not the value after a PDK
     callback.  It must never qualify callback adjustment or backannotation.
@@ -287,7 +287,7 @@ def _native_rdb_input(row, task, parsed):
 
 
 def read_native_parameter_points(parameter_rows, tasks, setup=None, parsed=None):
-    """Bind each selected private instance field to its exact generated SCS.
+    """Bind each selected working instance field to its exact generated SCS.
 
     DPAR names are discovered from the instance assignment.  RDB's deviceParam
     name can be only ``r`` for multiple devices and is not a unique binding.
@@ -318,7 +318,7 @@ def read_native_parameter_points(parameter_rows, tasks, setup=None, parsed=None)
                           and re.match(r"^%s\s*\(" % re.escape(row["instance"]), statement)]
             statements = [statement for index, statement in matches]
             if len(statements) != 1:
-                raise ValueError("Native private instance is absent/ambiguous for %s in %s" % (row["parameter_id"], path))
+                raise ValueError("Native working instance is absent/ambiguous for %s in %s" % (row["parameter_id"], path))
             aliases = _effective_property_names(row)
             all_assignments = _assignments(statements[0])
             assignments = [(name, expression) for name, expression, _a, _b in all_assignments

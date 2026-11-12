@@ -230,7 +230,7 @@ class Probe(object):
                   app.start_environment_test()),
                   lambda: app.environment_test_state in ("completed", "failed"), timeout=60)
         self.step("EDA Settings page", lambda: app.show_page("EDA Settings"), None)
-        self.step("private suites window", app.open_private_suites, None)
+        self.step("Working Copies window", app.open_private_suites, None)
         self.pump(1.0)
         for child in list(self.root.winfo_children()):
             if isinstance(child, self.gui.tk.Toplevel):

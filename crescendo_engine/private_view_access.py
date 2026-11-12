@@ -1,4 +1,4 @@
-"""Prevent accidental GUI edits to this process's exact private view trees.
+"""Prevent accidental GUI edits to this process's exact working view trees.
 
 This is an idle permission guard, not isolation between processes with the same
 Unix UID (or from root). The caller must serialize native writers and prove they
@@ -25,7 +25,7 @@ class PrivateViewBusy(RuntimeError):
         self.lock_paths = [row["path"] for row in self.locks]
         self.view_paths = sorted(set(row["view_path"] for row in self.locks))
         RuntimeError.__init__(self,
-            _contract_text("CRESCENDO-SUITE-LOCK: Private view is in use: %s. Close its private Maestro/config/schematic "
+            _contract_text("CRESCENDO-SUITE-LOCK: Working view is in use: %s. Close its Maestro working copy/config/schematic "
             "editor and retry; Load and Inspect is not required. Native locks were retained.")
             % ", ".join(self.view_paths))
 
@@ -33,13 +33,13 @@ class PrivateViewBusy(RuntimeError):
 def _object_identity(path):
     info = os.lstat(path)
     if stat.S_ISLNK(info.st_mode):
-        raise ValueError("Private view contains a symbolic link: " + path)
+        raise ValueError("Working view contains a symbolic link: " + path)
     if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
-        raise ValueError("Private view contains an unsupported object: " + path)
+        raise ValueError("Working view contains an unsupported object: " + path)
     if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
-        raise ValueError("Private view contains a hard-linked file: " + path)
+        raise ValueError("Working view contains a hard-linked file: " + path)
     if info.st_uid != os.getuid():
-        raise ValueError("Private view object belongs to another user: " + path)
+        raise ValueError("Working view object belongs to another user: " + path)
     return info
 
 
@@ -51,25 +51,25 @@ def _inventory(workspace):
         target = row.get("target") or []
         if (len(target) != 3 or any(not isinstance(part, str) or not part
                 or part in (".", "..") or os.path.basename(part) != part for part in target)):
-            raise ValueError("Private view identity is invalid")
+            raise ValueError("Working view identity is invalid")
         path = row.get("path") or ""
         if (not os.path.isabs(path) or os.path.realpath(path) != path
                 or not owns_view(workspace, target, role=row.get("role"))):
-            raise ValueError("Private view path or ownership is unproven: " + path)
+            raise ValueError("Working view path or ownership is unproven: " + path)
         if path in seen:
-            raise ValueError("Private view registry contains a duplicate: " + path)
+            raise ValueError("Working view registry contains a duplicate: " + path)
         seen.add(path)
         # Native creation reserves the exact absent destination before writing.
         if not os.path.lexists(path):
             continue
         root_info = _object_identity(path)
         if not stat.S_ISDIR(root_info.st_mode):
-            raise ValueError("Private view is not a directory: " + path)
+            raise ValueError("Working view is not a directory: " + path)
         marker = os.path.join(path, MARKER)
         marker_info = _object_identity(marker)
         if (not stat.S_ISREG(marker_info.st_mode)
                 or not owns_view(workspace, target, role=row.get("role"), require_marker=True)):
-            raise ValueError("Private view marker is unproven: " + path)
+            raise ValueError("Working view marker is unproven: " + path)
         views.append(path)
         pending = [path]
         while pending:
@@ -107,7 +107,7 @@ def _set_access(workspace, writable):
     changed = []
     for path, before in objects:
         if os.path.realpath(path) != path:
-            raise ValueError("Private view object changed path: " + path)
+            raise ValueError("Working view object changed path: " + path)
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         if stat.S_ISDIR(before.st_mode):
             flags |= getattr(os, "O_DIRECTORY", 0)
@@ -117,7 +117,7 @@ def _set_access(workspace, writable):
             if ((current.st_dev, current.st_ino, current.st_uid, current.st_nlink)
                     != (before.st_dev, before.st_ino, before.st_uid, before.st_nlink)
                     or stat.S_IFMT(current.st_mode) != stat.S_IFMT(before.st_mode)):
-                raise ValueError("Private view object changed during access update: " + path)
+                raise ValueError("Working view object changed during access update: " + path)
             mode = stat.S_IMODE(current.st_mode) | stat.S_IRUSR
             if stat.S_ISDIR(current.st_mode):
                 mode |= stat.S_IXUSR

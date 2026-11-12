@@ -9,9 +9,9 @@ Crescendo is a guided circuit optimizer that runs inside Cadence Maestro. Pick t
 ## What it does
 
 - **Six-step workflow**: Design → Parameters → Goals → Run → Results → Trade-offs, shown as the left-hand navigation with a tick for each finished step.
-- **Simple and Pro modes**: the default view keeps only the main flow. Pro mode adds private suites, history, optional PDK range checks, algorithm parameters, run/submit commands, EDA overrides and three-stage link diagnostics. Switching modes changes what is shown, never the settings.
+- **Simple and Pro modes**: the default view keeps only the main flow. Pro mode adds working copies, history, optional PDK range checks, algorithm parameters, run/submit commands, EDA overrides and three-stage link diagnostics. Switching modes changes what is shown, never the settings.
 - **Search**: NSGA-II (automatic for two or more objectives), differential evolution and Bayesian optimization; per-corner objectives and constraints with `max` / `mean` aggregation.
-- **Execution**: Spectre or ALPS, locally or on a batch cluster; a private copy of the Maestro setup is used for every run, and a checkpoint is written after every candidate so runs can be stopped and resumed.
+- **Execution**: Spectre or ALPS, locally or on a batch cluster; a working copy of the Maestro setup is used for every run, and a checkpoint is written after every candidate so runs can be stopped and resumed.
 - **Live results**: KPI tiles, best-so-far convergence per objective, a candidate table, Pareto plots that jump to a candidate on click, CSV and full-dataset export. **Timing details...** shows generation and selected-candidate phases, with solver evidence, coverage and parallel limits explained in the [execution timing guide](docs/EXECUTION_TIMING.md).
 - **Large projects**: on a synthetic project with 4,000 blocks and 50,726 parameters the parameter tree renders without freezing the window for more than 74 ms.
 
@@ -45,11 +45,19 @@ The demo service generates synthetic op-amp-like metrics (a seeded, analytic two
 
 Crescendo reads the Maestro window it was opened from. Tools, model directories and simulators are detected from that window's environment and can be overridden in **Settings → EDA** (Pro mode).
 
+The execution modes describe who generates and solves the simulation:
+
+| Mode | How it runs |
+| --- | --- |
+| **Native Run** | Maestro runs the simulation; Crescendo sets parameters and reads results. |
+| **Maestro Netlist** | Maestro generates netlists; Crescendo's solver pool solves them in parallel within configured limits. |
+| **Template Netlist** | Crescendo changes parameters in a qualified template and solves it; qualified cases can fall back to Maestro generation. |
+
 Pro execution settings include the following resource controls, frozen in each new run:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `native_candidate_batching` | `generation` for new configurations | One owned native Run per generation; `serial` runs candidates individually. Existing configurations without this key and old checkpoints retain serial behavior. Private Netlist templates continue to materialize directly. |
+| `native_candidate_batching` | `generation` for new configurations | One owned native Run per generation; `serial` runs candidates individually. Existing configurations without this key and old checkpoints retain serial behavior. Qualified Template Netlist runs continue to materialize directly. |
 | `local_solver_max_jobs` | `1` | Explicit Local solver slots; effective concurrency also obeys Global and Test limits. |
 | `measurement_jobs` | `null`, automatic `min(2, G)` | Local reader workers; explicit values are capped by Global capacity `G`. |
 | `progress_flush_interval_seconds` | `0.5` | Minimum display snapshot interval; terminal events, ownership and checkpoint acknowledgements remain immediate. |
@@ -80,7 +88,7 @@ Query/cancel templates may also bind `{cwd}`, `{job_script}`, `{test}`, `{corner
 `{point_id}`, `{threads}`, `{scheduler_stdout}` and `{scheduler_stderr}` from the
 owned task. Standalone diagnostic queries have `{cwd}` and available task metadata;
 use a wrapper with a self-contained Job ID interface when other bindings are unavailable.
-The two log placeholders allocate private per-task paths; your submit wrapper must
+The two log placeholders allocate per-task paths; your submit wrapper must
 route the scheduler's output there. Missing query or cancel templates block Cluster
 preparation; Local execution needs neither. `command_scheduler` accepts `auto`
 (track when templates are configured), `batch` (explicit tracking), or `receipt`
@@ -117,6 +125,28 @@ Submit wrappers return a unique `JOB_ID: 10000001`, a JSON `jobId`, a `JOBID MES
 or an explicit `Submitted batch job 10000001` acknowledgement. Scheduler task logs
 may contain `TASK_INFO` records with the exact owned Job ID; these provide bounded
 log evidence and never authorize completion by themselves.
+
+## What Crescendo creates
+
+Your original schematic and Maestro view stay read-only. Crescendo writes parameters and run settings only to its working copies; it does not write optimized values back to the original.
+
+| Item | Location and purpose |
+| --- | --- |
+| Working views | In the original library, under each source cell: a Maestro view for the selected setup, config views for the selected designs, and occurrence-specific working schematic views for the selected hierarchy. Unchanged references stay read-only. Names follow `cr_s_<token8>_<label>_<role>_<hash10>`: a session token, sanitized optimization label (up to 32 characters), role and identity hash. Each view has a `.crescendo-owned-view.json` ownership marker, matched against the session registry. |
+| Project state | `<project>/.crescendo/<TB>__<library>_<view>_<hash>/`: `states/` holds saved UI/configuration state, `index.json` indexes the design, and `cache/` holds probes. The effective metadata directory is recorded in `runtime.design_root`. `setup_private_sessions/<session-id>/` holds working-copy ownership, inspected snapshots, configuration and workspace records (under `runtime.design_root`, or `runtime.run_root` if no design root is configured). |
+| Run results | Normally `<data-root>/crescendo/<design-namespace>/<optimization>__<timestamp>_<token>/`. The data root comes from the selected Maestro Save Options (initial discovery falls back to `<project>/simulation` if unavailable); **Data Root Override** (`runtime.data_root_override`) changes it. Before selecting a design, the standalone default run parent is `<project>/.crescendo/runs`. Root overrides after design selection are described below. A reloaded setup with an unconfirmed save root requires an explicit data-root choice before a real run. |
+| Checkpoints and logs | Each run keeps `checkpoint.json`, the incremental `optimization.crescendo` dataset, result/status and timing evidence, and `crescendo.log`. Keep these together for Resume and export. Native histories are under the working-copy workspace's `simulation/`; its `_scratch/` holds local PSF/RDB staging. |
+| Temporary files | Launch/browse probes normally live in the design's `cache/probes/`. Small launcher files also use the system temporary directory (`TMPDIR`, normally `/tmp`). Registered scratch has a `.cr_scratch_owner.json` receipt; its default budget is 128 MiB (`runtime.local_scratch_budget_bytes`). Simulation data stays in the configured data directory. |
+
+**Root overrides.** When the UI loads an explicit configuration with `runtime.run_root: <base>`, selecting a design puts metadata in `<base>/<design-namespace>/` and runs in `<base>/<design-namespace>/runs/<run-name>/`. Relative `<base>` paths resolve against the configuration file's directory. `CRESCENDO_RUN_ROOT` takes precedence (relative to the launch working directory) and uses the same design namespace. The loader records this base as `runtime.storage_base_override`; the selected design's effective `runtime.design_root` and `runtime.run_root` then point to the namespaced directories. **Data Root Override** takes precedence for simulation results, using `<data-root>/crescendo/<design-namespace>/<run-name>/`, while metadata stays at its selected location. At the lower-level storage-policy API, `runtime.run_root_override` selects a direct run parent only when no namespace override is active; it is distinct from the UI configuration-loading flow. Changing roots selects new storage locations; retain the old results and working-copy registry until their runs and views have been retired.
+
+**Creation and reuse.** **Load and Inspect** creates the Maestro/config working copy; **Apply Selected Cells** builds and binds the selected working hierarchy. Candidates and generations borrow and reset that copy, rather than copying the entire library for every candidate. In Pro mode, **Design → Working Copies → Manage / Load Working Copies…** lists saved copies and their member paths; it supports loading, selective updates, renaming, recovery and deletion. **Settings → Maestro Working Copy** shows inherited native settings; **Open Config** shows the bindings.
+
+**Completion, Stop and exit.** Completed candidates are saved to the dataset and checkpoint before eligible raw CLI workspaces are removed. Shared CLI cleanup waits until every logical consumer has committed; interrupted waits are reconciled on Resume. Native Run also releases each shared-history consumer after its checkpoint commit, but retains the native history/PSF as evidence; releasing a reference does **not** mean deleting that history. Netlist preparation evidence is retained. Stop first stops owned work and proves termination; unknown remote state blocks cleanup and Resume. Normal exit stops active work, releases working-copy leases and cleans proven scratch and temporary retained logs. It preserves saved working views and their registry for reuse. Neither finishing nor stopping a run deletes all saved working copies.
+
+**After an interruption.** On reopening, the list reads durable ownership/session records and checks leases, view markers, snapshots and pending transactions. Loading or **Resume** reconciles the exact previous native/CLI owner before new submissions; a vanished UI or job is insufficient proof of termination. Incomplete creation/refresh, changed or missing ownership evidence, active editors/locks, or an unproven stop can retain or isolate a copy and block reuse/deletion. Use the list's recovery action when offered and review its warnings; recovery can keep backups and replaced views as evidence. **Retry Exit** retries unresolved shutdown cleanup. **Close Window Only** preserves pending work and isolates its copy; it does not confirm remote termination.
+
+**Disk space and manual cleanup.** Prefer **Delete** in the working-copy list after stopping the run and closing its Maestro/config/schematic editors; confirm the selected copy in the deletion dialog. It checks exact registry membership, markers and writer termination. Never delete views by the `cr_s_` prefix alone, remove native locks, or delete the registry while its views remain. Raw candidate cleanup is proof-based, not an age/size retention limit: native histories, failed/pending evidence and saved copies can keep growing. Export/archive results first. Only after all owned jobs/readers have stopped and Resume is no longer needed may you remove a whole retired run directory; this loses its checkpoint, results and diagnostics. Keep saved-copy metadata until its views have been deleted through the manager. Remove leftover scratch only with its ownership receipt and producer-stop proof; do not sweep unrelated temporary directories.
 
 ## CLI for agents
 

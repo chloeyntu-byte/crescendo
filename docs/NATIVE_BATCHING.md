@@ -1,14 +1,14 @@
-# Native Baseline generation batching
+# Native Run generation batching
 
 New configurations select `native_candidate_batching: "generation"`; Pro Settings
 can select `serial`. Old configuration files without the field, and old
 checkpoints without the setting keep `serial`. The frozen spec and checkpoint
 manifest carry the setting and `crescendo.generation_batch.v1`. Netlist modes
 also freeze `native_batching_protocol` with the mode-specific version below.
-Baseline continues to require a
+Native Run continues to require a
 Command Job Setup.
 
-One generation borrows and resets the private suite once, opens one owned Ocean,
+One generation borrows and resets the working copy once, opens one owned Ocean,
 checks that Maestro and XL refer to the same session, writes equal-length Device
 Parameter columns, and creates one parametric set. Native getters verify every
 column, set member and enable switch; the original corner schedule is verified
@@ -41,7 +41,7 @@ across generations.
 Candidate commits reach the core data and checkpoint before their shared-history
 reference is released. Each batch has a durable consumer ledger; compaction
 cannot proceed while any consumer is uncommitted. Shared native histories and
-PSF retain Baseline's existing evidence-retention policy, outside individual
+PSF retain Native Run's existing evidence-retention policy, outside individual
 candidate directories. This release does not introduce eager deletion of them.
 Shared setup/Run/reader/cleanup phases appear once in `batch_timing.json`;
 candidate timings refer to it. Generation summaries include logical candidates,
@@ -57,7 +57,7 @@ Resume. Resume reconciles the previous owner before creating or borrowing a
 suite, skips only durable completed candidates, and assigns a new epoch to all
 unfinished candidates. The optimization ask/tell barrier is unchanged.
 
-## Private Maestro and Private Netlist
+## Maestro Netlist and Template Netlist
 
 New `maestro_netlist` runs freeze
 `native_batching_protocol: "crescendo.maestro_netlist_batch.v1"`. New
@@ -67,12 +67,12 @@ manifest/spec mismatches fail checkpoint validation. A resumed Netlist
 checkpoint without the marker executes each candidate independently, including
 older checkpoints that already saved `native_candidate_batching: "generation"`
 and `crescendo.generation_batch.v1`. Resume preserves those frozen fields and
-keeps the marker absent. Historical Baseline generation checkpoints retain their
+keeps the marker absent. Historical Native Run generation checkpoints retain their
 existing generation behavior.
 
 `maestro_netlist` uses the same generation schema, native columns, owned set,
 exact-history map and `native_candidate_batching` selector. A generation-level
-prepare barrier borrows and resets the applied private suite once. Its one Run
+prepare barrier borrows and resets the applied working copy once. Its one Run
 uses Local maxjobs=2 with worker reuse and prestart disabled. The owned simulator
 wrapper records cwd/argv and exits 1. Full native/RDB point coverage, per-row
 corner coverage and native parameter application must pass despite every
@@ -111,7 +111,7 @@ ownership first, keeps durable completed logical candidates and gives pending
 candidates a fresh generation epoch. Failures after CLI intent cannot select a
 new generation strategy.
 
-Private Netlist uses `materialize_candidate` when template qualification passes.
+Template Netlist uses `materialize_candidate` when template qualification passes.
 Only its existing `native_numeric_derived_parameters` and
 `native_selected_parameter_binding` evidence permits native generation fallback.
 Those cases enter the generation barrier above. Unknown expression, topology,
@@ -120,8 +120,8 @@ Static file identities and frozen artifacts are checked per point before CLI.
 Changed include contents, locations or generated SCS invalidate the affected
 input. A later capture discovers its own include tree and structure again.
 
-Template qualification already borrows one private suite once for all four
-reference captures, with no intervening suite reset. The untouched baseline
+Template qualification already borrows one working copy once for all four
+reference captures, with no intervening suite reset. The untouched reference
 establishes the actual seeds before numeric/low/high references are constructed.
 Each capture currently owns a short-lived Ocean guardian, closes its session,
 and proves termination before reference comparison. This implementation retains
@@ -132,10 +132,10 @@ reuse preserves all four independent reference comparisons.
 ## Audit and Stop prerequisites
 
 The native batch manifest includes the column/set enable readback, unchanged
-corner list, native corner schedule and effective job policy. Private captures
+corner list, native corner schedule and effective job policy. Maestro captures
 also include per-row corner coverage and all-point wrapper coverage.
 
-Each generation borrows and resets the same applied private suite. The suite is
+Each generation borrows and resets the same applied working copy. The suite is
 retained across generations. For native Command Runs, omitting
 `scheduler_query_template` leaves insufficient terminal evidence when Stop
 interrupts a Run. Such ownership falls into `cleanup_pending` and blocks Resume

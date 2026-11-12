@@ -36,7 +36,7 @@ PRODUCT = "Crescendo"
 # internal page key -> (nav label, step number or None, eyebrow, title, subtitle)
 PAGES = (
     ("Design Setup", "Design", 1, "Step 1", "Design Setup",
-     "Read the Maestro setup, then pick the Test and the circuit blocks to optimize. Your original design is never modified; Crescendo works on a private copy."),
+     "Read the Maestro setup, then pick the Test and the circuit blocks to optimize. Your original design is never modified; Crescendo works on a working copy."),
     ("Parameters", "Parameters", 2, "Step 2", "Choose Parameters",
      "Tick the device parameters the optimizer may tune and check their bounds. All W / L can be selected in one click."),
     ("Objectives & Constraints", "Goals", 3, "Step 3", "Goals & Constraints",
@@ -48,7 +48,7 @@ PAGES = (
     ("Pareto Trade-offs", "Trade-offs", 6, "Step 6", "Pareto Trade-offs",
      "Trade-offs between objectives. Highlighted points lie on the full-dimensional Pareto front; click any point to jump to that candidate."),
     ("EDA Settings", "Settings", None, "Pro mode", "Settings",
-     "Private Maestro, EDA toolchain, run commands and link diagnostics. Detected values are kept; only explicit overrides take effect."),
+     "Maestro working copy, EDA toolchain, run commands and link diagnostics. Detected values are kept; only explicit overrides take effect."),
 )
 PAGE_INFO = dict((row[0], row) for row in PAGES)
 PAGE_INFO["Settings"] = PAGE_INFO["EDA Settings"]
@@ -928,17 +928,17 @@ class CrescendoGui(_Base):
         self.apply_cells_button = ttk.Button(actions, text="Apply Selected Cells  →", style="Accent.TButton",
                                              command=self.apply_selected_cells, state="disabled")
         self.apply_cells_button.pack(side="left")
-        self.private_setup_var = tk.StringVar(value="The private Maestro / config is created by Load and Inspect; the original design stays read-only.")
+        self.private_setup_var = tk.StringVar(value="The Maestro / config working copy is created by Load and Inspect; the original design stays read-only.")
         private_label = ttk.Label(actions, textvariable=self.private_setup_var, style="Help.TLabel", wraplength=700,
                                   justify="left")
         private_label.pack(side="left", padx=14, fill="x", expand=True)
         self._advanced(private_label)
 
         suite_card = self._card(parent)
-        ttk.Label(suite_card, text="Private Suites", style="CardTitle.TLabel").pack(anchor="w")
-        ttk.Label(suite_card, text="A suite stores the inspected Test, cells, parameters and configuration; load it whole next time, update parts of it, rename or delete it.",
+        ttk.Label(suite_card, text="Working Copies", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Label(suite_card, text="A working copy stores the inspected Test, cells, parameters and configuration; load it whole next time, update parts of it, rename or delete it.",
                   style="CardMuted.TLabel", wraplength=980).pack(anchor="w", pady=(4, 8))
-        ttk.Button(suite_card, text="Manage / Load Private Suites…", command=self.open_private_suites).pack(anchor="w")
+        ttk.Button(suite_card, text="Manage / Load Working Copies…", command=self.open_private_suites).pack(anchor="w")
         self._advanced(suite_card)
 
         config_card = self._card(parent, padding=(18, 12))

@@ -83,7 +83,7 @@ def _safe_remove_workspace(workspace, job_root):
         raise RuntimeError("range validation workspace unexpectedly became a symbolic link")
     source_check = verify_sources_unchanged(workspace)
     if not source_check["ok"]:
-        raise RuntimeError("source library changed during range validation; private workspace preserved")
+        raise RuntimeError("source library changed during range validation; working workspace preserved")
     from .same_library_views import cleanup_same_library_views
     cleanup = cleanup_same_library_views(workspace, process_cleanup_proven=True)
     if not cleanup["cleanup_proven"]:
@@ -135,7 +135,7 @@ def run_range_validation(job, prepared, variables, config, cancel_event, update,
     """Validate endpoints through the candidate's native Run generation path.
 
     No solver or scheduler is started.  SCS and capture evidence are retained;
-    only owned private OA views are cleaned after native-process termination.
+    only owned working OA views are cleaned after native-process termination.
     """
     from .netlist_providers import prepare_maestro_netlists
     from .private_netlist import reconcile_preparation

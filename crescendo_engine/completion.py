@@ -32,10 +32,10 @@ _DONE_MESSAGES = set(("done", "completed", "complete", "passed", "pass", "succes
 def _relative_artifact(path, workspace_root, label):
     absolute = os.path.abspath(path)
     if not is_under(absolute, workspace_root):
-        raise CompletionEvidenceError("%s escapes the private candidate workspace: %s" % (label, absolute))
+        raise CompletionEvidenceError("%s escapes the working candidate workspace: %s" % (label, absolute))
     real = os.path.realpath(absolute)
     if not is_under(real, workspace_root):
-        raise CompletionEvidenceError("%s resolves outside the private candidate workspace: %s" % (label, absolute))
+        raise CompletionEvidenceError("%s resolves outside the working candidate workspace: %s" % (label, absolute))
     return os.path.relpath(absolute, workspace_root).replace(os.sep, "/")
 
 
@@ -45,11 +45,11 @@ def _owned_setup_results_root(workspace):
     from .same_library_views import owns_view
     target = tuple(workspace.get(key) for key in ("primary_library", "setup_cell", "setup_view"))
     if not all(target) or not owns_view(workspace, target, role="maestro", require_marker=True):
-        raise CompletionEvidenceError("private Maestro result ownership was not proven")
+        raise CompletionEvidenceError("Maestro working copy result ownership was not proven")
     setup_dir = workspace.get("setup_dir")
     expected = os.path.join(os.path.realpath(workspace["source_libraries"][target[0]]), target[1], target[2])
     if not setup_dir or os.path.abspath(setup_dir) != expected:
-        raise CompletionEvidenceError("private Maestro setup does not match its exact owned view")
+        raise CompletionEvidenceError("Maestro working copy setup does not match its exact owned view")
     return os.path.join(expected, "results", "maestro")
 
 
@@ -243,7 +243,7 @@ def _validate_rdb_identity(workspace, command, parsed, history_name):
         raise CompletionEvidenceError("the bound ADE RDB is missing")
     if (command.get('schema_version') == _contract_text('crescendo.maestro_baseline.v1') and
             (not command.get('rdb_path') or os.path.abspath(path) != os.path.abspath(command['rdb_path']))):
-        raise CompletionEvidenceError('Native Maestro baseline RDB differs from the bound history path')
+        raise CompletionEvidenceError('Native Run RDB differs from the bound history path')
     relative = _artifact_reference(path, workspace, "ADE RDB")
     info = os.lstat(path)
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
@@ -338,7 +338,7 @@ def _validate_statuses(setup, parsed, point_map, native_corner_identity=None, po
         if not isinstance(snapshot, dict) or not isinstance(schedule, dict) or snapshot.get("ok") is not True or not (
                 (snapshot.get("saved_source") or {}).get("corner_read_ok") is True and
                 (snapshot.get("private_setup") or {}).get("corner_read_ok") is True):
-            raise CompletionEvidenceError("native saved/private corner snapshot is not proven")
+            raise CompletionEvidenceError("native saved/working corner snapshot is not proven")
         if point_identity_loader is not None:
             point_identity_loader(results)
         try:
@@ -752,7 +752,7 @@ def _baseline_history_protocol(command, candidate_root, history_name):
     import math
     record = command.get('native_baseline')
     if command.get('schema_version') != _contract_text('crescendo.maestro_baseline.v1') or not isinstance(record, dict):
-        raise UnsupportedCompletionEvidence('Native Maestro baseline protocol evidence is unavailable')
+        raise UnsupportedCompletionEvidence('Native Run protocol evidence is unavailable')
     if (record.get('schema_version') != _contract_text('crescendo.maestro_baseline.v1') or
             not isinstance(record.get('candidate_id'), str) or not record.get('candidate_id') or
             record.get('candidate_id') != command.get('candidate_id') or
@@ -760,46 +760,46 @@ def _baseline_history_protocol(command, candidate_root, history_name):
             record.get('history_name') != history_name or record.get('run_id') != command.get('run_id') or
             not isinstance(record.get('run_id'), str) or not record.get('run_id') or
             record.get('native_session_closed') is not True or record.get('local_cleanup_proven') is not True):
-        raise CompletionEvidenceError('Native Maestro baseline run, history or cleanup identity is unproven')
+        raise CompletionEvidenceError('Native Run identity, history or cleanup identity is unproven')
     started, finished = record.get('started_epoch'), record.get('finished_epoch')
     if (isinstance(started, bool) or isinstance(finished, bool) or
             not isinstance(started, (int, float)) or not isinstance(finished, (int, float)) or
             not math.isfinite(started) or not math.isfinite(finished) or started <= 0 or finished < started or
             command.get('started_epoch') != started or command.get('finished_epoch') != finished):
-        raise CompletionEvidenceError('Native Maestro baseline timestamps are invalid')
+        raise CompletionEvidenceError('Native Run timestamps are invalid')
     nonce, path = record.get('nonce'), record.get('protocol_path')
     if (not isinstance(nonce, str) or not re.fullmatch(r'[a-f0-9]{32}', nonce) or
             not isinstance(path, str) or os.path.abspath(path) != os.path.join(os.path.abspath(candidate_root), 'native_baseline', 'native_baseline_protocol.tsv')):
-        raise CompletionEvidenceError('Native Maestro baseline protocol path or nonce is invalid')
-    _relative_artifact(path, os.path.abspath(candidate_root), 'native baseline protocol')
+        raise CompletionEvidenceError('Native Run protocol path or nonce is invalid')
+    _relative_artifact(path, os.path.abspath(candidate_root), 'Native Run protocol')
     try:
         info = os.lstat(path)
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 1024 * 1024 or info.st_mtime + 2 < started:
-            raise CompletionEvidenceError('Native Maestro baseline protocol is not a fresh owned regular file')
+            raise CompletionEvidenceError('Native Run protocol is not a fresh owned regular file')
         descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
         with os.fdopen(descriptor, 'rb') as stream:
             if not os.path.samestat(info, os.fstat(stream.fileno())):
-                raise CompletionEvidenceError('Native Maestro baseline protocol changed during open')
+                raise CompletionEvidenceError('Native Run protocol changed during open')
             raw = stream.read(1024 * 1024 + 1)
     except OSError as error:
-        raise UnsupportedCompletionEvidence('Native Maestro baseline protocol could not be read: %s' % error)
+        raise UnsupportedCompletionEvidence('Native Run protocol could not be read: %s' % error)
     if len(raw) > 1024 * 1024 or hashlib.sha256(raw).hexdigest() != record.get('protocol_sha256'):
-        raise CompletionEvidenceError('Native Maestro baseline protocol hash differs')
+        raise CompletionEvidenceError('Native Run protocol hash differs')
     try:
         rows = [line.split('\t') for line in raw.decode('utf-8').splitlines()]
     except UnicodeError:
-        raise CompletionEvidenceError('Native Maestro baseline protocol encoding is invalid')
+        raise CompletionEvidenceError('Native Run protocol encoding is invalid')
     if any(len(row) != 3 or row[0] != nonce for row in rows):
-        raise CompletionEvidenceError('Native Maestro baseline protocol record identity differs')
+        raise CompletionEvidenceError('Native Run protocol record identity differs')
     observed = [{'state': row[1], 'value': row[2], 'sequence': index} for index, row in enumerate(rows)]
     if observed != record.get('records'):
-        raise CompletionEvidenceError('Native Maestro baseline protocol records differ')
+        raise CompletionEvidenceError('Native Run protocol records differ')
     required = ['RUN_BEGIN', 'RUN_ID', 'SIM_DONE', 'WAIT_RETURN', 'HISTORY', 'CLOSED']
     selected = [row for row in observed if row['state'] in required]
     if ([row['state'] for row in selected] != required or
             any(row['state'] in ('ERROR', 'STOP_ERROR', 'STOP_BEGIN', 'STOP_DONE') for row in observed) or
             selected[1]['value'] != record['run_id'] or selected[4]['value'] != history_name):
-        raise CompletionEvidenceError('Native Maestro baseline Run/Wait/Close protocol is incomplete or ambiguous')
+        raise CompletionEvidenceError('Native Run Run/Wait/Close protocol is incomplete or ambiguous')
     return {'kind': 'native_maestro_history_point', 'schema_version': _contract_text('crescendo.maestro_baseline.v1'),
             'candidate_id': record['candidate_id'], 'run_id': record['run_id'], 'history_name': history_name,
             'protocol_sha256': record['protocol_sha256'], 'started_epoch': started, 'finished_epoch': finished}
@@ -917,7 +917,7 @@ def validate_candidate_completion(workspace, candidate_root, command, parsed, se
     native_identity = command.get("native_corner_identity", workspace.get("native_corner_identity"))
     if (simulator == 'alps' and command.get('schema_version') == _contract_text('crescendo.maestro_baseline.v1') and
             (not isinstance(native_identity, dict) or native_identity.get('point_parameters_required') is not True)):
-        raise UnsupportedCompletionEvidence('Native Maestro baseline requires exact corner identity and point parameter readback')
+        raise UnsupportedCompletionEvidence('Native Run requires exact corner identity and point parameter readback')
     parsed.pop('native_effective_scope', None)
     def point_identity_loader(statuses):
         _load_native_point_identity(workspace, setup, command, history_name, statuses,

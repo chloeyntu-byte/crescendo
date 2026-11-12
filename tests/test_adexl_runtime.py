@@ -133,7 +133,7 @@ class AdeXLRuntimeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             setup = _setup(os.path.join(root, "source"))
             runtime_root = os.path.join(root, "runtime")
-            with self.assertRaisesRegex(ValueError, "explicit private workspace"):
+            with self.assertRaisesRegex(ValueError, "explicit workspace copy"):
                 AdeXLRuntimeBuilder(
                     setup, runtime_root, require_private_workspace=True,
                 )

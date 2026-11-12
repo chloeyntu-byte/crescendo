@@ -681,7 +681,7 @@ def _run_expanded_environment_probes(config, prepared, root, emit=None, cancel=N
                     "view": invocation.get("view") or source.get("view") or locator.get("view_name"),
                     "setup_path": invocation.get("setup_path") or source.get("maestro_sdb") or source.get("setup_db") or locator.get("path"),
                     "work_dir": (storage or {}).get("work_dir"), "cds_lib": cadence.get("cds_lib")}
-        return ("PASS" if setup and prepared.get("source_identity") else "WARN"), "Inspected setup identity and effective test/corner metadata; engine must verify the private readback", {
+        return ("PASS" if setup and prepared.get("source_identity") else "WARN"), "Inspected setup identity and effective test/corner metadata; engine must verify the working readback", {
             "prepared_schema": prepared.get("schema_version"), "setup_source": identity,
             "source_enabled_tests": [row.get("name") for row in setup.get("tests") or [] if row.get("enabled", True)],
             "setup_backend": setup.get("backend"), "tests": [{"name": row.get("name"), "enabled": row.get("enabled"),
@@ -817,7 +817,7 @@ def run_environment_probes(config, prepared, root, emit=None, cancel=None, spec=
                                for key, value in (row.get("properties") or {}).items()
                                if key in ("starttimeout", "configuretimeout", "configuredtimeout", "runtimeout", "lingertimeout")))
                                for row in [_policy.get("global") or {}] + (_policy.get("tests") or [])),
-        "scope": "three ordered stages: native baseline then private netlist CLI then per-candidate native-generated netlist CLI; one frozen candidate, requested tests/analyses/corners/sweeps; independent stages may continue after failure; source identity unchanged"}))
+        "scope": "three ordered stages: Native Run then Template Netlist CLI then per-candidate native-generated netlist CLI; one frozen candidate, requested tests/analyses/corners/sweeps; independent stages may continue after failure; source identity unchanged"}))
     return reporter.checks
 
 

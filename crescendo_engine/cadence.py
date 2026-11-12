@@ -577,7 +577,7 @@ def discover_eda_environment(overrides=None, validate=True, environ=None):
         explicit = bool(overrides.get(key) or environ.get(_contract_text("CRESCENDO_") + simulator_name.upper() + "_MODEL_DIR"))
         checks.append({"name": key, "ok": bool(value and os.path.isdir(value) and os.access(value, os.R_OK | os.X_OK)),
                        "value": value, "optional": not explicit and (simulator_name != "alps" or simulator != "alps"),
-                       "message": "Model format/section identity is qualified by the private netlist; directories are discovered independently"})
+                       "message": "Model format/section identity is qualified by the generated netlist; directories are discovered independently"})
     missing = [row["name"] for row in checks if not row["ok"] and not row.get("optional")]
 
     recommendations = []

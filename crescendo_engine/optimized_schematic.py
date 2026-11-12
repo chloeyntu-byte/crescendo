@@ -181,7 +181,7 @@ def build_export_evidence(candidate, parameters, template_manifest=None, source_
     if backend == "private_netlist":
         manifest = template_manifest or {}
         if not manifest.get("qualification", {}).get("ok"):
-            raise OptimizedSchematicError("Qualified private netlist identity is missing")
+            raise OptimizedSchematicError("Qualified Template Netlist identity is missing")
         if completion.get("template_sha256") != manifest.get("manifest_sha256"):
             raise OptimizedSchematicError("Candidate and native template identities do not match")
         proven = completion.get("parameters") or {}

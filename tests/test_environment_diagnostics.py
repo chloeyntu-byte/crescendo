@@ -1287,7 +1287,7 @@ class MissingOutputSourceEvidenceTests(unittest.TestCase):
 
     def test_reads_only_current_requested_outputs_and_records_literal_identity(self):
         self.write('''<state><test Name="C">
-          <field Name="outputList_1"><field Name="name">"gain"</field><field Name="expression">"db20(VF(\\\"/out\\\"))"</field></field>
+          <field Name="outputList_1"><field Name="name">"gain"</field><field Name="expression">"db20(VF(\\\"/out\\\"))"</field><field Name="password">"must-stay-hidden"</field></field>
           <field Name="outputList_2"><field Name="name">"power"</field><field Name="expr">"average(IT(\\\"/VDD\\\"))"</field></field>
           <field Name="outputList_3"><field Name="name">"phase"</field><field Name="expression">"not-requested-expression"</field></field>
           <history><field Name="outputList_4"><field Name="name">"gain"</field><field Name="expression">"historical-expression"</field></field></history>
@@ -1303,6 +1303,10 @@ class MissingOutputSourceEvidenceTests(unittest.TestCase):
         self.assertIn('expression',rows[0]['matches'][0]['field_names'])
         self.assertTrue(rows[0]['matches'][0]['parsed_expression_present'])
         raw = json.dumps(record)
+        fields = rows[0]['matches'][0]['fields']
+        sensitive = next(field for field in fields if field['name'] == 'password')
+        self.assertEqual(sensitive['value'], {'literal': '<redacted-sensitive-field>'})
+        self.assertNotIn('must-stay-hidden', raw)
         self.assertNotIn('historical-expression',raw)
         self.assertNotIn('field-history-expression',raw)
         self.assertNotIn('not-requested-expression',raw)

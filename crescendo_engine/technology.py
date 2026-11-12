@@ -116,7 +116,7 @@ def technology_probe_skill(manifest):
         _contract_text("  crescTechFailed = t"),
         ")",
         _contract_text("close(crescTechOut)"),
-        _contract_text('when(crescTechFailed error("Crescendo private workspace technology binding validation failed; inspect %s\\n"))')
+        _contract_text('when(crescTechFailed error("Crescendo working workspace technology binding validation failed; inspect %s\\n"))')
         % _skill_quote(output_path),
     ])
     return lines
@@ -164,7 +164,7 @@ def validate_workspace_technology(manifest, require_complete=True):
         result = {
             "ok": not require_complete,
             "status": "pending",
-            "error": "private technology probe has not run",
+            "error": "working technology probe has not run",
             "probe_path": path,
             "bindings": [],
         }
@@ -205,7 +205,7 @@ def validate_workspace_technology(manifest, require_complete=True):
     }
     if failures:
         raise TechnologyBindingError(
-            "private workspace technology binding validation failed: %s"
+            "working workspace technology binding validation failed: %s"
             % json.dumps(failures, sort_keys=True)
         )
     return result

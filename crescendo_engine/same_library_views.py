@@ -458,7 +458,7 @@ def build_same_library_clone_plan(workspace, parameters, values, clone_state="ab
         if path != "/" and not occurrence:
             raise ValueError("selected owner occurrence evidence is absent: %s" % path)
         if occurrence.get("fixed_view"):
-            raise ValueError("selected occurrence fixes its view; choose the private-library adapter: %s" % path)
+            raise ValueError("selected occurrence fixes its view; choose the copied-library adapter: %s" % path)
         result[key] = {"design_library": design[0], "design_cell": design[1], "design_view": design[2],
                        "occurrence_path": path, "parent_occurrence_path": occurrence.get("parent_path") or "/",
                        "instance": occurrence.get("name"), "source_library": source[0], "source_cell": source[1],

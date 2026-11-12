@@ -99,7 +99,7 @@ _TERMINAL_CANDIDATE_STATES = frozenset(("completed", "failed", "infrastructure_f
 _TERMINAL_RANGE_VALIDATION_STATES = frozenset(("completed", "failed", "cancelled"))
 _TERMINAL_RUN_STATES = frozenset(("completed", "failed", "stopped"))
 _FAILURE_STAGE_LABELS = {
-    "workspace_build": "Private workspace build",
+    "workspace_build": "Workspace copy build",
     "pdk_callback": "PDK / CDF callback",
     "parameter_application": "Parameter application",
     "parameter_verification": "Parameter verification after simulation",
@@ -431,7 +431,7 @@ def _worker_guardian_launch_lock_status(lock_path):
     except OSError as error:
         raise RuntimeError("worker guardian launch lock cannot be inspected: %s" % error)
     if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-        raise RuntimeError("worker guardian launch lock is not a private regular file")
+        raise RuntimeError("worker guardian launch lock is not an owner-only regular file")
     if os.path.ismount(lock_path):
         raise RuntimeError("worker guardian launch lock must not be a mount point")
     flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -2819,11 +2819,11 @@ class OptimizerService(PrivateSuiteServiceMixin):
             try:
                 result = close_setup_private_session(reference)
             except Exception as error:
-                raise RuntimeError("Previous private Maestro/config views could not be safely retired; "
-                                   "no new private suite was created. Evidence: %s (%s)" %
+                raise RuntimeError("Previous Maestro/config working-copy views could not be safely retired; "
+                                   "no new working copy was created. Evidence: %s (%s)" %
                                    (reference.get("root"), error))
             if result.get("cleanup_proven") is not True:
-                raise RuntimeError("Previous private Setup cleanup is unproven; no new private suite was created. Evidence: %s" % result)
+                raise RuntimeError("Previous working Setup cleanup is unproven; no new working copy was created. Evidence: %s" % result)
             with self.lock:
                 self.setup_private_sessions.pop(reference["session_id"], None)
         with self.lock:
@@ -2892,7 +2892,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                     "job_policy": job_policy,
                     "eda_context": {"cadence": self.eda_setup(setup)},
                 }
-                self._set_activity("private_copy", "Creating private Maestro and config views")
+                self._set_activity("private_copy", "Creating Maestro and config working copies")
                 self._prepare_setup_private_session(preview)
                 token = uuid.uuid4().hex
                 with self.lock:
@@ -3009,20 +3009,20 @@ class OptimizerService(PrivateSuiteServiceMixin):
                         with self.lock:
                             check_command_cancellation()
                             self.inspections[inspection_id] = record
-                self._set_activity("private_apply", "Applying selected cells to the private setup")
+                self._set_activity("private_apply", "Applying selected cells to the working setup")
                 self._apply_setup_private_cells(prepared, reference)
                 check_command_cancellation()
                 # Native readback can add legitimate metadata (for example
                 # per-Test corner masks). Seal once after it has completed,
                 # retaining the source identity from the parameter scan.
                 if record["identity"] != self._inspection_setup_identity(prepared["setup"]):
-                    raise ValueError("ADE setup changed during private Apply; Load and Inspect again.")
+                    raise ValueError("ADE setup changed during working Apply; Load and Inspect again.")
                 current_source_identity = source_design_identity(
                     prepared["setup"], prepared["hierarchy"], config=self.config)
                 if not self._private_session_source_matches(
                         {"source_identity": scanned_source_identity},
                         {"source_identity": current_source_identity}):
-                    raise ValueError("Source design changed during private Apply; Load and Inspect again.")
+                    raise ValueError("Source design changed during working Apply; Load and Inspect again.")
                 prepared["source_identity"] = scanned_source_identity
                 prepared.pop("suite_selection_required", None)
                 prepared["prepared_freshness"] = capture_prepared_freshness(prepared)
@@ -3208,7 +3208,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
         """Keep one owned suite; a new saved baseline replaces the old suite."""
         if (preview.get("setup") or {}).get("backend") != "maestro":
             return
-        self._require_idle_setup_resources("replace private Setup views")
+        self._require_idle_setup_resources("replace working Setup views")
         from .workspace import source_design_identity
         from .setup_private_session import (close_setup_private_session,
             create_setup_private_session, private_session_info)
@@ -3245,7 +3245,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 elif current and not self._private_session_source_matches(current, preview):
                     source_changed = True
         if source_changed:
-            self._set_activity("private_copy", "Source design changed; refreshing the private setup from the current design.", level="WARN")
+            self._set_activity("private_copy", "Source design changed; refreshing the working setup from the current design.", level="WARN")
         for reference in references:
             if reusable and reference["session_id"] == reusable["session_id"]:
                 continue
@@ -3254,14 +3254,14 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 cleanup = close_setup_private_session(reference)
             except Exception as error:
                 raise RuntimeError(
-                    "Previous private Maestro/config views could not be safely retired; "
-                    "no new private suite was created. Close any private editors, then "
+                    "Previous Maestro/config working-copy views could not be safely retired; "
+                    "no new working copy was created. Close any working editors, then "
                     "retry Load and Inspect. Evidence: %s (%s)" % (reference["root"], error))
             if cleanup.get("cleanup_proven") is not True:
                 raise RuntimeError(
-                    "Previous private Maestro/config views are still in use or their "
-                    "cleanup is unproven; no new private suite was created. Close any "
-                    "private editors, then retry Load and Inspect. Evidence: %s (%s)" %
+                    "Previous Maestro/config working-copy views are still in use or their "
+                    "cleanup is unproven; no new working copy was created. Close any "
+                    "working editors, then retry Load and Inspect. Evidence: %s (%s)" %
                     (reference["root"], cleanup.get("state") or "cleanup unproven"))
             with self.lock:
                 self.setup_private_sessions.pop(reference["session_id"], None)
@@ -3294,7 +3294,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
         preview["setup_private_session"] = reference
         if source_changed:
             preview.setdefault("setup_refresh_warnings", []).append(
-                "Source design changed since cell inspection; the private setup "
+                "Source design changed since cell inspection; the working setup "
                 "was rebuilt from the current design and matching selections retained.")
 
     def _apply_setup_private_cells(self, prepared, reference):
@@ -3325,7 +3325,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
             reference = ((prepared or {}).get("setup_private_session") or
                          ((inspected or {}).get("preview") or {}).get("setup_private_session"))
         if not reference:
-            raise ValueError("No private config is ready; use Load and Inspect first.")
+            raise ValueError("No working config is ready; use Load and Inspect first.")
         current = private_session_info(reference)
         current["diagnostic_log"] = os.path.join(reference["root"], _contract_text("environment_test.log"))
         return current
@@ -3366,7 +3366,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
             prepared["setup_private_session"] = active[0]
             return
         if active:
-            self._set_activity("suite_warning", "Multiple private suites match the checkpoint; using a separate workspace.", level="WARN")
+            self._set_activity("suite_warning", "Multiple Working Copies match the checkpoint; using a separate workspace.", level="WARN")
             return
         from .setup_private_session import list_setup_private_sessions, reopen_setup_private_session, close_setup_private_session
         candidates = [row for row in list_setup_private_sessions(self.config)
@@ -3376,7 +3376,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
             and sorted(row.get("applied_parameter_ids") or []) == parameters]
         if len(candidates) != 1:
             if len(candidates) > 1:
-                self._set_activity("suite_warning", "Multiple private suites match the checkpoint; using a separate workspace.", level="WARN")
+                self._set_activity("suite_warning", "Multiple Working Copies match the checkpoint; using a separate workspace.", level="WARN")
             return
         current = None
         try:
@@ -3415,9 +3415,9 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 if result.get("cleanup_proven") is not True:
                     # Live native work remains a separate stop failure. A stale
                     # view lock or chmod failure is only a release warning.
-                    raise RuntimeError("Private suite native work has not stopped: %s" % result)
+                    raise RuntimeError("working-copy native work has not stopped: %s" % result)
             except (OSError, ValueError) as error:
-                warnings.append("Private suite retained; release could not be completed: %s" % error)
+                warnings.append("working copy retained; release could not be completed: %s" % error)
         return {"cleanup_proven": True, "sessions": results, "warnings": warnings}
 
     def eda_setup(self, setup=None):
@@ -3582,7 +3582,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
         workspace_preflight = (prepared or {}).get("workspace_preflight") or {}
         if workspace_preflight.get("state") == "failed":
             raise RuntimeError(
-                "the private optimization workspace cannot be built before "
+                "the working optimization workspace cannot be built before "
                 "Cadence or Spectre starts. Fix source readability and then Load "
                 "and Inspect again; no candidate was launched: %s"
                 % (workspace_preflight.get("message") or "workspace build failed")
@@ -3672,7 +3672,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
             with self.lock:
                 active = self.optimization_launches or any(thread.is_alive() for thread in self.threads.values())
             if active:
-                raise RuntimeError("Range validation shares the Setup private views; stop optimization before validating ranges.")
+                raise RuntimeError("Range validation shares the working setup views; stop optimization before validating ranges.")
         require_unique_run_variables(prepared.get("setup") or {},
                                      action="validate CDF parameter ranges", multiplicity_only=True)
         self._validate_live_test_bindings(prepared.get("setup"))
@@ -4363,7 +4363,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
     def _validation_resources_are_isolated(self):
         """Only legacy/shared validation resources require a handoff.
 
-        New callback jobs have an actual, distinct POSIX lease and exact private
+        New callback jobs have an actual, distinct POSIX lease and exact working
         workspace namespaces. The optimization still takes its own lease,
         checks prepared source freshness/storage, and builds/verifies a fresh
         worker workspace before creating any Maestro process. A required source
@@ -4747,7 +4747,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                         active_inspections = [(key, copy.deepcopy(value)) for key, value in self.inspections.items()
                             if (value.get("preview") or {}).get("setup_private_session")]
                     if len(active_inspections) != 1:
-                        warnings.append("Current private suite has no unambiguous cell catalogue; configuration retained as a draft.")
+                        warnings.append("Current working copy has no unambiguous cell catalogue; configuration retained as a draft.")
                         result["match"] = match_configuration(normalized["document"], {})
                         result["match"]["selection_present"] = False
                         result["preserve_current_suite"] = True
@@ -4901,7 +4901,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                         (self.config, self.prepared, self.inspections,
                             self.test_inspections, self.inspection_epoch) = rollback
                     else:
-                        warnings.append("Cancellation retained private suite resources and source binding for recovery; review Private Suites before retrying.")
+                        warnings.append("Cancellation retained working-copy resources and source binding for recovery; review Working Copies before retrying.")
                 result["cancelled"] = True
             self._set_activity(stage, str(error), "error")
             result["preparation_error"] = "%s: %s" % (error.__class__.__name__, error)
@@ -5038,7 +5038,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 prepared = load_prepared_baseline(baseline_snapshot)
                 reference_path = (prepared.get("setup_locator") or {}).get("path") or prepared.get("maestro_path")
                 if os.path.realpath(reference_path or "") != os.path.realpath(reference["path"]):
-                    raise ValueError("Checkpoint baseline belongs to another saved setup")
+                    raise ValueError("Checkpoint reference belongs to another saved setup")
                 require_prepared_freshness(prepared, run_config, action="resume optimization")
                 from .runner import _reverify_prepared_external_environment
                 external = _reverify_prepared_external_environment(prepared, run_config)
@@ -5164,7 +5164,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
             )
             if not netlist_recovery.get("cleanup_proven"):
                 raise RuntimeError(
-                    "Previous private-netlist jobs are not proven stopped; retained ownership prevents duplicate submission: %s"
+                    "Previous Template Netlist jobs are not proven stopped; retained ownership prevents duplicate submission: %s"
                     % netlist_recovery.get("path")
                 )
             native_recovery = reconcile_run_preparations(
@@ -5463,11 +5463,11 @@ class OptimizerService(PrivateSuiteServiceMixin):
                                     or type(candidate.get("generation")) is not int
                                     or type(candidate.get("index")) is not int
                                     or "g%03d_c%04d" % (candidate["generation"], candidate["index"]) != name):
-                                raise RuntimeError("cancelled private netlist candidate differs from its active checkpoint plan")
+                                raise RuntimeError("cancelled Template Netlist candidate differs from its active checkpoint plan")
                             # Cancellation never supplies fitness. Keep its
                             # evidence and let Resume evaluate the saved values.
                         elif status not in _TERMINAL_CANDIDATE_STATES and status not in ("queued", "running"):
-                            raise RuntimeError("private netlist candidate status is not recognized")
+                            raise RuntimeError("Template Netlist candidate status is not recognized")
                         retained_lightweight.append(name)
                         continue
                     if status in _TERMINAL_CANDIDATE_STATES:

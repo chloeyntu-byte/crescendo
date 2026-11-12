@@ -465,7 +465,7 @@ def skill_command_diagnostics(command, script_path, required_marker=None, owned_
             if marker.startswith(_contract_text('CRESCENDO_NATIVE_READER_TRACE ')):
                 reader = reader_traces.setdefault(source, {'console_source': source,
                     'entry_count': 0, 'return_count': 0, 'abbreviated_entry_count': 0,
-                    'scope': 'two public reader APIs; private C parser coverage unknown'})
+                    'scope': 'two public reader APIs; internal C parser coverage unknown'})
                 if marker.startswith(_contract_text('CRESCENDO_NATIVE_READER_TRACE ENABLED ')):
                     reader.update(availability='ENABLED', active=True)
                 elif marker.startswith(_contract_text('CRESCENDO_NATIVE_READER_TRACE UNAVAILABLE ')):
@@ -595,7 +595,7 @@ def skill_command_diagnostics(command, script_path, required_marker=None, owned_
                     if 0 < number - item['trace_line'] <= MAX_READER_ERROR_DISTANCE]
                 evidence = {'state': 'not_observed', 'console_source': source, 'error_line': number,
                     'qualification': 'diagnostic_only', 'private_parser_may_bypass': True,
-                    'scope': 'nearest unreturned public reader entry in this Run/Wait window; not proof of a private C parser input'}
+                    'scope': 'nearest unreturned public reader entry in this Run/Wait window; not proof of an internal C parser input'}
                 if candidates:
                     evidence.update(candidates[-1])
                     evidence.update(state='preceding_unreturned_call',

@@ -538,7 +538,7 @@ class DemoService(object):
         reference = {
             "session_id": session_id, "suite_id": session_id, "status": "ready",
             "revision": "r" + session_id[:8], "source_path": locator["path"],
-            "selected_test": test_name, "maestro": maestro, "label": "Private suite · " + test_name,
+            "selected_test": test_name, "maestro": maestro, "label": "working copy · " + test_name,
             "configs": [{"library": LIB, "cell": "tb_" + test_name.lower(), "view": "config",
                          "path": maestro["path"].replace("maestro", "config")}],
             "views": [{"target": [LIB, maestro["cell"], "maestro"], "path": maestro["path"], "role": "maestro"},
@@ -648,7 +648,7 @@ class DemoService(object):
         self._set_activity("hierarchy", "Scanning schematic hierarchy")
         hierarchy = self._hierarchy(test_name)
         self._pause(0.9 * factor)
-        self._set_activity("private_copy", "Creating private Maestro / config views")
+        self._set_activity("private_copy", "Creating Maestro / config working copy views")
         self._pause(0.5)
         locator = catalog["setup_locator"]
         row = next(r for r in self.test_rows if r["name"] == test_name)
@@ -690,7 +690,7 @@ class DemoService(object):
         self._set_activity("parameter_scan", "Reading parameters in selected cells")
         self._pause(1.0 * factor)
         body, parameters = hierarchy.selection_payload(scope_ids)
-        self._set_activity("private_apply", "Applying selected cells to the private setup")
+        self._set_activity("private_apply", "Applying selected cells to the working setup")
         self._pause(0.5 * factor)
         scopes = [hierarchy.scope_rows[hierarchy.scope_index[s]] for s in scope_ids]
         prepared = self._prepared_from(preview, hierarchy, scope_ids, scopes, body, parameters)
@@ -824,7 +824,7 @@ class DemoService(object):
             member = dict(zip(("library", "cell", "view"), row.get("target") or []))
             member.update(path=row.get("path"), role=row.get("role"))
             members.append(member)
-        return dict(reference, id=reference.get("session_id"), name=reference.get("label") or "Private suite",
+        return dict(reference, id=reference.get("session_id"), name=reference.get("label") or "working copy",
                     members=members)
 
     def list_private_suites(self):
@@ -837,12 +837,12 @@ class DemoService(object):
         with self.lock:
             reference = self._suites.get(suite_id)
         if reference is None:
-            raise ValueError("Invalid private suite identifier")
+            raise ValueError("Invalid working-copy identifier")
         return reference
 
     def load_private_suite(self, suite_id, source_path=None):
         reference = self._suite_or_raise(suite_id)
-        self._set_activity("suite_open", "Opening private suite")
+        self._set_activity("suite_open", "Opening working copy")
         test = reference["selected_test"]
         locator = self._locator(source_path or reference["source_path"])
         catalog_id, catalog = self.inspect_tests(locator["path"])
@@ -860,7 +860,7 @@ class DemoService(object):
         if reference.get("scope_ids"):
             prepared_id, prepared = self.prepare_cells(inspection_id, reference["scope_ids"])
             payload["prepared_id"], payload["prepared"] = prepared_id, prepared
-        self._set_activity("suite_ready", "Private suite ready", "complete")
+        self._set_activity("suite_ready", "working copy ready", "complete")
         return payload
 
     def update_private_suite(self, suite_id, sections):
@@ -910,7 +910,7 @@ class DemoService(object):
         elif prepared is not None:
             reference = prepared["prepared"].get("setup_private_session")
         if not reference:
-            raise ValueError("No private Maestro/config views are bound to this inspection.")
+            raise ValueError("No Maestro working copy/config views are bound to this inspection.")
         return copy.deepcopy(reference)
 
     # ----------------------------------------------------- environment tests
@@ -1488,7 +1488,7 @@ class DemoService(object):
 
     # history (pre-existing runs) ---------------------------------------------
     def _register_history(self, number):
-        names = ("Baseline sweep (gain vs power)", "Wide-range retry")
+        names = ("Native Run sweep (gain vs power)", "Wide-range retry")
         run_id = "run_2026110{}_1{}2200_demo".format(5 + number, number)
         started = "2026-11-0{}T1{}:22:00".format(5 + number, number)
         generations = (8, 10)[number % 2]

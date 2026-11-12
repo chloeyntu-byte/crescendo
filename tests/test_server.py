@@ -3800,7 +3800,7 @@ class OptimizerServiceTest(unittest.TestCase):
                 "objectives": [], "constraints": [],
             })
             self.assertEqual(response["run_id"], "mock-run")
-            with self.assertRaisesRegex(RuntimeError, "private optimization workspace"):
+            with self.assertRaisesRegex(RuntimeError, "working optimization workspace"):
                 qualified_service(service, "prepared-1").start("prepared-1", {
                     "evaluator": "real", "variables": variables,
                     "objectives": [], "constraints": [],
@@ -3936,7 +3936,7 @@ class OptimizerServiceTest(unittest.TestCase):
                             return_value={"state": "skipped"}) as cleanup, mock.patch.object(
                                 service, "_launch") as launch:
                 with self.assertRaisesRegex(
-                        RuntimeError, "private optimization workspace"):
+                        RuntimeError, "working optimization workspace"):
                     service.resume(checkpoint)
             self.assertEqual(cleanup.call_count, 1)
             self.assertTrue(cleanup.call_args[1]["inspect_only"])

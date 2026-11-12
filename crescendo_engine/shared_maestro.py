@@ -183,7 +183,7 @@ class SharedMaestroProducer(object):
         acquired = timestamp()
         try:
             if self.closed or self._cancelled():
-                raise PrivateNetlistError("Maestro generation cancelled before private schematic update")
+                raise PrivateNetlistError("Maestro generation cancelled before working schematic update")
             if self.failed is not None:
                 raise PrivateNetlistError("Shared Maestro suite is unavailable after an earlier generation failure: " + str(self.failed))
             try:

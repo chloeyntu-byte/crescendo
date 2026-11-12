@@ -1,6 +1,6 @@
-"""Selective updates to an owned Maestro baseline from the saved source.
+"""Selective updates to an owned Maestro reference from the saved source.
 
-Only observed XML boundaries are modified. Source and previous baseline are
+Only observed XML boundaries are modified. Source and previous reference are
 never written. The caller must perform native readback before publishing.
 """
 from __future__ import print_function
@@ -162,7 +162,7 @@ def _merge_sdb(old, new, selected, selected_test):
     names = [selected_test] if selected_test else sorted(ot)
     missing = [name for name in names if name not in ot or name not in nt]
     if missing:
-        raise ValueError('Selected Test missing in saved source or baseline: %s' % ', '.join(missing))
+        raise ValueError('Selected Test missing in saved source or reference: %s' % ', '.join(missing))
     if 'other_settings' in selected:
         _remaining(a, b, ('tests', 'vars', 'corners', 'jobpolicyname', 'disabledtests'))
     if 'global_variables' in selected:
@@ -378,7 +378,7 @@ def _merged_job_policy(old, incoming, selected_test):
 
 
 def update_saved_sections(prepared, config, sections):
-    """Build a new baseline, returning (setup, invalidation plan).
+    """Build a new reference, returning (setup, invalidation plan).
 
     Native verification and publishing the binding are the caller's responsibility.
     """
@@ -389,7 +389,7 @@ def update_saved_sections(prepared, config, sections):
     original = prepared.get('setup') or {}
     baseline = verify_setup_baseline(original)
     if not baseline:
-        raise ValueError('Selective update requires an existing saved Maestro baseline')
+        raise ValueError('Selective update requires an existing saved Maestro reference')
     with open(os.path.join(baseline['root'], _contract_text('setup.json'))) as stream:
         previous_snapshot = json.load(stream)
     old_policy = previous_snapshot.get('job_policy')

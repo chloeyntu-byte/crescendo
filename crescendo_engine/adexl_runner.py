@@ -83,7 +83,7 @@ def _candidate_id(candidate_root):
 def run_adexl(workspace, config, candidate_root, timeout_seconds=None,
               retained_log_root=None):
     if workspace.get("setup_backend") != "adexl":
-        raise ValueError("run_adexl requires an ADE XL private workspace")
+        raise ValueError("run_adexl requires an ADE XL workspace copy")
     candidate_root = ensure_dir(candidate_root)
     reset_results(workspace)
     candidate_timeout = int(

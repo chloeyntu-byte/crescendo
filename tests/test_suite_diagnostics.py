@@ -35,6 +35,15 @@ class SuiteDiagnosticsTests(unittest.TestCase):
         self.assertEqual(describe_check({'id': 'termination', 'status': 'WARN', 'message': message})['diagnostic_code'],
                          'CRESCENDO-SUITE-PERMISSION')
 
+    def test_working_copy_permission_aliases_keep_historical_diagnostic_code(self):
+        # Historical messages remain recognizable in retained diagnostics.
+        for prefix in ('Private view', 'Working view', 'Working-copy view'):
+            message = prefix + ' permissions could not be restored: CRESCENDO-SUITE-LOCK: locked'
+            check = {'id': 'termination', 'status': 'WARN', 'message': message}
+            self.assertEqual(describe_check(check)['diagnostic_code'],
+                             'CRESCENDO-SUITE-PERMISSION')
+            self.assertEqual(check['message'], message)
+
     def test_failure_section_never_dumps_embedded_prepared_snapshot(self):
         sentinel = 'FULL_SUITE_PREPARED_SENTINEL'
         check = {'id': 'suite.rollback', 'status': 'FAIL', 'message': 'CRESCENDO-SUITE-ROLLBACK: failed',

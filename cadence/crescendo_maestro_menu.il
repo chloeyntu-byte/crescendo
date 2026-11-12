@@ -36,7 +36,7 @@ procedure(crescMaestroWriteLaunchScript(context)
     port = outfile(script)
     unless(port
       when(isFile(script) deleteFile(script))
-      error("Crescendo: cannot write the private IPC launch script.\n")
+      error("Crescendo: cannot write the owner-only IPC launch script.\n")
     )
     outcome = errset(
       progn(
@@ -47,7 +47,7 @@ procedure(crescMaestroWriteLaunchScript(context)
     close(port)
     unless(outcome && car(outcome)
       when(isFile(script) deleteFile(script))
-      error("Crescendo: private IPC launch script export failed.\n")
+      error("Crescendo: owner-only IPC launch script export failed.\n")
     )
     script
   )
@@ -235,7 +235,7 @@ procedure(crescMaestroWriteContext(session context @optional sourceWindow)
       when(result && member(car(result) list(t nil)) modified = car(result))
     )
     port = outfile(context)
-    unless(port error("Crescendo: cannot write a private launch context.\n"))
+    unless(port error("Crescendo: cannot write an owner-only launch context.\n"))
     outcome = errset(
       progn(
         fprintf(port "CRESCENDO_MAESTRO_CONTEXT_1\n")

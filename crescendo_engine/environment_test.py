@@ -340,10 +340,10 @@ def _case_capability(config, prepared, simulator, engine):
     if engine == 'maestro_baseline':
         if capture_sources != {simulator}:
             return {'ready': False, 'simulator': simulator, 'failure_stage': 'native_simulator_identity',
-                    'reason': 'Baseline uses the simulator saved in the selected Maestro Test; select that simulator without a CLI override',
+                    'reason': 'Native Run uses the simulator saved in the selected Maestro Test; select that simulator without a CLI override',
                     'source_simulators': sorted(capture_sources)}
         return {'ready': True, 'simulator': simulator, 'execution_backend': engine,
-                'message': 'Native Ocean entry available; Maestro Job Setup, Run and fresh result evidence are checked during the baseline candidate',
+                'message': 'Native Ocean entry available; Maestro Job Setup, Run and fresh result evidence are checked during the Native Run candidate',
                 'scope': 'native entry only; no CLI solver/model remapping preflight'}
     if capture_sources != {'spectre'}:
         return {'ready': False, 'simulator': simulator, 'capture_sources': sorted(capture_sources),
@@ -1565,7 +1565,7 @@ class EnvironmentTestManager(object):
                     execution_parallelism=_execution_parallelism(status, candidates, spec))
         self._log(row, {'observation': 'diagnostic.first_cause', 'payload': row['engine_outcomes'][engine]}, engine)
         self._check(row, 'execution', 'PASS' if ok else ('CANCELLED' if row['cancel'].is_set() else 'FAIL'),
-                    ('All planned candidates completed through native Maestro Run and exact history results' if engine == 'maestro_baseline' else 'All planned candidates completed with common CLI pipeline, private netlist and result proof') if ok else ((row['engine_outcomes'][engine].get('first_cause') or {}).get('message') or
+                    ('All planned candidates completed through native Maestro Run and exact history results' if engine == 'maestro_baseline' else 'All planned candidates completed with common CLI pipeline, owned netlist and result proof') if ok else ((row['engine_outcomes'][engine].get('first_cause') or {}).get('message') or
                      (row['engine_outcomes'][engine].get('first_cause') or {}).get('error') or
                      'The selected run stopped before completion; see the first native failure'),
                     dict(_successful_execution(status, candidates), timed_out=timed_out) if ok else

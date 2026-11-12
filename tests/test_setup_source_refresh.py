@@ -67,7 +67,7 @@ class SetupSourceRefreshTests(unittest.TestCase):
         with mock.patch.object(sessions, 'close_setup_private_session', return_value={
                 'cleanup_proven': False, 'state': 'private_setup_native_stop_unproven'}), \
                 mock.patch.object(sessions, 'create_setup_private_session') as create:
-            with self.assertRaisesRegex(RuntimeError, 'no new private suite was created'):
+            with self.assertRaisesRegex(RuntimeError, 'no new working copy was created'):
                 self.case.apply(token)
             create.assert_not_called()
         self.assertEqual(self.service.prepared, {})

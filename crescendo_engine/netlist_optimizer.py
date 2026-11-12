@@ -117,7 +117,7 @@ class PrivateNetlistOptimizer(object):
             self._flush_progress_file(os.path.join(self.root, _contract_text("progress.json")), self.progress, event)
         from .run_log import append_run_event
         append_run_event(self.run_root, event.get("stage") or "private_netlist",
-                         event.get("message") or event.get("state") or "Private Netlist progress",
+                         event.get("message") or event.get("state") or "Template Netlist progress",
                          details=event, level="ERROR" if event.get("state") == "infrastructure_failed" else "INFO")
 
     def _flush_progress_file(self, path, value, event, force=False):
@@ -287,7 +287,7 @@ class PrivateNetlistOptimizer(object):
                 self._progress({"stage": "native_preparation_artifacts",
                                 "message": "Native preparation payload cleanup checked",
                                 "artifact_cleanup": artifact_cleanup})
-                self._progress({"stage": "template_ready", "message": "Private native template qualified",
+                self._progress({"stage": "template_ready", "message": "Working native template qualified",
                                 "template_sha256": self.manifest.get("manifest_sha256"),
                                 "task_count": len(self.manifest.get("tasks") or [])})
             except Exception as error:
@@ -317,11 +317,11 @@ class PrivateNetlistOptimizer(object):
             with measure(phases, "shared_setup_wait"):
                 while not self.prepared_event.wait(0.1):
                     if self._cancelled():
-                        raise PrivateNetlistRunError("Private netlist preparation cancelled")
+                        raise PrivateNetlistRunError("Template Netlist preparation cancelled")
         if self.prepare_error is not None:
             raise self.prepare_error
         if self._cancelled():
-            raise PrivateNetlistRunError("Private netlist preparation cancelled")
+            raise PrivateNetlistRunError("Template Netlist preparation cancelled")
         if self.fatal_error:
             raise PrivateNetlistRunError(self.fatal_error)
         return self.manifest
@@ -347,7 +347,7 @@ class PrivateNetlistOptimizer(object):
                                                    "preparations": guards}
         if not guard.get("ok"):
             with self.lock:
-                self.fatal_error = "Source design identity changed during private netlist optimization"
+                self.fatal_error = "Source design identity changed during Template Netlist optimization"
             if self.context is not None:
                 self.context.cancel()
             raise PrivateNetlistRunError(self.fatal_error)

@@ -117,16 +117,16 @@ def collect_native_storage_evidence(candidate_root, max_bytes, max_files, deadli
                 or os.path.realpath(session_root) != session_root
                 or ref.get('capture_root') != candidate_root
                 or ref.get('capture_kind') != 'native_baseline'):
-            raise ValueError('private session reference mismatch')
+            raise ValueError('working session reference mismatch')
         owner = read_identity(os.path.join(session_root, _contract_text('session_owner.json')))
         keys = ('schema_version', 'session_id', 'root', 'workspace_root', 'owner_uid')
         if (any(ref.get(key) != owner.get(key) for key in keys)
                 or owner.get('workspace_root') != os.path.join(session_root, 'workspace')
                 or owner.get('workspace_root') != workspace or owner.get('owner_uid') != os.getuid()):
-            raise ValueError('private session owner mismatch')
+            raise ValueError('working session owner mismatch')
         registry = read_identity(os.path.join(session_root, _contract_text('session_state.json')), _REGISTRY_LIMIT)
         if registry.get('session_id') != session_id or candidate_root not in registry.get('capture_roots', []):
-            raise ValueError('capture is absent from private session registry')
+            raise ValueError('capture is absent from working session registry')
         if expired():
             omit('deadline_or_cancelled')
             return result
@@ -143,7 +143,7 @@ def collect_native_storage_evidence(candidate_root, max_bytes, max_files, deadli
             created = float(manifest['created_epoch'])
             if (not math.isfinite(created) or not math.isfinite(float(state['started_epoch']))
                     or created != float(state['started_epoch'])):
-                raise ValueError('creation time does not match baseline state')
+                raise ValueError('creation time does not match reference state')
             result['status'] = 'ok'
             if not manifest['native_readback_verified']:
                 omit('native_storage_readback_unverified')

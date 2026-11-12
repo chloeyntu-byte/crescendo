@@ -6010,7 +6010,7 @@ class RunnerTest(unittest.TestCase):
                     "crescendo_engine.runner._evaluate_candidate",
                     side_effect=workspace_failure):
                 with self.assertRaisesRegex(
-                        RuntimeError, "private workspace build failed"):
+                        RuntimeError, "working workspace build failed"):
                     run_optimization(
                         spec, config, prepared=prepared,
                         run_root=os.path.join(root, "run"),
@@ -6167,7 +6167,7 @@ class RunnerTest(unittest.TestCase):
                     "crescendo_engine.runner._evaluate_candidate",
                     side_effect=workspace_failure):
                 with self.assertRaisesRegex(
-                        RuntimeError, "private workspace build failed"):
+                        RuntimeError, "working workspace build failed"):
                     run_optimization(
                         spec, config, prepared=prepared,
                         run_root=os.path.join(root, "run"),
@@ -6247,7 +6247,7 @@ class RunnerTest(unittest.TestCase):
                     "crescendo_engine.runner.wait",
                     side_effect=return_whole_batch):
                 with self.assertRaisesRegex(
-                        RuntimeError, "private workspace build failed"):
+                        RuntimeError, "working workspace build failed"):
                     run_optimization(
                         spec, config, prepared=prepared,
                         run_root=os.path.join(root, "run"),

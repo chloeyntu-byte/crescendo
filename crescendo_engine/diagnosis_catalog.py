@@ -170,7 +170,9 @@ def _suite_code_in_check(check, primary):
             continue
         text = value[:8192]
         # These legacy close warnings do not yet carry explicit producer codes.
-        if text.startswith('Private view permissions could not be restored:'):
+        if text.startswith(('Private view permissions could not be restored:',
+                            'Working view permissions could not be restored:',
+                            'Working-copy view permissions could not be restored:')):
             return 'suite.permission'
         if text.startswith('Suite lease could not be released:'):
             return 'suite.release'

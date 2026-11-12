@@ -612,7 +612,7 @@ class SetupPrivateSessionTests(unittest.TestCase):
         with write_private_views(session._controller(self.reference).workspace):
             with open(path, 'w') as stream:
                 stream.write('externally changed binding')
-        with self.assertRaisesRegex(ValueError, 'Private schematic/config changed'):
+        with self.assertRaisesRegex(ValueError, 'Schematic/config working copy changed'):
             with session.borrow_setup_private_session(self.prepared, self.config, 'not-created'):
                 pass
 

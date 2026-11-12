@@ -20,11 +20,11 @@ def reconcile_baseline_run(run_root, request_cancel=False, inspect_only=False):
 
     root = os.path.abspath(run_root)
     if os.path.realpath(root) != root or not os.path.isdir(root):
-        raise ValueError('Baseline recovery root is not a real owned directory')
+        raise ValueError('Native Run recovery root is not a real owned directory')
     for namespace in ('workers', 'controllers'):
         path = os.path.join(root, namespace)
         if os.path.lexists(path) and (os.path.islink(path) or not os.path.isdir(path) or os.listdir(path)):
-            raise ValueError('Baseline recovery found an unrelated worker namespace; retained')
+            raise ValueError('Native Run recovery found an unrelated worker namespace; retained')
     candidates = os.path.join(root, 'candidates')
     rows = []
     shared_consumers = []
@@ -33,25 +33,25 @@ def reconcile_baseline_run(run_root, request_cancel=False, inspect_only=False):
     if os.path.lexists(index_path):
         index = _load(index_path)
         if index.get('schema_version') != _contract_text('crescendo.maestro_baseline_shutdown_roots.v1') or not isinstance(index.get('roots'), list):
-            raise ValueError('Baseline shutdown root index is invalid')
+            raise ValueError('Native Run shutdown root index is invalid')
         for item in index['roots']:
             relative = item.get('candidate_root')
             if not isinstance(relative, str) or not re.fullmatch(r'candidates/(?:g[0-9]+_c[0-9]+|batch_[a-f0-9]{32})', relative):
-                raise ValueError('Baseline shutdown root index escapes its candidate namespace')
+                raise ValueError('Native Run shutdown root index escapes its candidate namespace')
             expected_roots.add(os.path.basename(relative))
     if os.path.lexists(candidates):
         if os.path.islink(candidates) or not os.path.isdir(candidates):
-            raise ValueError('Baseline candidate namespace is unsafe')
+            raise ValueError('Native Run candidate namespace is unsafe')
         for name in sorted(os.listdir(candidates)):
             path = os.path.join(candidates, name)
             row = {'candidate_id': name, 'ok': False, 'raw_deleted': False,
                    'process_termination_proven': False, 'remote_stop_proven': False}
             try:
                 if not re.fullmatch(r'(?:g[0-9]+_c[0-9]+|batch_[a-f0-9]{32})', name) or os.path.realpath(path) != path or not os.path.isdir(path):
-                    raise ValueError('Baseline candidate identity/path is invalid')
+                    raise ValueError('Native Run candidate identity/path is invalid')
                 candidate = _load(os.path.join(path, _contract_text('candidate.json')))
                 if candidate.get('candidate_id') != name or candidate.get('execution_backend') != 'maestro_baseline':
-                    raise ValueError('Baseline candidate record has a different identity/backend')
+                    raise ValueError('Native Run candidate record has a different identity/backend')
                 reference = candidate.get('batch_reference')
                 if reference is not None:
                     batch_root = reference.get('root')
@@ -72,20 +72,20 @@ def reconcile_baseline_run(run_root, request_cancel=False, inspect_only=False):
                 observed_native = native
                 if (native.get('schema_version') != SCHEMA_VERSION or native.get('candidate_id') != name
                         or native.get('request_root') != path):
-                    raise ValueError('Baseline native state identity mismatch')
+                    raise ValueError('Native Run native state identity mismatch')
                 no_launch = native.get('launch_attempted') is False
                 owner = preparation_session_reference(path)
                 if owner is None:
                     if not no_launch or os.path.lexists(os.path.join(path, 'native_baseline', _contract_text('legacy_guardian_launch.json'))):
-                        raise ValueError('Baseline native launch has no durable suite binding')
+                        raise ValueError('Native Run native launch has no durable suite binding')
                     row.update(ok=True, process_termination_proven=True, remote_stop_proven=True,
                                native_terminal_state='not_launched', source_state='not_exposed_to_native')
                 else:
                     if native.get('workspace_root') != owner['workspace_root']:
-                        raise ValueError('Baseline workspace differs from its durable suite owner')
+                        raise ValueError('Native Run workspace differs from its durable suite owner')
                     ref = _load(os.path.join(path, REFERENCE))
                     if ref.get('capture_kind') != 'native_baseline':
-                        raise ValueError('Baseline recovery received another preparation protocol')
+                        raise ValueError('Native Run recovery received another preparation protocol')
                     native = _reconcile_owned_capture(path, request_cancel=request_cancel,
                                                        timeout_seconds=12 if request_cancel else 0)
                     no_launch = native.get('launch_attempted') is False
@@ -96,7 +96,7 @@ def reconcile_baseline_run(run_root, request_cancel=False, inspect_only=False):
                         # result without rewriting its durable intent record.
                         expected.update(cleanup_proven=True, cleanup_pending=False)
                     if native != expected:
-                        raise ValueError('Baseline reconciliation differs from its durable native state')
+                        raise ValueError('Native Run reconciliation differs from its durable native state')
                     local = native.get('local_cleanup') or {}
                     if not no_launch:
                         local = inspect_legacy_guardian_attempt(os.path.join(path, 'native_baseline'),
@@ -129,7 +129,7 @@ def reconcile_baseline_run(run_root, request_cancel=False, inspect_only=False):
                     workspace = _load(os.path.join(owner['workspace_root'], _contract_text('workspace.json')),
                                       max_bytes=128 * 1024 * 1024)
                     if workspace.get('setup_private_session') != owner:
-                        raise ValueError('Baseline workspace owner metadata differs')
+                        raise ValueError('Native Run workspace owner metadata differs')
                     snapshots = workspace.get('source_snapshots')
                     libraries = workspace.get('source_libraries')
                     baseline = (workspace.get('setup') or {}).get('baseline') or {}
@@ -138,7 +138,7 @@ def reconcile_baseline_run(run_root, request_cancel=False, inspect_only=False):
                             or any(not isinstance(value, dict) or not value.get('fingerprint')
                                    or not isinstance(value.get('paths'), list) or not value['paths']
                                    for value in snapshots.values())):
-                        raise ValueError('Baseline source snapshots or frozen setup identity are incomplete')
+                        raise ValueError('Native Run source snapshots or frozen setup identity are incomplete')
                     guard = compact_source_guard(verify_sources_unchanged(workspace))
                     row.update(process_termination_proven=process, remote_stop_proven=terminal,
                                native_terminal_state='not_launched' if no_launch else
@@ -154,7 +154,7 @@ def reconcile_baseline_run(run_root, request_cancel=False, inspect_only=False):
                         row['reason'] = 'Source integrity is changed or unverified; evidence retained'
                 current_native = _load(state_path)
                 if current_native != observed_native:
-                    raise ValueError('Baseline native state changed during recovery')
+                    raise ValueError('Native Run native state changed during recovery')
                 import json
                 row['native_state_sha256'] = hashlib.sha256(json.dumps(current_native, sort_keys=True).encode('utf-8')).hexdigest()
                 row['native_state_hash_scope'] = 'canonical JSON snapshot'
@@ -172,7 +172,7 @@ def reconcile_baseline_run(run_root, request_cancel=False, inspect_only=False):
     for missing in sorted(expected_roots.difference(row['candidate_id'] for row in rows)):
         rows.append({'candidate_id': missing, 'ok': False, 'raw_deleted': False,
                      'process_termination_proven': False, 'remote_stop_proven': False,
-                     'reason': 'Registered Baseline candidate evidence is missing'})
+                     'reason': 'Registered Native Run candidate evidence is missing'})
     if not rows:
         rows.append({'candidate_id': None, 'ok': False, 'raw_deleted': False,
                      'process_termination_proven': False, 'remote_stop_proven': False,
@@ -189,7 +189,7 @@ def reconcile_baseline_run(run_root, request_cancel=False, inspect_only=False):
     if not inspect_only:
         atomic_write_json(os.path.join(root, _contract_text('baseline_recovery.json')), result)
     if result['state'] == 'blocked':
-        error = RuntimeError('Baseline recovery retained unresolved resources: ' + '; '.join(
+        error = RuntimeError('Native Run recovery retained unresolved resources: ' + '; '.join(
             '%s: %s' % (row['candidate_id'], row.get('reason', 'unproven')) for row in rows if not row['ok']))
         error.detail = result
         error.cleanup_failed = True

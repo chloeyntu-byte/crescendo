@@ -251,7 +251,7 @@ def discover_setup_path_references(setup_dir, setup_sdb=None):
         except (ET.ParseError, IOError, OSError) as error:
             if setup_sdb and os.path.abspath(path) == os.path.abspath(setup_sdb):
                 raise ModelPathRemapError(
-                    "private ADE SetupDB cannot be parsed for model path portability: %s (%s)"
+                    "working ADE SetupDB cannot be parsed for model path portability: %s (%s)"
                     % (path, error)
                 )
             limitations.append({
@@ -434,7 +434,7 @@ def remap_workspace_setup_paths(workspace, config, pdk_context=None):
         matches = [row for row in workspace.get("same_library_registry") or []
                    if row.get("role") == "maestro" and row.get("path") == setup_dir]
         if len(matches) != 1:
-            raise ModelPathRemapError("Private same-library setup lacks exact Maestro ownership")
+            raise ModelPathRemapError("Working same-library setup lacks exact Maestro ownership")
         row = matches[0]
         with open(os.path.join(setup_dir, MARKER)) as stream:
             marker = json.load(stream)
@@ -449,27 +449,27 @@ def remap_workspace_setup_paths(workspace, config, pdk_context=None):
                 marker.get("token") != row.get("token") or marker.get("target") != target or
                 target == source or target[:2] != source[:2] or
                 not owns_view(workspace, tuple(target), role="maestro", require_marker=True)):
-            raise ModelPathRemapError("Private same-library setup ownership does not match")
+            raise ModelPathRemapError("Working same-library setup ownership does not match")
         private_setup_root = setup_dir
-    setup_dir = require_under(workspace["setup_dir"], private_setup_root, "private ADE setup")
-    setup_sdb = require_under(workspace["setup_sdb"], setup_dir, "private ADE SetupDB")
-    require_under(os.path.realpath(setup_sdb), os.path.realpath(setup_dir), "private ADE SetupDB target")
+    setup_dir = require_under(workspace["setup_dir"], private_setup_root, "working ADE setup")
+    setup_sdb = require_under(workspace["setup_sdb"], setup_dir, "working ADE SetupDB")
+    require_under(os.path.realpath(setup_sdb), os.path.realpath(setup_dir), "working ADE SetupDB target")
     discovery = discover_setup_path_references(setup_dir, setup_sdb=setup_sdb)
     roots = configured_model_roots(config, pdk_context=pdk_context)
     remaps = configured_path_remaps(config, pdk_context=pdk_context)
     private_model_roots = []
     copied_roots = {} if workspace.get("same_library_objects") is True else workspace.get("copied_libraries") or {}
     for library_root in copied_roots.values():
-        private_root = require_under(library_root, workspace_root, "private model library")
+        private_root = require_under(library_root, workspace_root, "working model library")
         require_under(os.path.realpath(private_root), os.path.realpath(workspace_root),
-                      "private model library target")
+                      "working model library target")
         private_model_roots.append(private_root)
     replacements_by_file = {}
     records = []
     limitations = list(discovery["limitations"])
     for row in discovery["references"]:
-        require_under(row["file"], private_setup_root, "private ADE setup file")
-        require_under(os.path.realpath(row["file"]), os.path.realpath(private_setup_root), "private ADE setup file target")
+        require_under(row["file"], private_setup_root, "working ADE setup file")
+        require_under(os.path.realpath(row["file"]), os.path.realpath(private_setup_root), "working ADE setup file target")
         original = os.path.abspath(os.path.normpath(
             os.path.expandvars(os.path.expanduser(row["reference"]))
         ))
@@ -477,7 +477,7 @@ def remap_workspace_setup_paths(workspace, config, pdk_context=None):
             if ((original == private_root or original.startswith(private_root + os.sep))
                     and not _path_is_under(os.path.realpath(original), private_root)):
                 raise ModelPathRemapError(
-                    "private model reference escapes its copied library: %s" % row["reference"]
+                    "working model reference escapes its copied library: %s" % row["reference"]
                 )
         # Project-local models have already been materialized and rebased by
         # the workspace copier. Trust that exact private file without widening
@@ -538,8 +538,8 @@ def remap_workspace_setup_paths(workspace, config, pdk_context=None):
         })
     changed_files = []
     for path, replacements in sorted(replacements_by_file.items()):
-        require_under(path, private_setup_root, "private ADE setup file")
-        require_under(os.path.realpath(path), os.path.realpath(private_setup_root), "private ADE setup file target")
+        require_under(path, private_setup_root, "working ADE setup file")
+        require_under(os.path.realpath(path), os.path.realpath(private_setup_root), "working ADE setup file target")
         with open(path, "r") as stream:
             text = stream.read()
         original_text = text
@@ -552,7 +552,7 @@ def remap_workspace_setup_paths(workspace, config, pdk_context=None):
         for source in replacements:
             if _replace_path_token(text, source, "__cr_obsolete_model_reference__") != text:
                 raise ModelPathRemapError(
-                    "private ADE setup still contains an obsolete model/include path after remap: %s"
+                    "working ADE setup still contains an obsolete model/include path after remap: %s"
                     % source
                 )
     identity_rows = [dict(

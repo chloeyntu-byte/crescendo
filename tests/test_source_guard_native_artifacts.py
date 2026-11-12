@@ -122,7 +122,7 @@ class NativeSourceArtifactTests(unittest.TestCase):
                 self.capture(lambda *args, **kwargs: {'tasks': []})
         error = failure.exception
         self.assertFalse(error.detail['source_guard']['setup_baseline']['ok'])
-        self.assertIn('frozen Maestro baseline changed', str(error))
+        self.assertIn('frozen Maestro reference changed', str(error))
 
 
 if __name__ == '__main__':

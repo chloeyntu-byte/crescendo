@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.2 (2026-11-12)
+
+- Rename displayed execution modes to Native Run, Maestro Netlist and Template Netlist; use working copy for owned setup/view copies. Persisted backend IDs, configuration keys and checkpoint protocols are unchanged.
+- Explain created views, ownership markers, storage defaults/overrides (including namespaced roots), lifecycle, reuse, recovery and disk cleanup in both READMEs; refresh screenshots.
+- Clarify diagnostic and launch error wording (owner-only launch scripts and caches, sensitive-field redaction).
+
 ## 1.1.1 (2026-11-12)
 
 - Tests only: widen positive synchronization and completion waits (event "entered" waits to 10 s, diagnostic manager joins to 30-60 s) so slower CI runners do not time out. Waits return as soon as the event fires, so passing runs are not slower. Waits that check latency or that a task must not finish yet are unchanged. No product code changes.
@@ -8,7 +14,7 @@
 
 Highlights:
 
-- **Generation batching.** New runs evaluate a whole generation per native Run (Baseline) or per native capture (Private Maestro, and Private Netlist when native fallback is required), then fan results back to every candidate. On local real-EDA runs with matched samples (3 generations x 6 candidates x 2 corners) Baseline went from 433 s to 101 s (4.3x) and Private Maestro from 342 s to 166 s (2.1x), with identical objective values. Private Netlist template runs were already fast (148 s vs 139 s); with native fallback, batching took 130 s instead of 190 s.
+- **Generation batching.** New runs evaluate a whole generation per native Run (Native Run) or per native capture (Maestro Netlist, and Template Netlist when native fallback is required), then fan results back to every candidate. On local real-EDA runs with matched samples (3 generations x 6 candidates x 2 corners) Native Run went from 433 s to 101 s (4.3x) and Maestro Netlist from 342 s to 166 s (2.1x), with identical objective values. Template Netlist template runs were already fast (148 s vs 139 s); with native fallback, batching took 130 s instead of 190 s.
 - **Configurable throughput** in Pro mode: Local solver slots (default 1), reader workers, display flush interval and the batching selector. Old checkpoints keep their original serial behaviour.
 - **Execution timings** per candidate, point and generation, with observed concurrency.
 - **Engine extension points** (application identity, scheduler providers, adapter registry, GUI factory and diagnostic actions) for applications that embed the engine. Defaults are unchanged.
@@ -34,7 +40,7 @@ Details:
 
 - Preserve legacy four-key frozen command identities and resolve absent query/cancel capabilities through startup-selected providers. Validate original fingerprints, canonical field sets and exact owned-job templates.
 
-- Add immutable scheduler enum aliases to the startup dialect, shared by checkpoint validation, execution policy, private-netlist startup, settings and Pro restoration. Keep original persisted values and continuation hashes.
+- Add immutable scheduler enum aliases to the startup dialect, shared by checkpoint validation, execution policy, Template Netlist startup, settings and Pro restoration. Keep original persisted values and continuation hashes.
 
 - Add explicit application GUI factories and immutable diagnostic action snapshots, writer-ready/progress/close events, main-thread button state and optional background activities.
 - Add a guarded scheduler provider registry over the generic template protocol, manifest-backed application resources, startup adapter-registry replacement and validated adapter entry symbols. Keep the default adapter registry content identity unchanged. Bind validated provider log paths into remote submission templates while preserving relative-script defaults.
@@ -52,23 +58,23 @@ Details:
 - Clean reader control directories on all pre-launch preparation failures, including guardian launch-lock and manifest writes. Retain failed cleanup as unresolved ownership and preserve guardian evidence once ownership handoff begins. Clarify explicit reader-capacity reasons and test v4 checkpoint result reading and portable export independently of Resume authority.
 - Document Pro batching, Local solver slots, reader workers and display flush defaults. Target-server qualification remains required for batch scheduling, complex process models, dynamic includes and the complete 10-generation × 6-candidate (two-corner) ≤600-second goal. Local evidence does not establish that target.
 
-- Capture Private Maestro generations in one owned Local2 Run, freeze and qualify every point before shared CLI execution, and execute qualified duplicate physical rows once with durable logical fanout.
-- Route qualified Private Netlist native-companion and selected-binding fallback through the same generation barrier. Keep template materialization, legacy serial settings, controlled readers and candidate-granular Stop/Resume.
+- Capture Maestro Netlist generations in one owned Local2 Run, freeze and qualify every point before shared CLI execution, and execute qualified duplicate physical rows once with durable logical fanout.
+- Route qualified Template Netlist native-companion and selected-binding fallback through the same generation barrier. Keep template materialization, legacy serial settings, controlled readers and candidate-granular Stop/Resume.
 - Persist native batch enable/corner readback and effective job policy, and document shared-suite reset and Command Stop query prerequisites.
 
 - Advance native point qualification to v5 for lexical scopes and indirect aliases. Older native templates and manifests require fresh qualification before execution. Real shared-CLI checkpoints carrying v4 or missing qualification revisions are rejected on Resume, including completed and failed history. Their results remain readable/exportable. Start a new run to qualify inputs again. Legacy non-native and mock evidence keeps its compatibility.
 
-- Verify execution-resource preferences in a real Crescendo window, including configuration round trips and mapped Pro/Simple visibility. Its fixture uses private preferences and an isolated process so presentation imports cannot affect later launcher or kernel-window tests.
+- Verify execution-resource preferences in a real Crescendo window, including configuration round trips and mapped Pro/Simple visibility. Its fixture uses isolated preferences and an isolated process so presentation imports cannot affect later launcher or kernel-window tests.
 
 - Preserve each point's reader timeout budget and split multi-point reads at a 3600-second batch ceiling. Single points retain longer explicit budgets. Remove shared reader controls after all point owners retire, release their parent directory after all candidate reader futures finish, and retain unresolved ownership evidence. Explicit reader concurrency is capped by Global capacity with requested/effective values in summaries.
 - Limit display snapshot writes while preserving every incoming run-log event. Flush actual production terminal events immediately and verify log completeness with throttling enabled.
 
 - Preserve manual EDA revalidation after a settings update: loading the cell hierarchy does not start the saved-setup automatic Apply chain or reacquire Run authority before the user applies the cells.
 
-- Add versioned, once-per-generation native Baseline Runs with equal Device Parameter columns, exact session/set readback, durable submission intents and full-history point mapping. New configurations default to generation batching; old configurations and checkpoints retain serial execution.
+- Add versioned, once-per-generation Native Run batches with equal Device Parameter columns, exact session/set readback, durable submission intents and full-history point mapping. New configurations default to generation batching; old configurations and checkpoints retain serial execution.
 - Keep Command semantics, fail-fast completion, candidate-granular Resume and shared-history reference ledgers. Stop requires native Stop/Wait/Close, local cleanup and exact Command job terminal queries; unresolved resources block Resume. Shared stages have one timing sidecar and logical/physical counts.
 - Add a Pro batching selector and explicit pre-submission serial fallback. Source parameter sets, unknown/stochastic analyses and unqualified duplicate sharing preserve the serial path; submitted batches never replay serially.
-- Neutralize native-stage fixture names and scan every tracked text file for private library prefixes, foundry brands and site-specific scheduler terms.
+- Neutralize native-stage fixture names and scan every tracked text file for application-specific library prefixes, foundry brands and site-specific scheduler terms.
 
 - Resolve indirect native parameter aliases with bounded lexical dependencies shared by template qualification and point readback. Preserve numeric-companion fallback and report machine-readable binding, scope, expression and topology reasons.
 - Add Pro configuration and frozen checkpoint settings for Local solver capacity (default 1), reader capacity (default min(2, G)) and progress flush intervals (default 0.5 seconds). Local capacity obeys Global and Test limits.
@@ -106,7 +112,7 @@ First public release (1.0.0 and 1.0.1 were not published).
 
 - Guided six-step window (Design, Parameters, Goals, Run, Results, Trade-offs) with Simple and Pro modes; the UI displays all text in English.
 - Run dashboard: evaluated / feasible / best / generation tiles and a best-so-far convergence chart; per-objective convergence on the Results page; Pareto plots joined along the front.
-- Engine: private Maestro copies, three execution modes, Spectre / ALPS, Local / Batch scheduler, NSGA-II / differential evolution / Bayesian optimization, checkpoint and resume, single-file configuration save and load, three-stage link diagnostics.
+- Engine: Maestro working copies, three execution modes, Spectre / ALPS, Local / Batch scheduler, NSGA-II / differential evolution / Bayesian optimization, checkpoint and resume, single-file configuration save and load, three-stage link diagnostics.
 - Large projects: indexed scope matching, cached parameter views, debounced search, incremental result tables and background parameter preparation keep the window responsive at 50,000 parameters.
 - Synthetic demo service, scripted smoke test and screenshot tour; no EDA tools needed to try it.
 - Release preparation: machine paths, user names, internal host names, foundry/PDK names and licence strings in code and tests were replaced with generic placeholders; vendor-specific PDK adapters were replaced by fictional examples. Remaining fixtures are synthetic.

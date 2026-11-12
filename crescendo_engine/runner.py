@@ -634,7 +634,7 @@ def _evaluate_native_baseline_candidate(run_root, index, generation, values, spe
         if (completion.get("schema_version") != _contract_text("crescendo.completion_evidence.v1") or
                 completion.get("ok") is not True or guard.get("ok") is not True or
                 application.get("ok") is not True or command.get("cleanup_pending") is not False):
-            raise RuntimeError("Maestro baseline parameter, completion, source or cleanup evidence is incomplete")
+            raise RuntimeError("Native Run parameter, completion, source or cleanup evidence is incomplete")
         row.update(parameter_application=application,
                    completion_evidence=completion, source_guard=guard, native_command=command)
         # A later metric failure does not revoke the native cleanup already
@@ -3165,7 +3165,7 @@ def _raise_workspace_build_failure(generation, rows):
     failures = [row for row in rows if _workspace_build_failure_row(row)]
     if failures:
         raise RuntimeError(
-            "private workspace build failed in generation %d; optimization stopped "
+            "working workspace build failed in generation %d; optimization stopped "
             "after the first observed failure, before Cadence or Spectre startup for "
             "that candidate and before submitting replacements or further queued "
             "work. Check source file readability for the optimizer OS user, then "
@@ -3312,7 +3312,7 @@ def _frozen_environment_plan(spec, variables):
     if marker.get('frozen_plan_sha256') not in (None, actual_digest):
         raise ValueError('environment_test frozen plan digest does not match validated values')
     if marker.get('frozen_candidate') is not None and plan[0]['values'] != marker['frozen_candidate']:
-        raise ValueError('environment_test first planned candidate differs from frozen baseline')
+        raise ValueError('environment_test first planned candidate differs from frozen reference')
     marker['frozen_plan'] = copy.deepcopy(plan)
     marker['frozen_plan_sha256'] = actual_digest
     return plan
@@ -4485,10 +4485,10 @@ def validate_checkpoint(checkpoint, prepared):
     spec = checkpoint.get("spec") or {}
     if (spec.get("execution_backend") == "maestro_baseline" and
             spec.get("execution_protocol") != _contract_text("crescendo.maestro_baseline.v1")):
-        raise ValueError("Maestro baseline checkpoint protocol does not match its execution backend")
+        raise ValueError("Native Run checkpoint protocol does not match its execution backend")
     if (spec.get("execution_protocol") == _contract_text("crescendo.maestro_baseline.v1") and
             spec.get("execution_backend") != "maestro_baseline"):
-        raise ValueError("Maestro baseline checkpoint cannot be resumed with another execution backend")
+        raise ValueError("Native Run checkpoint cannot be resumed with another execution backend")
     if (str(spec.get("evaluator", "real")).lower() != "mock" and
             spec.get("execution_backend") in ("maestro_netlist", "private_netlist")):
         from .native_maestro_parameters import GENERATION_PROTOCOL
@@ -4697,7 +4697,7 @@ def run_optimization(spec, config, prepared=None, run_root=None, resume_checkpoi
                      continuation_lease=None, runtime_optimization_lease=None):
     if resume_checkpoint is not None:
         raise RuntimeError(
-            "checkpoint resume is private and must use OptimizerService.resume "
+            "checkpoint resume is internal and must use OptimizerService.resume "
             "or the public resume CLI"
         )
     return _run_optimization_with_leases(
@@ -4940,7 +4940,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
         freeze_batching(spec, config, resuming=resume_checkpoint is not None)
     if baseline_backend:
         if setup_backend != "maestro" or not selected or any(row.get("backend", "schematic") != "schematic" for row in selected):
-            raise ValueError("Maestro baseline requires a Maestro setup and selected schematic device parameters")
+            raise ValueError("Native Run requires a Maestro setup and selected schematic device parameters")
         spec["execution_protocol"] = _contract_text("crescendo.maestro_baseline.v1")
     if netlist_backend:
         from .native_maestro_parameters import GENERATION_PROTOCOL
@@ -5161,7 +5161,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
         prior_roots = []
         if origin_root and os.path.abspath(origin_root) != run_root:
             if not os.path.isabs(origin_root) or os.path.realpath(origin_root) != origin_root:
-                raise ValueError("private netlist checkpoint origin is not an independent absolute run directory")
+                raise ValueError("Template Netlist checkpoint origin is not an independent absolute run directory")
             prior_roots.append({
                 "owned_run_root": origin_root,
                 "ownership_root": os.path.join(origin_root, "private_netlist", "execution_ownership"),
@@ -7157,7 +7157,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                             lambda: os.path.exists(stop_path), _native_result=native_result)
                         persistent_startup_streak = record_future_rows(row, None, persistent_startup_streak)
                         if row['status'] != 'completed':
-                            raise RuntimeError('Maestro baseline candidate failed; evidence retained: ' + str(row.get('error')))
+                            raise RuntimeError('Native Run candidate failed; evidence retained: ' + str(row.get('error')))
                         committed.add(candidate['candidate_id'])
                     baseline_candidate_roots.add(os.path.abspath(batch_root))
                     try:
@@ -7190,7 +7190,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                                 owned_roots=baseline_candidate_roots)
                             persistent_startup_streak = record_future_rows(row, None, persistent_startup_streak)
                             if row['status'] != 'completed' and not os.path.exists(stop_path):
-                                raise RuntimeError('Maestro baseline candidate failed; evidence retained: ' + str(row.get('error')))
+                                raise RuntimeError('Native Run candidate failed; evidence retained: ' + str(row.get('error')))
                     except Exception as error:
                         for candidate in batch_plan['candidates']:
                             if candidate['candidate_id'] in committed:
@@ -7275,7 +7275,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                                     )
                                     if (baseline_backend and result.get("status") != "completed" and
                                             not (result.get("status") == "cancelled" and os.path.exists(stop_path))):
-                                        raise RuntimeError("Maestro baseline candidate failed; evidence retained: " + str(result.get("error")))
+                                        raise RuntimeError("Native Run candidate failed; evidence retained: " + str(result.get("error")))
                                     completed_count += 1
                                 if (netlist_optimizer is not None and netlist_optimizer.fatal_error
                                         and not os.path.exists(stop_path)):

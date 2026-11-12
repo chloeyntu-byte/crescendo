@@ -301,7 +301,7 @@ class SetupPrivateServiceIntegrationTests(unittest.TestCase):
         with mock.patch.object(sessions,'close_setup_private_session',return_value={
                 'cleanup_proven':False,'state':'private_setup_native_stop_unproven'}), \
                 mock.patch.object(sessions,'create_setup_private_session') as create:
-            with self.assertRaisesRegex(RuntimeError,'no new private suite was created'):
+            with self.assertRaisesRegex(RuntimeError,'no new working copy was created'):
                 self.inspect()
             create.assert_not_called()
         self.assertEqual(list(self.service.setup_private_sessions),[reference['session_id']])
@@ -317,7 +317,7 @@ class SetupPrivateServiceIntegrationTests(unittest.TestCase):
         self.service.select_setup(self.fixture.path)
         with mock.patch.object(sessions,'close_setup_private_session',side_effect=ValueError('ownership differs')), \
                 mock.patch.object(sessions,'create_setup_private_session') as create:
-            with self.assertRaisesRegex(RuntimeError,'no new private suite was created'):
+            with self.assertRaisesRegex(RuntimeError,'no new working copy was created'):
                 self.inspect()
             create.assert_not_called()
         wrong=copy.deepcopy(reference)
@@ -325,7 +325,7 @@ class SetupPrivateServiceIntegrationTests(unittest.TestCase):
         self.service.setup_private_sessions[reference['session_id']]=wrong
         try:
             with mock.patch.object(sessions,'create_setup_private_session') as create:
-                with self.assertRaisesRegex(RuntimeError,'no new private suite was created'):
+                with self.assertRaisesRegex(RuntimeError,'no new working copy was created'):
                     self.inspect()
                 create.assert_not_called()
             self.assertTrue(all(os.path.isdir(row['path']) for row in reference['views']))
@@ -406,7 +406,7 @@ class SetupPrivateServiceIntegrationTests(unittest.TestCase):
                 with mock.patch.object(sessions,'close_setup_private_session',return_value={
                         'cleanup_proven':False,'state':'private_setup_native_stop_unproven'}), \
                         mock.patch.object(sessions,'create_setup_private_session') as create:
-                    with self.assertRaisesRegex(RuntimeError,'no new private suite was created'):
+                    with self.assertRaisesRegex(RuntimeError,'no new working copy was created'):
                         self.inspect()
                     create.assert_not_called()
                 self.assertEqual(list(self.service.setup_private_sessions),[reference['session_id']])
@@ -595,7 +595,7 @@ class SetupPrivateServiceIntegrationTests(unittest.TestCase):
         self.service.prepared['prepared']['setup'] = project_setup(self.service.prepared['prepared']['setup'], 'C')
         self.service.prepared['prepared']['setup_private_session']=preview['setup_private_session']
         self.service.optimization_launches=1
-        with self.assertRaisesRegex(RuntimeError,'shares the Setup private views'):
+        with self.assertRaisesRegex(RuntimeError,'shares the working setup views'):
             self.service._validate_ranges_registered('prepared',[])
         self.service.prepared['prepared'].pop('setup_private_session')
         with mock.patch('crescendo_engine.server.validate_variable_request',side_effect=ValueError('legacy variable gate reached')):

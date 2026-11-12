@@ -2839,7 +2839,7 @@ def cleanup_terminal_candidate_artifacts(candidate_root, run_root, source_verifi
     source_guard = candidate.get("source_guard") or {}
     if not source_guard.get("ok"):
         raise UnsafeCleanupError(
-            "terminal candidate without a private workspace lacks a successful persisted source guard"
+            "terminal candidate without a working workspace lacks a successful persisted source guard"
         )
     persist_lightweight_candidate(candidate_root, candidate)
     return safe_delete_candidate_workspace(

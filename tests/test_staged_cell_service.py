@@ -162,7 +162,7 @@ class StagedCellServiceTest(unittest.TestCase):
 
         with mock.patch.object(hierarchy, "cell_scope_records", return_value=self.scopes, create=True), \
                 mock.patch("crescendo_engine.server.prepare_setup", side_effect=changed_setup):
-            with self.assertRaisesRegex(ValueError, "changed (?:during|before baseline capture)"):
+            with self.assertRaisesRegex(ValueError, "changed (?:during|before reference capture)"):
                 self.service.prepare_cells(token, ["scope-I1"])
         self.assertEqual(self.service.prepared, {})
 

@@ -660,14 +660,14 @@ def native_settings_summary(setup, job_policy=None, workspace=None):
             'preserved': ['complete saved source snapshot',
                           'selected Test and its native analyses' if selected else 'all Tests and analyses', 'per-Test corner masks',
                           'source Job Setup references and captured effective values'],
-            'owned_overrides': ['private design bindings', 'run-local result and scratch paths',
+            'owned_overrides': ['working design bindings', 'run-local result and scratch paths',
                                 _contract_text('explicit Crescendo execution selection and overrides')],
             'excluded': ['historical result data', 'copied history pointers', 'locks and backups'] +
                         (['unselected Tests in the native run copy', 'corners outside the current run selection'] if selected else []),
             'job_policies': rows, 'save_options': save,
             'execution_layers': [
                 'Source: complete saved Maestro files and source Job Setup metadata are retained.',
-                'Private Maestro capture: owned Local/2 policy generates netlists without submitting source jobs; source timeouts are carried when available.',
+                'Maestro working copy capture: owned Local/2 policy generates netlists without submitting source jobs; source timeouts are carried when available.',
                 'Solver CLI: source command, max jobs and applicable timeouts are inherited unless explicitly overridden; arbitrary native/plugin job properties are not translated.'],
             'private_storage': (workspace or {}).get('native_storage') or {},
             'warnings': list(policy.get('warnings') or []) + list(save.get('warnings') or []),

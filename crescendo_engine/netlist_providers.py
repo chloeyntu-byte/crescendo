@@ -1,4 +1,4 @@
-"""Private netlist producers for the common solver/submission pipeline.
+"""Template Netlist producers for the common solver/submission pipeline.
 
 Maestro produces a fresh numeric netlist for each candidate. The template
 producer qualifies its symbolic mapping once and only writes candidate numbers.
@@ -51,10 +51,10 @@ def validate_provider_request(prepared, parameters, config, spec=None, source_mo
                               generation_only=False):
     """Read-only checks before copying OA, running callbacks or starting a job."""
     if source_mode not in ("maestro_netlist", "private_netlist"):
-        raise PrivateNetlistUnsupported("unknown private netlist source mode")
+        raise PrivateNetlistUnsupported("unknown Template Netlist source mode")
     from .test_selection import selection_plan, effective_setup
     setup = effective_setup(prepared.get("setup") or {}, selection_plan(prepared.get("setup") or {}, spec))
-    variable_scope = require_unique_run_variables(setup, action="generate private SCS", multiplicity_only=True)
+    variable_scope = require_unique_run_variables(setup, action="generate working SCS", multiplicity_only=True)
     if (setup.get("backend") or "maestro") != "maestro":
         raise PrivateNetlistUnsupported("the common CLI netlist producer currently requires a saved Maestro setup")
     if not parameters or len({row.get("parameter_id") for row in parameters}) != len(parameters):
@@ -452,7 +452,7 @@ def _prepare_maestro_netlists(prepared, parameters, values, config, root, candid
     request = validate_provider_request(prepared, parameters, config, spec,
                                         generation_only=generation_only)
     if set(values) != {row["parameter_id"] for row in parameters}:
-        raise PrivateNetlistError("candidate parameter identities do not match the selected private schematic")
+        raise PrivateNetlistError("candidate parameter identities do not match the selected working schematic")
     if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) for value in values.values()):
         raise PrivateNetlistError("candidate parameter values must be finite numbers")
     root = os.path.abspath(root)
@@ -483,7 +483,7 @@ def _prepare_maestro_netlists(prepared, parameters, values, config, root, candid
     if progress_callback:
         progress_callback({"stage": "netlist_generation", "candidate_id": str(candidate_id),
                            "source_mode": "maestro_netlist", "netlist_method": "capture_wrapper", "method": "capture_wrapper",
-                           "message": "Generating numeric netlists from the private Maestro and selected private schematic views"})
+                           "message": "Generating numeric netlists from the Maestro working copy and selected working schematic views"})
     initialized = session_workspace is not None or bool(shared_state and shared_state.get("initialized"))
     capture_options = {"private_config_initialized":True} if initialized and session_workspace is None else {}
     if allow_effective_adjustment:
@@ -606,7 +606,7 @@ def prepare_maestro_netlists_batch(prepared, parameters, config, root, plan, spe
     qualify_deterministic(prepared['setup'])
     qualify_shared_inputs(plan, prepared)
     if not prepared.get('setup_private_session'):
-        raise BatchUnsupported('Generation capture requires an applied private suite')
+        raise BatchUnsupported('Generation capture requires an applied working copy')
     config = _capture_request_config(prepared, config, spec)
     request = validate_provider_request(prepared, parameters, config, spec)
     config = copy.deepcopy(config)

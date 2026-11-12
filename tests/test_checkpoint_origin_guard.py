@@ -244,7 +244,7 @@ class CheckpointOriginGuardTest(unittest.TestCase):
                 side_effect=lambda *_args, **kwargs: kwargs["resume_checkpoint"]["payload_sha256"],
             ) as unleased:
                 try:
-                    with self.assertRaisesRegex(RuntimeError, "private"):
+                    with self.assertRaisesRegex(RuntimeError, "internal"):
                         run_optimization(
                             {}, {"runtime": {"run_root": root}},
                             run_root=os.path.join(root, "resumed"),

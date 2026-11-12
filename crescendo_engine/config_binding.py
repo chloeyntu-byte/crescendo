@@ -1,7 +1,7 @@
-"""Exact private config materialization from the observed HDB occurrence graph.
+"""Exact working config materialization from the observed HDB occurrence graph.
 
 No source HDB object is opened for writing. Logical library names resolve to the
-already verified private workspace copies; reference libraries remain read only.
+already verified working workspace copies; reference libraries remain read only.
 """
 from __future__ import print_function
 from crescendo_engine.runtime import bind_text
@@ -62,11 +62,11 @@ def private_config_plan(workspace, clone_plan):
             if not owns_view(workspace, private_key, role='config'):
                 raise ValueError('requested config is not an exact owned new view: %r' % (private_key,))
         elif not private_library_is_owned(workspace, private_key[0]):
-            raise ValueError('requested config is not in a private copied library: %s' % key[0])
+            raise ValueError('requested config is not in a working copied library: %s' % key[0])
         top = (_triple(design['resolved_top']) if workspace.get('copy_policy') == 'same_library_views'
                else private_design_identity(workspace, _triple(design['resolved_top'])))
         if workspace.get('copy_policy') != 'same_library_views' and not private_library_is_owned(workspace, top[0]):
-            raise ValueError('config actual top is not in a private copied library: %s' % top[0])
+            raise ValueError('config actual top is not in a working copied library: %s' % top[0])
         top_clone = clones.get(key + ('/',))
         if top_clone and top_clone.get('same_library_view'):
             top = (top_clone['clone_library'], top_clone['clone_cell'], top_clone['target_view'])
@@ -143,10 +143,10 @@ def config_binding_lines(workspace, clone_plan, verification_path):
             ])
         lines.extend([
             _contract_text('crescPrivateConfig = hdbOpen(%s "w")') % args,
-            _contract_text('unless(crescPrivateConfig error("Crescendo cannot write private config\\n"))'),
-            _contract_text('unless(hdbSetTopCellViewName(crescPrivateConfig %s) error("Crescendo cannot redirect private config top\\n"))') % ' '.join(_string(v) for v in design['top']),
-            _contract_text('unless(hdbSetDefaultStopListString(crescPrivateConfig %s) error("Crescendo cannot set private config stop list\\n"))') % _string(' '.join(default_stops)),
-            _contract_text('unless(hdbSetDefaultViewListString(crescPrivateConfig %s) error("Crescendo cannot set private config view list\\n"))') % _string(' '.join(sorted(set(row['target'][2] for row in design['bindings']) | set([design['top'][2]])))),
+            _contract_text('unless(crescPrivateConfig error("Crescendo cannot write working config\\n"))'),
+            _contract_text('unless(hdbSetTopCellViewName(crescPrivateConfig %s) error("Crescendo cannot redirect working config top\\n"))') % ' '.join(_string(v) for v in design['top']),
+            _contract_text('unless(hdbSetDefaultStopListString(crescPrivateConfig %s) error("Crescendo cannot set working config stop list\\n"))') % _string(' '.join(default_stops)),
+            _contract_text('unless(hdbSetDefaultViewListString(crescPrivateConfig %s) error("Crescendo cannot set working config view list\\n"))') % _string(' '.join(sorted(set(row['target'][2] for row in design['bindings']) | set([design['top'][2]])))),
         ])
         for row in design['bindings']:
             spec = 'list(%s)' % ' '.join('list(%s)' % ' '.join(_string(value) for value in step) for step in row['specifier'])
@@ -155,22 +155,22 @@ def config_binding_lines(workspace, clone_plan, verification_path):
             ])
             if row.get('stop'):
                 lines.append(_contract_text('unless(hdbSetObjBindRule(crescPrivateConfig %s list(\'hdbcStopRule t)) error("Crescendo cannot preserve config stop point\\n"))') % spec)
-        lines.append(_contract_text('unless(hdbSave(crescPrivateConfig) error("Crescendo private config save failed\\n"))'))
+        lines.append(_contract_text('unless(hdbSave(crescPrivateConfig) error("Crescendo working config save failed\\n"))'))
         if design.get('owned_view'):
             from .same_library_views import ownership_marker_lines
             lines.extend(ownership_marker_lines(design['owned_view']))
         lines.extend([_contract_text('hdbClose(crescPrivateConfig)'), _contract_text('crescPrivateConfig = hdbOpen(%s "r")') % args,
-                      _contract_text('unless(crescPrivateConfig error("Crescendo cannot reopen persisted private config\\n"))'),
+                      _contract_text('unless(crescPrivateConfig error("Crescendo cannot reopen persisted working config\\n"))'),
                       _contract_text('unless(equal(list(hdbGetTopLibName(crescPrivateConfig) hdbGetTopCellName(crescPrivateConfig) hdbGetTopViewName(crescPrivateConfig)) list(%s)) error("Crescendo persisted config top mismatch\\n"))') % ' '.join(_string(v) for v in design['top']),
                       _contract_text('fprintf(crescConfigVerify "CONFIG_TOP\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" %s)') % ' '.join(_string(v) for v in config + design['top'])])
         bindings_by_path = dict((node['hierarchy_path'], node) for node in design['bindings'])
         for row in design['bindings']:
             lines.extend([_contract_text('crescConfigPath = hdbCreatePathVector(crescPrivateConfig)'),
-                          _contract_text('unless(crescConfigPath error("Crescendo cannot create private config path vector\\n"))')])
+                          _contract_text('unless(crescConfigPath error("Crescendo cannot create working config path vector\\n"))')])
             for index, step in enumerate(row['specifier'][:-1]):
                 parent_path = '/' + '/'.join(s[3] for s in row['specifier'][:index+1])
                 ancestor = bindings_by_path[parent_path]
-                lines.append(_contract_text('unless(hdbPushCell(crescConfigPath %s %s) error("Crescendo cannot reconstruct private config path\\n"))') % (_string(step[3]), ' '.join(_string(v) for v in ancestor['target'])))
+                lines.append(_contract_text('unless(hdbPushCell(crescConfigPath %s %s) error("Crescendo cannot reconstruct working config path\\n"))') % (_string(step[3]), ' '.join(_string(v) for v in ancestor['target'])))
             raw = row.get('verification_master') or tuple(row.get('master_' + name) for name in ('library', 'cell', 'view'))
             if not all(raw):
                 raise ValueError('config raw master identity is incomplete: %s' % row['hierarchy_path'])
@@ -178,7 +178,7 @@ def config_binding_lines(workspace, clone_plan, verification_path):
             lines.extend([
                 _contract_text('crescConfigBound = hdbBind(crescConfigPath %s %s %s)') % (' '.join(_string(v) for v in raw), _string(row['name']), flags),
                 _contract_text('unless(equal(list(car(crescConfigBound) cadr(crescConfigBound) caddr(crescConfigBound)) list(%s)) error("Crescendo persisted config binding mismatch at %s: %%L\\n" crescConfigBound))') % (' '.join(_string(v) for v in row['target']), _quote(row['hierarchy_path'])),
-                _contract_text('unless(hdbPushCell(crescConfigPath %s %s) error("Crescendo cannot enter private config binding\\n"))') % (_string(row['name']), ' '.join(_string(v) for v in row['target'])),
+                _contract_text('unless(hdbPushCell(crescConfigPath %s %s) error("Crescendo cannot enter working config binding\\n"))') % (_string(row['name']), ' '.join(_string(v) for v in row['target'])),
                 _contract_text('unless(equal(if(hdbIsAtStopPoint(crescConfigPath) then t else nil) %s) error("Crescendo persisted config stop mismatch at %s\\n"))') % ('t' if row.get('stop') else 'nil', _quote(row['hierarchy_path'])),
                 _contract_text('fprintf(crescConfigVerify "CONFIG_BINDING\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\t%%L\\n" %s %s %s %s)') % (' '.join(_string(v) for v in config), _string(row['hierarchy_path']), ' '.join(_string(v) for v in row['target']), 't' if row.get('stop') else 'nil'),
                 _contract_text('hdbDestroyPathVector(crescConfigPath)'),
@@ -203,7 +203,7 @@ def validate_config_binding_records(plan, path):
             values = tuple(False if value == 'nil' else True if value == 't' else ast.literal_eval(value) for value in fields[1:])
             actual.append((fields[0], values))
     if actual != expected:
-        raise ValueError('private config binding evidence does not match observed graph')
+        raise ValueError('working config binding evidence does not match observed graph')
     return {'ok': True, 'configs': len(plan), 'bindings': sum(len(row['bindings']) for row in plan)}
 
 
@@ -217,7 +217,7 @@ def config_clone_cdf_lines(clone):
         _contract_text('crescCloneSourceCDF = cdfGetBaseCellCDF(ddGetObj(%s %s))') % (_string(source_library), _string(source_cell)),
         _contract_text('when(crescCloneSourceCDF'),
         _contract_text('  crescCloneDestCell = ddGetObj(%s %s)') % (_string(clone['clone_library']), _string(clone['clone_cell'])),
-        _contract_text('  unless(crescCloneDestCell error("Crescendo cannot obtain private clone CDF cell\\n"))'),
+        _contract_text('  unless(crescCloneDestCell error("Crescendo cannot obtain working clone CDF cell\\n"))'),
         _contract_text('  crescCloneDestCDF = cdfCopyCDF(crescCloneDestCell "baseCellData" crescCloneSourceCDF)'),
         _contract_text('  unless(crescCloneDestCDF error("Crescendo cloned module CDF is absent\\n"))'),
         _contract_text('  cdfSaveCDF(crescCloneDestCDF)'),

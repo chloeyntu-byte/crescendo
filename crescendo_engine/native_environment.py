@@ -1,7 +1,7 @@
 """Keep native caller environment states separate from Python/Tk overrides.
 
 Snapshots carry None for an unset variable and an empty string for a variable
-set to empty. Values are private launch data and must not be logged.
+set to empty. Values are working launch data and must not be logged.
 """
 from __future__ import print_function
 from crescendo_engine.runtime import bind_text
@@ -95,11 +95,11 @@ def native_snapshot_warnings(values):
 
 
 def preserve_scheduler_home(environ):
-    """Record caller HOME before Ocean receives its owned private HOME.
+    """Record caller HOME before Ocean receives its owned working HOME.
 
     Never inspect or copy credential files. An explicit unset or empty HOME is
     preserved, as are existing markers from an outer native launch boundary.
-    Marker values are private launch data and must not be logged.
+    Marker values are working launch data and must not be logged.
     """
     result = dict(environ)
     if SCHEDULER_HOME_SET not in result:
@@ -111,7 +111,7 @@ def preserve_scheduler_home(environ):
 def scheduler_environment(environ):
     """Restore caller HOME only for the native scheduler submission/query CLI.
 
-    Ocean and compute-side simulation keep their private HOME. Scheduler
+    Ocean and compute-side simulation keep their working HOME. Scheduler
     credentials stay at the original caller location; no login, token read or
     credential copying is performed at this boundary.
     """

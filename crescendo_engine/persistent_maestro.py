@@ -992,7 +992,7 @@ class PersistentMaestroWorker(object):
         )
         workspace_root = os.path.abspath(self.workspace.get("root") or "")
         if not workspace_root or not is_under(workspace_root, self.worker_root):
-            raise ValueError("persistent worker workspace must be private below worker_root")
+            raise ValueError("persistent worker workspace must be an isolated copy below worker_root")
         self._popen_factory = popen_factory or subprocess.Popen
         self._use_guardian = popen_factory is None
         self._clock = clock or time.monotonic
@@ -1451,7 +1451,7 @@ class PersistentMaestroWorker(object):
                 break
             self._sleep(self.poll_interval)
         raise PersistentMaestroWorkerStartupError(
-            "Ocean child did not establish its private process group: pid=%s pgid=%s" % (
+            "Ocean child did not establish its own process group: pid=%s pgid=%s" % (
                 getattr(self.process, "pid", None), last_group,
             )
         )
@@ -1720,9 +1720,9 @@ class PersistentMaestroWorker(object):
                     }
                     atomic_write_json(os.path.join(self.control_root, _contract_text('effective_job_policy.json')), verified)
                     self._log_event('maestro_effective_job_policy',
-                        'Private Maestro Job Setup applied and read back', verified)
+                        'Maestro working-copy Job Setup applied and read back', verified)
                     if not verified['ok']:
-                        raise PersistentMaestroWorkerStartupError('Private Maestro Job Setup differs; no simulation submitted: %s' % verified['differences'])
+                        raise PersistentMaestroWorkerStartupError('Maestro working-copy Job Setup differs; no simulation submitted: %s' % verified['differences'])
                 technology_manifest = self.workspace.get("technology") or {}
                 if workspace_technology_validation_required(technology_manifest):
                     validate_workspace_technology(
@@ -2785,9 +2785,9 @@ class PersistentMaestroWorker(object):
                 self.closed = False
                 self._close_stdin()
                 self._close_streams()
-                self._write_state('Owned remote worker pool stop unproven; private views retained')
+                self._write_state('Owned remote worker pool stop unproven; working-copy views retained')
                 raise PersistentMaestroWorkerProcessError(
-                    'local termination proven but owned remote worker pool stop is unproven; private views retained')
+                    'local termination proven but owned remote worker pool stop is unproven; working-copy views retained')
             from .same_library_views import cleanup_same_library_views
             view_cleanup = cleanup_same_library_views(self.workspace, process_cleanup_proven=True)
             if not view_cleanup["cleanup_proven"]:
@@ -2817,9 +2817,9 @@ class PersistentMaestroWorker(object):
                         self._write_state("guardian cleanup proof failed after process exit")
                         raise
                 if getattr(self, 'remote_session_possible', False):
-                    self._write_state('Owned remote worker pool stop unproven; private views retained')
+                    self._write_state('Owned remote worker pool stop unproven; working-copy views retained')
                     raise PersistentMaestroWorkerProcessError(
-                        'owned remote worker pool stop is unproven; private views retained')
+                        'owned remote worker pool stop is unproven; working-copy views retained')
                 self.closed = True
                 self.state = "closed"
                 from .same_library_views import cleanup_same_library_views

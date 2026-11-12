@@ -41,7 +41,7 @@ class PrivateSuiteServiceMixin(object):
             member.update(path=row.get('path'), role=row.get('role'))
             members.append(member)
         return dict(reference, id=reference.get('session_id') or reference.get('suite_id'),
-                    name=reference.get('label') or 'Private suite', members=members)
+                    name=reference.get('label') or 'working copy', members=members)
 
     def list_private_suites(self):
         rows = sessions.list_setup_private_sessions(self.config)
@@ -58,13 +58,13 @@ class PrivateSuiteServiceMixin(object):
 
     def _suite_reference_for_id(self, suite_id):
         if not isinstance(suite_id, str) or not re.match(r'^[a-f0-9]{32}$', suite_id):
-            raise ValueError('Invalid private suite identifier')
+            raise ValueError('Invalid working-copy identifier')
         if suite_id in self.setup_private_sessions:
             return self.setup_private_sessions[suite_id]
         rows = sessions.list_setup_private_sessions(self.config)
         found = next((row for row in rows if row.get('suite_id') == suite_id), None)
         if not found or found.get('status') in ('unavailable', 'deleted'):
-            raise ValueError('Private suite is unavailable: %s' % (', '.join((found or {}).get('warnings') or []) or suite_id))
+            raise ValueError('working copy is unavailable: %s' % (', '.join((found or {}).get('warnings') or []) or suite_id))
         return found
 
     def _obtain_suite(self, suite_id, for_delete=False):
@@ -135,14 +135,14 @@ class PrivateSuiteServiceMixin(object):
         self._remember_setup_private_session(prepared['setup_private_session'])
         for warning in result['warnings']:
             self._set_activity('suite_warning', warning, level='WARN')
-        self._set_activity('suite_ready', 'Private suite loaded; saved cells and parameters reused', 'complete')
+        self._set_activity('suite_ready', 'working copy loaded; saved cells and parameters reused', 'complete')
         return result
 
     def _load_private_suite_registered(self, suite_id):
         from .setup_baseline import origin_setup_path
         from .prepared_freshness import verify_prepared_freshness
-        self._require_idle_setup_resources('load a private suite')
-        self._set_activity('suite_open', 'Opening saved private suite')
+        self._require_idle_setup_resources('load a working copy')
+        self._set_activity('suite_open', 'Opening saved working copy')
         reference = self._obtain_suite(suite_id)
         prepared = sessions.setup_private_session_snapshot(reference)
         source = origin_setup_path(prepared['setup'])
@@ -214,7 +214,7 @@ class PrivateSuiteServiceMixin(object):
 
     @suite_command
     def load_private_suite(self, suite_id, source_path=None):
-        self._begin_lifecycle_operation('load a private suite', exclusive=True)
+        self._begin_lifecycle_operation('load a working copy', exclusive=True)
         previous_config = copy.deepcopy(self.config)
         previous = (self.prepared.copy(), self.inspections.copy(), self.test_inspections.copy(), self.inspection_epoch)
         previous_suites = set(self.setup_private_sessions)
@@ -272,9 +272,9 @@ class PrivateSuiteServiceMixin(object):
 
     @suite_command
     def rename_private_suite(self, suite_id, name):
-        self._begin_lifecycle_operation('rename a private suite', exclusive=True)
+        self._begin_lifecycle_operation('rename a working copy', exclusive=True)
         try:
-            self._require_idle_setup_resources('rename a private suite')
+            self._require_idle_setup_resources('rename a working copy')
             reference = self._obtain_suite(suite_id)
             self._set_activity('suite_rename', 'Rebinding all views under the new suite name')
             active = any((item.get('setup_private_session') or {}).get('session_id') == suite_id
@@ -333,9 +333,9 @@ class PrivateSuiteServiceMixin(object):
                 if ((value.get('preview') or {}).get('setup_private_session') or {}).get('session_id') != suite_id}
 
     def recover_private_suite(self, suite_id):
-        self._begin_lifecycle_operation('recover an interrupted private suite update', exclusive=True)
+        self._begin_lifecycle_operation('recover an interrupted working-copy update', exclusive=True)
         try:
-            self._require_idle_setup_resources('recover an interrupted private suite update')
+            self._require_idle_setup_resources('recover an interrupted working-copy update')
             reference = self._suite_reference_for_id(suite_id)
             result = sessions.recover_setup_private_session(reference, self.config)
             self._invalidate_suite_authority(suite_id)
@@ -346,9 +346,9 @@ class PrivateSuiteServiceMixin(object):
             self._end_lifecycle_operation(exclusive=True)
 
     def delete_private_suite(self, suite_id):
-        self._begin_lifecycle_operation('delete a private suite', exclusive=True)
+        self._begin_lifecycle_operation('delete a working copy', exclusive=True)
         try:
-            self._require_idle_setup_resources('delete a private suite')
+            self._require_idle_setup_resources('delete a working copy')
             reference = self._obtain_suite(suite_id, for_delete=True)
             result = sessions.delete_setup_private_session(reference)
             if not result.get('cleanup_proven'):
@@ -363,7 +363,7 @@ class PrivateSuiteServiceMixin(object):
                 self.inspections = {key: value for key, value in self.inspections.items()
                     if ((value.get('preview') or {}).get('setup_private_session') or {}).get('session_id') != suite_id}
             return dict(result, warnings=[], retained_metadata_root=reference['root'],
-                        retention_note='Private views deleted; configuration, history and audit metadata retained')
+                        retention_note='Working views deleted; configuration, history and audit metadata retained')
         finally:
             self._end_lifecycle_operation(exclusive=True)
 
@@ -375,7 +375,7 @@ class PrivateSuiteServiceMixin(object):
         saved_epoch = self.inspection_epoch
         updated = None
         try:
-            self._require_idle_setup_resources('update a private suite')
+            self._require_idle_setup_resources('update a working copy')
             reference = self._obtain_suite(suite_id)
             old = sessions.setup_private_session_snapshot(reference)
             from .setup_baseline import origin_setup_path
@@ -459,7 +459,7 @@ class PrivateSuiteServiceMixin(object):
                 'previous_baseline': (old['setup'].get('baseline') or {}).get('baseline_id'),
                 'baseline': (setup.get('baseline') or {}).get('baseline_id'),
                 'hierarchy_reloaded': bool(plan.get('requires_hierarchy')), 'warnings': list(plan.get('warnings') or [])}
-            self._set_activity('suite_native_check', 'Verifying updated private Maestro bindings')
+            self._set_activity('suite_native_check', 'Verifying updated Maestro working copy bindings')
             if plan.get('requires_hierarchy'):
                 updated = sessions.create_setup_private_session(prepared, self.config,
                     cancel_check=self.prepare_cancel_event.is_set, label=reference.get('label'))

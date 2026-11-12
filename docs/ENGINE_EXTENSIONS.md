@@ -32,7 +32,7 @@ storage discovery retain their existing semantics. `config_home` is an XDG leaf;
 an explicit application-prefixed `USER_CONFIG` still selects a full file path.
 
 A legacy application must supply its exact schema/type aliases and unchanged
-private leaf resources where existing content hashes require them. Reading still
+application-specific leaf resources where existing content hashes require them. Reading still
 validates the original dialect and checksum chain. A naming contract does not
 convert, re-sign or grant Resume/Stop/cleanup authority to old evidence. Unknown
 protocol revisions retain the existing rejection behavior.
@@ -176,13 +176,13 @@ deadlines and cleanup proof continue to gate execution and recovery.
 
 `ResourceResolver.group(root, names)` creates a file-hash manifest. Pass groups
 as `resource_groups={group: manifest}`. `resource_path(group, name)` checks safe
-relative paths, canonical-root confinement, the allowlist and file SHA256. Private
+relative paths, canonical-root confinement, the allowlist and file SHA256. Application-specific
 resource bytes are returned unchanged. Registration grants no Python import rights.
 An optional `application_code` group selects the controller launch cwd and its
 matching identity-validation root. Its canonical root/file manifest is validated
 by the runtime; omitting it retains the engine source root.
 Known public shell/menu source templates can be materialized for a selected
-identity in a private, content-verified cache, before user interpolation; the
+identity in an application-specific, content-verified cache, before user interpolation; the
 public default uses the original source resources. Applications can instead
 register their own unchanged resources in the corresponding groups.
 

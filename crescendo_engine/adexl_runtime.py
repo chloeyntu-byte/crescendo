@@ -67,7 +67,7 @@ def normalize_adexl_workspace_binding(setup, binding=None, require_private_works
     source_path = locator.get("path")
     if not binding:
         if require_private_workspace:
-            raise ValueError("ADE XL runtime requires an explicit private workspace binding")
+            raise ValueError("ADE XL runtime requires an explicit workspace copy binding")
         return {
             "strict_private": False,
             "workspace_root": None,
@@ -96,19 +96,19 @@ def normalize_adexl_workspace_binding(setup, binding=None, require_private_works
     }
     missing = sorted(name for name, value in required.items() if value in (None, ""))
     if missing:
-        raise ValueError("ADE XL private workspace binding is missing %s" % ", ".join(missing))
+        raise ValueError("ADE XL workspace copy binding is missing %s" % ", ".join(missing))
 
     workspace_root = os.path.abspath(os.path.expanduser(str(workspace_root)))
     simulation_root = os.path.abspath(os.path.expanduser(str(simulation_root)))
     setup_path = os.path.abspath(os.path.expanduser(str(setup_path)))
     if not os.path.isdir(workspace_root):
-        raise ValueError("ADE XL private workspace root does not exist: %s" % workspace_root)
+        raise ValueError("ADE XL workspace copy root does not exist: %s" % workspace_root)
     if not os.path.isfile(setup_path):
-        raise ValueError("ADE XL private SetupDB does not exist: %s" % setup_path)
+        raise ValueError("ADE XL working SetupDB does not exist: %s" % setup_path)
     if os.path.basename(setup_path).lower() != "data.sdb":
-        raise ValueError("ADE XL private SetupDB must use the canonical data.sdb filename")
+        raise ValueError("ADE XL working SetupDB must use the canonical data.sdb filename")
     if not is_under(setup_path, workspace_root):
-        raise ValueError("ADE XL private SetupDB must be below workspace_root")
+        raise ValueError("ADE XL working SetupDB must be below workspace_root")
     if not is_under(simulation_root, workspace_root):
         raise ValueError("ADE XL projectDir must be below workspace_root")
     ensure_dir(simulation_root)
@@ -116,7 +116,7 @@ def normalize_adexl_workspace_binding(setup, binding=None, require_private_works
     view_dir = os.path.dirname(setup_path)
     declared_view_dir = source.get("view_dir") or source.get("setup_dir")
     if declared_view_dir and os.path.realpath(os.path.abspath(declared_view_dir)) != os.path.realpath(view_dir):
-        raise ValueError("ADE XL private SetupDB view_dir does not match setup_path")
+        raise ValueError("ADE XL working SetupDB view_dir does not match setup_path")
     return {
         "strict_private": True,
         "workspace_root": workspace_root,
@@ -389,7 +389,7 @@ def _candidate_rdb_paths(candidate, result):
                 % (expected_name, os.path.basename(direct_path))
             )
         if not is_under(direct_path, candidate["setup_dir"]):
-            raise AdeXLResultError("ADE XL direct RDB is outside the private setup view")
+            raise AdeXLResultError("ADE XL direct RDB is outside the working setup view")
         if os.path.isfile(direct_path) and os.path.getsize(direct_path) > 0:
             return [os.path.realpath(direct_path)]
         return []
@@ -546,7 +546,7 @@ def finalize_adexl_candidate(candidate, require_rdb=True):
         for name in ("results_dir", "results_location"):
             path = result.get(name)
             if path and not is_under(path, simulation_root):
-                raise AdeXLResultError("ADE XL %s is outside private projectDir" % name)
+                raise AdeXLResultError("ADE XL %s is outside working projectDir" % name)
     rdb_paths = _candidate_rdb_paths(candidate, result)
     if len(rdb_paths) > 1:
         raise AdeXLResultError("multiple ADE XL RDB files match completed history: %s" % rdb_paths)

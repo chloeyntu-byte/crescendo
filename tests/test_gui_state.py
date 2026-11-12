@@ -739,7 +739,7 @@ class GuiStateTests(unittest.TestCase):
         )
         self.assertEqual(
             candidate_failure_stage_label(workspace),
-            "Private workspace build",
+            "Workspace copy build",
         )
         self.assertEqual(candidate_spectre_state(workspace), "not_started")
         self.assertEqual(candidate_spectre_state({

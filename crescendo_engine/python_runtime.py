@@ -330,7 +330,7 @@ def probe_candidate(path, environ=None, timeout=3):
 def write_runtime_result(path, interpreter, overlays):
     parent = os.stat(os.path.dirname(os.path.abspath(path)))
     if parent.st_uid != os.getuid() or parent.st_mode & 0o077:
-        raise ValueError("Runtime result directory must be owned and private")
+        raise ValueError("Runtime result directory must be owned and accessible only to its owner")
     records = [(_contract_text("CRESCENDO_RUNTIME_SCHEMA"), _contract_text("crescendo.gui_dependencies.v1")), (_contract_text("CRESCENDO_RUNTIME_INTERPRETER"), interpreter)]
     records.extend((key, overlays[key]) for key in dependencies.OVERLAY_KEYS if key in overlays)
     if any(not isinstance(value, str) or "\0" in value for key, value in records):
@@ -345,7 +345,7 @@ def read_runtime_overlays(path):
     with os.fdopen(descriptor, "rb") as stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-            raise ValueError("GUI runtime result must be an owned private regular file")
+            raise ValueError("GUI runtime result must be an owner-only regular file")
         raw = stream.read(65537)
     if len(raw) > 65536 or not raw.endswith(b"\0"):
         raise ValueError("Invalid GUI runtime result size or encoding")
@@ -412,7 +412,7 @@ def main(arguments=None):
         report = select_runtime(os.environ.get(_contract_text("CRESCENDO_PREFERRED_PYTHON")), args.caller_dir, args.module_root)
     _write_log(_contract_text("Crescendo automatic Python selection: ") + json.dumps(report, sort_keys=True))
     if not report["selected"]:
-        print(_contract_text("Crescendo could not find an existing Python 3.6+ with working Tk/Tcl; see the private launch log."), file=sys.stderr)
+        print(_contract_text("Crescendo could not find an existing Python 3.6+ with working Tk/Tcl; see the owner-only launch log."), file=sys.stderr)
         return 2
     print(_contract_text("Crescendo automatically selected Python: ") + report["selected"], file=sys.stderr)
     if args.result_file:
