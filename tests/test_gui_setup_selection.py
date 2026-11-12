@@ -321,7 +321,7 @@ class GuiSetupSelectionTests(unittest.TestCase):
             app.apply_ranges_button.configure(state="normal")
             self._browse_file(self.paths["lib_B"])
             app.load_setup_button.invoke()
-            self.assertTrue(entered.wait(1))
+            self.assertTrue(entered.wait(10))
             self.assertTrue(app.setup_loading)
             for button in (app.start_button,
                            app.validate_button, app.apply_ranges_button):

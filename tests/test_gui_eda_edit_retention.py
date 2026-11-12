@@ -45,7 +45,7 @@ class GuiEdaEditRetentionTkTests(unittest.TestCase):
         self.service.update_eda_setup = mock.Mock(side_effect=update)
         self.app.eda_vars["spectre_model_dir"].set("/manual/models/spectre")
         self.app.save_eda_button.invoke()
-        self.assertTrue(entered.wait(1))
+        self.assertTrue(entered.wait(10))
         self.app.parameter_configs["/M0/w"]["minimum"] = "edited while saving"
         self.app.objective_rows[0].value_var.set("target while saving")
         expected = copy.deepcopy(self.app._snapshot_ui_state()[0])

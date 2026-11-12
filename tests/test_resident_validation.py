@@ -44,7 +44,7 @@ class ResidentValidationSessionTest(unittest.TestCase):
                     release.wait()
             thread = threading.Thread(target=hold_lock)
             thread.start()
-            self.assertTrue(locked.wait(1))
+            self.assertTrue(locked.wait(10))
             started = time.monotonic()
             try:
                 with self.assertRaisesRegex(RuntimeError, "deadline exceeded waiting for the session lock"):

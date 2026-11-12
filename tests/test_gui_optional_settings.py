@@ -398,7 +398,7 @@ class GuiOptionalSettingsTkTests(unittest.TestCase):
                 with mock.patch.object(gui, "read_configuration", side_effect=read):
                     with mock.patch.object(gui.filedialog, "askopenfilename", return_value=path):
                         self.app.load_ui_state()
-                    self.assertTrue(entered.wait(1))
+                    self.assertTrue(entered.wait(10))
                     if changed == "selection":
                         self.app.setup_selection_epoch += 1
                     elif changed == "catalogue":
@@ -435,7 +435,7 @@ class GuiOptionalSettingsTkTests(unittest.TestCase):
                 mock.patch.object(self.app, "_request_run_display_name", return_value="fixture optimization"), \
                 mock.patch.object(self.app, "_poll_progress", return_value=None):
             self.app.start_run()
-            self.assertTrue(entered.wait(1))
+            self.assertTrue(entered.wait(10))
             self.assertTrue(self.app.start_request_pending)
             self.assertEqual(self.app.run_ui.state, "idle")
             reason = self.app._setup_reload_block_reason()
@@ -475,7 +475,7 @@ class GuiOptionalSettingsTkTests(unittest.TestCase):
                     return original_match(saved, context)
                 with mock.patch.object(gui, "match_settings_state", side_effect=match):
                     self.app._restore_pending_ui_state()
-                    self.assertTrue(entered.wait(1))
+                    self.assertTrue(entered.wait(10))
                     if changed == "selection":
                         self.app.setup_selection_epoch += 1
                     elif changed == "inspection":

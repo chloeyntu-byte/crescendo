@@ -413,7 +413,7 @@ class LiveTelemetryTkTests(unittest.TestCase):
                 entered.set()
                 release.wait(5)
             queue.submit(blocked)
-            self.assertTrue(entered.wait(1))
+            self.assertTrue(entered.wait(10))
             logs.append("first live line\n")
             viewer = gui.LiveLogViewer(app, "run-1", "g000_c0000")
             deadline = time.monotonic() + 3

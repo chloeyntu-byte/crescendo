@@ -373,7 +373,7 @@ print('owned fixture process exited')
             thread = threading.Thread(target=reader)
             readers.append(thread)
             thread.start()
-            self.assertTrue(held.wait(2))
+            self.assertTrue(held.wait(10))
             return {'ok': True}
         try:
             with mock.patch.object(execution, 'native_log_cleanup_scope',

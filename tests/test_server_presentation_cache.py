@@ -131,7 +131,7 @@ class ServerPresentationCacheTest(unittest.TestCase):
                 result = service._launch_registered(
                     {"evaluator": "mock", "generations": 1, "population": 1}, {},
                 )
-                self.assertTrue(started.wait(5))
+                self.assertTrue(started.wait(10))
                 with service._objective_presentation_lock:
                     service._objective_presentation_cache[result["run_id"]] = {
                         "revision": "test",

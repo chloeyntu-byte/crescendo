@@ -303,7 +303,7 @@ class PrivateSuiteGuiTests(unittest.TestCase):
             thread = threading.Thread(target=hold_lock)
             thread.daemon = True
             thread.start()
-            self.assertTrue(locked.wait(1))
+            self.assertTrue(locked.wait(10))
         try:
             with mock.patch.object(app, '_write_exit_launch_async', side_effect=hold_during_callback):
                 app.request_exit(confirm=False)

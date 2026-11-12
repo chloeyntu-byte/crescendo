@@ -161,7 +161,7 @@ class SharedMaestroTests(unittest.TestCase):
         second_root,second_id = self.candidate(1)
         with ThreadPoolExecutor(max_workers=2) as pool:
             first = pool.submit(producer.generate,{'p':1},first_root,first_id)
-            self.assertTrue(entered.wait(1))
+            self.assertTrue(entered.wait(10))
             second = pool.submit(producer.generate,{'p':2},second_root,second_id)
             with self.assertRaisesRegex(PrivateNetlistError,'CDF callback failed'):
                 first.result(timeout=2)

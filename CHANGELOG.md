@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.1 (2026-11-12)
+
+- Tests only: widen positive synchronization and completion waits (event "entered" waits to 10 s, diagnostic manager joins to 30-60 s) so slower CI runners do not time out. Waits return as soon as the event fires, so passing runs are not slower. Waits that check latency or that a task must not finish yet are unchanged. No product code changes.
+
 ## 1.1.0 (2026-11-12)
 
 Highlights:

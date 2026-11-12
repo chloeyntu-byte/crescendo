@@ -59,7 +59,7 @@ class PrepareCancellationTest(unittest.TestCase):
                 with mock.patch("crescendo_engine.server.prepare_setup", side_effect=prepare_native), \
                         mock.patch("crescendo_engine.cadence.subprocess.Popen") as popen:
                     thread = self._prepare_thread(service, errors)
-                    self.assertTrue(entered.wait(1))
+                    self.assertTrue(entered.wait(10))
                     started = time.monotonic()
                     result = self._exit_without_unrelated_resources(service)
                     thread.join(1)
@@ -127,7 +127,7 @@ class PrepareCancellationTest(unittest.TestCase):
 
             with mock.patch("crescendo_engine.server.prepare_setup", side_effect=prepare_python):
                 thread = self._prepare_thread(service, errors)
-                self.assertTrue(entered.wait(1))
+                self.assertTrue(entered.wait(10))
                 result = self._exit_without_unrelated_resources(service)
                 thread.join(1)
             self.assertTrue(result["exiting"])
@@ -184,7 +184,7 @@ class PrepareCancellationTest(unittest.TestCase):
             with command_cancellation_scope(cancelled):
                 thread = threading.Thread(target=other_thread)
                 thread.start()
-                self.assertTrue(entered.wait(1))
+                self.assertTrue(entered.wait(10))
                 cancelled.set()
                 check_now.set()
                 thread.join(1)

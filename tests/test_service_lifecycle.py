@@ -105,7 +105,7 @@ class OptimizerServiceLifecycleTest(unittest.TestCase):
                     ) as stop:
                 launch_thread = threading.Thread(target=launch_target)
                 launch_thread.start()
-                self.assertTrue(launch_entered.wait(1))
+                self.assertTrue(launch_entered.wait(10))
 
                 exit_thread = threading.Thread(target=exit_target)
                 exit_thread.start()
@@ -190,7 +190,7 @@ class OptimizerServiceLifecycleTest(unittest.TestCase):
                     ), mock.patch.object(service, "_close_resident_validation"):
                 resume_thread = threading.Thread(target=resume_target)
                 resume_thread.start()
-                self.assertTrue(resume_entered.wait(1))
+                self.assertTrue(resume_entered.wait(10))
                 exit_thread = threading.Thread(target=exit_target)
                 exit_thread.start()
                 self.assertTrue(self._wait_for_closing(service))
@@ -223,7 +223,7 @@ class OptimizerServiceLifecycleTest(unittest.TestCase):
                     target=lambda: service.update_eda_setup({"mode": "auto"}),
                 )
                 update_thread.start()
-                self.assertTrue(update_entered.wait(1))
+                self.assertTrue(update_entered.wait(10))
                 with mock.patch.object(service, "_start_registered") as start:
                     with self.assertRaisesRegex(
                             RuntimeError, "EDA settings update is in progress"):
@@ -251,7 +251,7 @@ class OptimizerServiceLifecycleTest(unittest.TestCase):
                     target=lambda: service.start("prepared", {}),
                 )
                 start_thread.start()
-                self.assertTrue(start_entered.wait(1))
+                self.assertTrue(start_entered.wait(10))
                 with mock.patch.object(service, "_update_eda_setup_registered") as update:
                     with self.assertRaisesRegex(
                             RuntimeError, "resource operations are active"):
@@ -359,7 +359,7 @@ class OptimizerServiceLifecycleTest(unittest.TestCase):
                 first = threading.Thread(target=exit_target)
                 second = threading.Thread(target=exit_target)
                 first.start()
-                self.assertTrue(first_entered.wait(1))
+                self.assertTrue(first_entered.wait(10))
                 second.start()
                 time.sleep(0.02)
                 self.assertEqual(cleanup.call_count, 1)

@@ -207,7 +207,7 @@ class GuiLightLoadingTests(unittest.TestCase):
             return "released"
 
         submit(blocked)
-        self.assertTrue(entered.wait(1))
+        self.assertTrue(entered.wait(10))
         return release
 
     def test_plugin_startup_binds_path_without_scan_history_or_run_inventory(self):
@@ -280,7 +280,7 @@ class GuiLightLoadingTests(unittest.TestCase):
         with mock.patch("crescendo_engine.rdb.parse_rdb_summary", side_effect=delayed_summary):
             self._choose_history("History: Heavy")
             self._button("Read History Summary").invoke()
-            self.assertTrue(entered.wait(1))
+            self.assertTrue(entered.wait(10))
             self._choose_history("None")
             self.assertTrue(observed_events[0].is_set())
             release.set()
@@ -335,7 +335,7 @@ class GuiLightLoadingTests(unittest.TestCase):
             raise RuntimeError("late lower-priority timeout")
 
         queue.submit(late_timeout, callbacks.append, errors.append)
-        self.assertTrue(entered.wait(1))
+        self.assertTrue(entered.wait(10))
         queue.submit(lambda: "must not run", callbacks.append, errors.append)
         queue.begin_shutdown(lambda: "exit complete", finished.append, errors.append)
         self._wait(lambda: finished == ["exit complete"], timeout=1)

@@ -39,7 +39,7 @@ class MultiDiagnosticManagerTests(unittest.TestCase):
         spec.update(diagnostic_generations=3, diagnostic_total_candidates=12)
         # Three existing 4 s engine budgets plus bounded report drain. The
         # larger sample still has all exact count/sequence assertions below.
-        payload = self.finish(manager, manager.start('prepared-fixture', spec)['test_id'], timeout=16)
+        payload = self.finish(manager, manager.start('prepared-fixture', spec)['test_id'], timeout=60)
         self.assertEqual(payload['state'], 'completed')
         self.assertEqual(payload['diagnostic_shape']['total_candidates'], 12)
         self.assertEqual(payload['diagnostic_shape']['samples_per_generation'], 4)

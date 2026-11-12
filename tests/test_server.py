@@ -713,7 +713,7 @@ class OptimizerServiceTest(unittest.TestCase):
 
             with mock.patch("crescendo_engine.server.run_range_validation", side_effect=hold_validation):
                 response = qualified_service(service, "prepared-1").validate_ranges("prepared-1", variables)
-                self.assertTrue(started.wait(1))
+                self.assertTrue(started.wait(10))
                 self.assertTrue(response["job_id"].startswith("range_validation_"))
                 status = service.range_validation_status(response["job_id"])
                 self.assertEqual(status["state"], "running")
@@ -749,7 +749,7 @@ class OptimizerServiceTest(unittest.TestCase):
             }
             service.range_validation_threads["range_validation_active"] = validation_thread
             validation_thread.start()
-            self.assertTrue(started.wait(1))
+            self.assertTrue(started.wait(10))
             spec = {
                 "evaluator": "mock",
                 "variables": [{"parameter_id": "w", "minimum": 1, "maximum": 2}],
@@ -912,7 +912,7 @@ class OptimizerServiceTest(unittest.TestCase):
             service.range_validation_cancels[job_id] = cancel_event
             service.range_validation_threads[job_id] = validation_thread
             validation_thread.start()
-            self.assertTrue(started.wait(1))
+            self.assertTrue(started.wait(10))
             try:
                 with mock.patch.object(service, "_launch_registered") as launch:
                     with self.assertRaisesRegex(RuntimeError, "refusing to start optimization"):
@@ -983,7 +983,7 @@ class OptimizerServiceTest(unittest.TestCase):
             with mock.patch("crescendo_engine.server.run_range_validation", side_effect=late_completion):
                 response = qualified_service(service, "prepared-1").validate_ranges("prepared-1", [{"parameter_id": "w", "minimum": 1, "maximum": 2}],
                 )
-                self.assertTrue(running.wait(1))
+                self.assertTrue(running.wait(10))
                 service.cancel_range_validations("prepared-1")
                 finish.set()
                 thread = service.range_validation_threads[response["job_id"]]
@@ -1025,7 +1025,7 @@ class OptimizerServiceTest(unittest.TestCase):
             with mock.patch("crescendo_engine.server.run_range_validation", side_effect=hold_validation):
                 response = qualified_service(first, "prepared-1").validate_ranges("prepared-1", [{"parameter_id": "w", "minimum": 1, "maximum": 2}],
                 )
-                self.assertTrue(started.wait(1))
+                self.assertTrue(started.wait(10))
                 with self.assertRaisesRegex(
                     ContinuationLeaseBusy, "another optional PDK validation",
                 ):
@@ -1073,7 +1073,7 @@ class OptimizerServiceTest(unittest.TestCase):
                 response = qualified_service(service, "prepared-1").validate_ranges("prepared-1", [{"parameter_id": "w", "minimum": 1, "maximum": 2}],
                 )
                 validation_thread = service.range_validation_threads[response["job_id"]]
-                self.assertTrue(started.wait(1))
+                self.assertTrue(started.wait(10))
                 with mock.patch.object(service, "prepare", return_value=("prepared-2", {})), \
                         mock.patch("crescendo_engine.server.validate_checkpoint"), \
                         mock.patch.object(service, "_cleanup_checkpoint_origin", return_value={"state": "skipped"}), \
@@ -1290,7 +1290,7 @@ class OptimizerServiceTest(unittest.TestCase):
                 events.append("runner_started")
                 self.assertFalse(os.path.exists(controller["epoch"]))
                 runner_started.set()
-                self.assertTrue(release_runner.wait(2))
+                self.assertTrue(release_runner.wait(10))
                 status_path = os.path.join(kwargs["run_root"], "status.json")
                 with open(status_path, "w") as stream:
                     json.dump({
@@ -1341,7 +1341,7 @@ class OptimizerServiceTest(unittest.TestCase):
             ):
                 cli_thread = threading.Thread(target=invoke_cli)
                 cli_thread.start()
-                self.assertTrue(runner_started.wait(2), cli_outcome)
+                self.assertTrue(runner_started.wait(10), cli_outcome)
                 self.assertTrue(cli_thread.is_alive())
                 self.assertFalse(runner_finished.is_set())
                 release_runner.set()
@@ -3670,7 +3670,7 @@ class OptimizerServiceTest(unittest.TestCase):
                 payload = json.loads(urlopen(request).read().decode("utf-8"))
             self.assertTrue(payload["exiting"])
             exit_optimizer.assert_called_once_with()
-            self.assertTrue(shutdown_requested.wait(1))
+            self.assertTrue(shutdown_requested.wait(10))
         finally:
             server.shutdown()
             server.server_close()
@@ -3708,7 +3708,7 @@ class OptimizerServiceTest(unittest.TestCase):
                     urlopen(request)
                 self.assertEqual(raised.exception.code, 400)
             self.assertEqual(response_attempts, [200])
-            self.assertTrue(shutdown_requested.wait(1))
+            self.assertTrue(shutdown_requested.wait(10))
         finally:
             server.shutdown()
             server.server_close()

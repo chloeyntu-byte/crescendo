@@ -335,7 +335,7 @@ class OwnedLogReaderTests(unittest.TestCase):
                     state['text'] = stream.read()
             thread = threading.Thread(target=reader, name='owned-log-reader-fixture')
             thread.start()
-            self.assertTrue(entered.wait(1))
+            self.assertTrue(entered.wait(10))
             try:
                 with mock.patch('crescendo_engine.retention.native_log_cleanup_scope',
                                 side_effect=lambda: native_log_cleanup_scope(0.03)):

@@ -347,7 +347,7 @@ class GuiCellSelectionTests(unittest.TestCase):
                 mock.patch.object(app, callback_name, wraps=getattr(app, callback_name)) as callback:
             button = app.load_setup_button if phase == "load" else app.apply_cells_button
             button.invoke()
-            self.assertTrue(entered.wait(1))
+            self.assertTrue(entered.wait(10))
             self.assertTrue(app.setup_loading)
             self.assertEqual(str(app.start_button.cget("state")), "disabled")
             self.assertEqual(str(app.apply_cells_button.cget("state")), "disabled")

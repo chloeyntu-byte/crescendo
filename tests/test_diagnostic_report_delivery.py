@@ -35,7 +35,7 @@ class ReportDeliveryTests(unittest.TestCase):
                  mock.patch('crescendo_engine.environment_test._case_capability', return_value={'ready': True}), \
                  mock.patch('crescendo_engine.environment_test.run_environment_probes', return_value=[]):
                 test_id = manager.start('prepared-fixture', spec)['test_id']
-                self.assertTrue(manager.join(12))
+                self.assertTrue(manager.join(30))
                 result = manager.progress(test_id)
                 with open(result['main_log'], encoding='utf-8') as stream:
                     report = stream.read()

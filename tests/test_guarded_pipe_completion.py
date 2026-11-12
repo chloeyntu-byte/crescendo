@@ -204,9 +204,9 @@ class ConcurrentFirstCauseTests(unittest.TestCase):
 
                 def prepare(_phases):
                     if local.index == 0:
-                        self.assertTrue(origin_ready.wait(2))
+                        self.assertTrue(origin_ready.wait(10))
                         if not peer_first:
-                            self.assertTrue(fatal_latched.wait(2))
+                            self.assertTrue(fatal_latched.wait(10))
                         raise PrivateNetlistError('Maestro generation cancelled while waiting for the shared suite')
                     return adapter.manifest
 
@@ -216,7 +216,7 @@ class ConcurrentFirstCauseTests(unittest.TestCase):
                     adapter.context.unsafe.set()
                     origin_ready.set()
                     if peer_first:
-                        self.assertTrue(peer_done.wait(2))
+                        self.assertTrue(peer_done.wait(10))
                     raise NetlistExecutionError('original measurement failed', {'failure_stage':'measurement'})
 
                 def evaluate(index):

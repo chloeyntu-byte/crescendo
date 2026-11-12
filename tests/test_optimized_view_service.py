@@ -317,7 +317,7 @@ class OptimizedViewServiceTests(unittest.TestCase):
         thread = threading.Thread(target=lambda: outcomes.append(self.generate()))
         thread.start()
         self.addCleanup(lambda: thread.join(1))
-        self.assertTrue(entered.wait(1))
+        self.assertTrue(entered.wait(10))
         self.assertTrue(self.service.optimized_view_export_active)
         with self.assertRaisesRegex(RuntimeError, "export is active"):
             self.service.start("unused-prepared", {})

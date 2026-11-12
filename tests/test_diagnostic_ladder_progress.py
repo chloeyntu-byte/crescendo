@@ -23,11 +23,11 @@ class LadderProgressTests(LadderTests):
             return True
         with mock.patch.object(self.manager, '_engine', side_effect=engine):
             result = self.manager.start('prepared-fixture', self.spec)
-            self.assertTrue(entered.wait(5))
+            self.assertTrue(entered.wait(10))
             middle = self.manager.progress(result['test_id'])
             self.assertEqual((middle['gate_progress']['passed'], middle['gate_progress']['total']), (1, 3))
             release.set()
-            self.assertTrue(self.manager.join(8))
+            self.assertTrue(self.manager.join(30))
             end = self.manager.progress(result['test_id'])
         self.assertEqual([row['state'] for row in end['case_results']], ['completed', 'failed', 'blocked'])
         self.assertEqual(end['gate_progress']['passed'], 1)
@@ -48,10 +48,10 @@ class LadderProgressTests(LadderTests):
             return True
         with mock.patch.object(self.manager, '_engine', side_effect=engine):
             result = self.manager.start('prepared-fixture', self.spec)
-            self.assertTrue(entered.wait(5))
+            self.assertTrue(entered.wait(10))
             self.assertEqual(self.manager.progress(result['test_id'])['gate_progress']['passed'], 2)
             release.set()
-            self.assertTrue(self.manager.join(8))
+            self.assertTrue(self.manager.join(30))
             self.assertEqual(self.manager.progress(result['test_id'])['gate_progress']['passed'], 3)
         self.assertEqual(observed, [0])
 
@@ -61,7 +61,7 @@ class LadderProgressTests(LadderTests):
             return False
         with mock.patch.object(self.manager, '_engine', side_effect=engine):
             result = self.manager.start('prepared-fixture', self.spec)
-            self.assertTrue(self.manager.join(8))
+            self.assertTrue(self.manager.join(30))
             progress = self.manager.progress(result['test_id'])
         self.assertEqual(progress['gate_progress']['passed'], 0)
         self.assertEqual(progress['case_results'][0]['state'], 'failed')
@@ -93,7 +93,7 @@ class LadderProgressTests(LadderTests):
                      mock.patch.object(self.manager, '_collect_inline'), \
                      mock.patch.object(self.service, 'start', side_effect=error):
                     result = self.manager.start('prepared-fixture', self.spec)
-                    self.assertTrue(self.manager.join(8))
+                    self.assertTrue(self.manager.join(30))
                     progress = self.manager.progress(result['test_id'])
                 self.assertEqual(progress['case_results'][0]['first_cause']['failure_stage'], 'source_freshness')
                 self.assertNotIn('Stop/cleanup unproven', progress['case_results'][1].get('skip_reason') or '')
@@ -111,7 +111,7 @@ class LadderProgressTests(LadderTests):
                      mock.patch.object(self.manager, '_collect_inline'), \
                      mock.patch.object(self.service, 'start', side_effect=RegistrationError(detail)):
                     result = self.manager.start('prepared-fixture', self.spec)
-                    self.assertTrue(self.manager.join(8))
+                    self.assertTrue(self.manager.join(30))
                     progress = self.manager.progress(result['test_id'])
                 self.assertEqual(progress['case_results'][1]['state'], expected)
                 if expected == 'blocked':

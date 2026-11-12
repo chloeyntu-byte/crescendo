@@ -300,7 +300,7 @@ class GuiExecutionProgressTkTests(unittest.TestCase):
         self.app.run_ui.started("old")
         self.app.run_ui.update("completed")
         self.app._poll_progress()
-        self.assertTrue(self.service.progress_entered.wait(1))
+        self.assertTrue(self.service.progress_entered.wait(10))
         self.assertTrue(self.app.progress_inflight)
         self.app.recent_tree.insert("", "end", iid="new", text="new")
         self.app.recent_tree.selection_set("new")

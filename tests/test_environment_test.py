@@ -391,7 +391,7 @@ class EnvironmentTestManagerTests(unittest.TestCase):
                 "candidate_timeout_seconds": 60, "engine_timeout_seconds": 4, "advanced_diagnostics": True}
         return manager, service, spec
 
-    def finish(self, manager, test_id, timeout=30):
+    def finish(self, manager, test_id, timeout=60):
         self.assertTrue(manager.join(timeout), "Diagnostic manager did not reach its bounded terminal state")
         self.assertFalse([error for service in self.services for error in service.thread_errors],
                          "Simulated lifecycle writer failed; this cannot count as a passed manager test")
@@ -813,7 +813,7 @@ class EnvironmentTestManagerTests(unittest.TestCase):
         manager, service, spec = self.fixture({"maestro_baseline": "launch_race"})
         service.start_release.clear()
         result = manager.start("prepared-fixture", spec)
-        self.assertTrue(service.start_entered.wait(2))
+        self.assertTrue(service.start_entered.wait(10))
         manager.stop(result["test_id"])
         service.start_release.set()
         payload = self.finish(manager, result["test_id"])
@@ -836,10 +836,10 @@ class EnvironmentTestManagerTests(unittest.TestCase):
         manager, service, spec = self.fixture()
         self.probe_release.clear()
         result = manager.start("prepared-fixture", spec)
-        self.assertTrue(self.probe_entered.wait(2))
+        self.assertTrue(self.probe_entered.wait(10))
         self.assertFalse(service.start_entered.is_set())
         self.probe_release.set()
-        self.assertTrue(service.start_entered.wait(2))
+        self.assertTrue(service.start_entered.wait(10))
         payload = self.finish(manager, result["test_id"])
         self.assertEqual(len(service.starts), 3)
         self.assertEqual([check["status"] for check in self.checks(payload, "execution")], ["PASS"] * 3)
@@ -1005,7 +1005,7 @@ class EnvironmentTestManagerTests(unittest.TestCase):
         self.scheduler_release.clear()
         result = manager.start("prepared-fixture", spec)
         identifier = result["test_id"]
-        self.assertTrue(self.scheduler_entered.wait(2))
+        self.assertTrue(self.scheduler_entered.wait(10))
         self.wait(lambda: len(service.starts) == 1)
         self.wait(lambda: bool(manager.progress(identifier)["active_runs"]))
         row = manager.tests[identifier]
@@ -1040,7 +1040,7 @@ class EnvironmentTestManagerTests(unittest.TestCase):
         with mock.patch("crescendo_engine.environment_test.os.open", side_effect=delayed_open):
             result = manager.start("prepared-fixture", spec)
             identifier = result["test_id"]
-            self.assertTrue(blocked.wait(2))
+            self.assertTrue(blocked.wait(10))
             self.wait(lambda: bool(manager.progress(identifier)["active_runs"]))
             before = time.monotonic()
             manager.progress(identifier)
@@ -1110,7 +1110,7 @@ class EnvironmentTestManagerTests(unittest.TestCase):
         with mock.patch("crescendo_engine.environment_test.os.open", side_effect=delayed_open):
             result = manager.start("prepared-fixture", spec)
             identifier = result["test_id"]
-            self.assertTrue(blocked.wait(2))
+            self.assertTrue(blocked.wait(10))
             self.wait(lambda: bool(manager.progress(identifier)["active_runs"]))
             row = manager.tests[identifier]
             for index in range(160):

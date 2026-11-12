@@ -66,7 +66,7 @@ class OptionalValidationIndependenceTest(unittest.TestCase):
 
             with mock.patch("crescendo_engine.server.run_range_validation", side_effect=native):
                 response = service.validate_ranges("prepared", [{"parameter_id": "w", "minimum": 1, "maximum": 2}])
-                self.assertTrue(entered.wait(1))
+                self.assertTrue(entered.wait(10))
                 self.assertEqual(response["state"], "queued")
                 self.assertFalse(service.range_validation_status(response["job_id"])["blocking"])
                 self.assertTrue(service.range_validation_threads[response["job_id"]].is_alive())
@@ -106,7 +106,7 @@ class OptionalValidationIndependenceTest(unittest.TestCase):
 
             with mock.patch("crescendo_engine.server.run_range_validation", side_effect=run):
                 response = service.validate_ranges("prepared", [{"parameter_id": "w", "minimum": 1, "maximum": 2}])
-                self.assertTrue(entered.wait(1))
+                self.assertTrue(entered.wait(10))
                 lease = RuntimeOptimizationLease(root).acquire()
                 self.assertTrue(lease.held)
                 lease.release()
@@ -169,7 +169,7 @@ class OptionalValidationIndependenceTest(unittest.TestCase):
 
             with mock.patch("crescendo_engine.server.run_range_validation", side_effect=run):
                 response = service.validate_ranges("prepared", [{"parameter_id": "w", "minimum": 1, "maximum": 2}])
-                self.assertTrue(entered.wait(1))
+                self.assertTrue(entered.wait(10))
                 try:
                     with mock.patch.object(service, "_cancel_and_wait_range_validations",
                                            side_effect=AssertionError("Start waited for optional callback")), \

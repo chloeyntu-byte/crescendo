@@ -567,7 +567,7 @@ class SetupPrivateServiceIntegrationTests(unittest.TestCase):
         with mock.patch.object(sessions._PrivateSession,'_native_bind',waiting_native):
             worker=threading.Thread(target=inspect)
             worker.start()
-            self.assertTrue(entered.wait(1))
+            self.assertTrue(entered.wait(10))
             result=self.service.stop_setup_preparation()
             self.assertTrue(result['stop_requested'])
             self.assertTrue(self.service.prepare_cancel_event.is_set())

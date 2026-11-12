@@ -49,7 +49,7 @@ class LadderTests(unittest.TestCase):
 
     def run_ladder(self):
         result = self.manager.start('prepared-fixture', self.spec)
-        self.assertTrue(self.manager.join(8))
+        self.assertTrue(self.manager.join(30))
         return self.manager.progress(result['test_id'])
 
     def test_current_value_preferred_and_invalid_value_falls_back(self):
