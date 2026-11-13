@@ -164,6 +164,10 @@ python3 -m crescendo.demo_smoke --scales small large   # scripted end-to-end dem
 python3 scripts/run_tests.py                   # engine test suite
 ```
 
+## Using the optimizer as a library
+
+Tools that only need the search algorithms can import `crescendo_engine.optimizers` and run ask/tell without the window, Maestro or a scheduler. See the [headless optimizer API](docs/HEADLESS_API.md); pin a released version rather than the development tree.
+
 ## Limitations
 
 - Optimization quality and runtime depend on your simulator, models and Maestro setup; the demo numbers are synthetic and say nothing about real circuits.

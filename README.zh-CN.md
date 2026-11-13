@@ -116,6 +116,10 @@ python3 -m crescendo.demo_smoke --scales small large   # 脚本化端到端演�
 python3 scripts/run_tests.py                   # 引擎测试
 ```
 
+## 作为库调用优化器
+
+只需要搜索算法的工具，可以直接 import `crescendo_engine.optimizers`，用 ask/tell 调用，不需要窗口、Maestro 或调度器。见 [无界面优化器接口](docs/HEADLESS_API.md)（英文）；请固定使用已发布的版本，不要直接引用开发中的代码。
+
 ## 限制
 
 - 优化效果和耗时取决于你的仿真器、模型和 Maestro 设置；演示数据是合成的，不代表任何真实电路。

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.3 (2026-11-13)
+
+- Declare the optimizer a headless library: `crescendo_engine.optimizers` (`PopulationGenerator`, `validate_variables`, new `ALGORITHMS`), `metrics` and `engineering` import and run ask/tell without application startup, scheduler providers, bootstrap, GUI, Tk or Cadence, as root or an ordinary user. Documented in docs/HEADLESS_API.md and pinned by contract tests.
+- `PopulationGenerator` rejects an unknown algorithm name when constructed instead of after the first generation.
+
 ## 1.1.2 (2026-11-12)
 
 - Rename displayed execution modes to Native Run, Maestro Netlist and Template Netlist; use working copy for owned setup/view copies. Persisted backend IDs, configuration keys and checkpoint protocols are unchanged.

@@ -7,6 +7,10 @@ from .engineering import constrain_numeric_choices, parse_engineering_number
 from .metrics import dominates
 
 
+# Public algorithm names accepted by PopulationGenerator (headless contract).
+ALGORITHMS = ("random", "differential_evolution", "nsga2", "bayesian_optimization")
+
+
 def validate_variables(variables):
     normalized = []
     for variable in variables:
@@ -334,6 +338,8 @@ def _squared_distance(left, right):
 class PopulationGenerator(object):
     def __init__(self, variables, algorithm="nsga2", seed=1, parameters=None):
         self.variables = validate_variables(variables)
+        if algorithm not in ALGORITHMS:
+            raise ValueError("unsupported algorithm: %s" % algorithm)
         self.algorithm = algorithm
         self.parameters = dict(parameters or {})
         self.rng = random.Random(int(seed))

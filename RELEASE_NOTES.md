@@ -1,8 +1,8 @@
-# Crescendo 1.1.2
+# Crescendo 1.1.3
 
 Crescendo is a guided circuit optimizer for Cadence Maestro. Each release contains the window, the optimization engine, the Virtuoso menu loader and a synthetic demo.
 
-Version 1.1.2 names the execution modes Native Run, Maestro Netlist and Template Netlist, and calls owned setup/view copies working copies. The English and Chinese READMEs explain what is created, where data lives, what survives Stop/exit, and how to recover or clean up. Existing configuration keys, backend IDs and checkpoint behavior are unchanged. See CHANGELOG.md.
+Version 1.1.2 names the execution modes Native Run, Maestro Netlist and Template Netlist, and calls owned setup/view copies working copies. The English and Chinese READMEs explain what is created, where data lives, what survives Stop/exit, and how to recover or clean up. Existing configuration keys, backend IDs and checkpoint behavior are unchanged. 1.1.3 adds a documented headless optimizer API (docs/HEADLESS_API.md) for tools that only need ask/tell. See CHANGELOG.md.
 
 Try it without any EDA tools:
 
