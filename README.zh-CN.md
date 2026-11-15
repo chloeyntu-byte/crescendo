@@ -128,14 +128,26 @@ python3 scripts/run_tests.py                   # 引擎测试
 - 范围检查是可选的，只核对每个范围的两个端点。
 - 真实站点（你的 ALPS/批处理集群环境、你的 PDK）的验收需要你自己完成；本仓库只在本机用合成夹具测试。
 
+## 未随仓库提供的内容
+
+以下内容不随本仓库提供：
+
+- 针对特定 PDK 及其器件约定的工艺适配器。
+- 针对特定批处理集群的调度器 provider；仓库提供的是通用调度接口。
+- 你自己的 Cadence Virtuoso、Maestro、Spectre 或 ALPS 安装，以及 PDK 和许可证。
+- 真实的优化结果。演示服务和它的数据都是合成的。
+
+需要其中某一项，或想为你的环境要一个示例，请在 [GitHub Issues](https://github.com/chloeyntu-byte/crescendo/issues) 提出，维护者会在那里回复。
+
 ## RF-FIELDWORK
 
-产品介绍页：https://rf-fieldwork.pages.dev/crescendo/?lang=zh（含配音演示片的工具在页面上可直接观看）
+- 总站（全部工具、演示片与项目进展）：https://rf-fieldwork.pages.dev/?lang=zh
+- 本工具介绍页（含配音演示片）：https://rf-fieldwork.pages.dev/crescendo/?lang=zh
 
 其他开源工具：
 
 - [Flux Studio](https://github.com/chloeyntu-byte/flux-studio)：参数化射频无源器件、EMX 扫参、多目标优化与 SNPFit 拟合
-- [Cap Array Lab](https://github.com/chloeyntu-byte/cap-array-lab)：电容阵列 C/Q、寄生路径、谐振与 Z11
+- [Tank Scan Lab](https://github.com/chloeyntu-byte/tank-scan-lab)：LC 谐振腔扫描（f0、Rp、gm、起振裕量、损耗分摊）、电容阵列 C/Q 与谐振
 - [Layout 3D Viewer](https://github.com/chloeyntu-byte/layout-3d-viewer)：三维阅读版图、定位 pin、追踪连接
 - [VCO ISF Explorer](https://github.com/chloeyntu-byte/vco-isf-explorer)：ISF、闪烁噪声上变频与相噪贡献
 - [VCO Design Studio](https://github.com/chloeyntu-byte/vco-design-studio)：五类文献 LC VCO 拓扑、分层原理图与原生导出

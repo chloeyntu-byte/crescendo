@@ -176,14 +176,26 @@ Tools that only need the search algorithms can import `crescendo_engine.optimize
 - Range checks are optional and only verify the end points of each range.
 - Real-site acceptance (your ALPS/batch scheduler setup, your PDK) is yours to run; this repository is tested locally with synthetic fixtures.
 
+## Not included in this repository
+
+The following are not part of this repository:
+
+- Process-specific adapters for particular PDKs and their device conventions.
+- Scheduler providers for specific batch clusters; Crescendo ships the generic scheduler interface.
+- Your Cadence Virtuoso, Maestro, Spectre or ALPS installation, PDK and licences.
+- Real optimization results. The demo service and its data are synthetic.
+
+If you need one of these, or an example for your setup, please open a [GitHub issue](https://github.com/chloeyntu-byte/crescendo/issues); the maintainer will reply there.
+
 ## RF-FIELDWORK
 
-Product page: https://rf-fieldwork.pages.dev/crescendo/?lang=en
+- Lab home (all tools, narrated films and progress): https://rf-fieldwork.pages.dev/?lang=en
+- This tool's page (with a narrated film): https://rf-fieldwork.pages.dev/crescendo/?lang=en
 
 Other open-source tools:
 
 - [Flux Studio](https://github.com/chloeyntu-byte/flux-studio): parametric RF passives, EMX sweeps, multi-objective search and SNPFit
-- [Cap Array Lab](https://github.com/chloeyntu-byte/cap-array-lab): capacitor-array C/Q, parasitic paths, resonance and Z11
+- [Tank Scan Lab](https://github.com/chloeyntu-byte/tank-scan-lab): LC tank scans (f0, Rp, gm, startup margin, loss shares), capacitor-array C/Q and resonance
 - [Layout 3D Viewer](https://github.com/chloeyntu-byte/layout-3d-viewer): read IC layouts in 3D, locate pins and trace connections
 - [VCO ISF Explorer](https://github.com/chloeyntu-byte/vco-isf-explorer): ISF, flicker-noise up-conversion and phase-noise contributions
 - [VCO Design Studio](https://github.com/chloeyntu-byte/vco-design-studio): five literature LC VCO topology families, packaged schematics and native export
