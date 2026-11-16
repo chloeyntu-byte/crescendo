@@ -6,6 +6,7 @@ those intervals, not unobserved subprocess or solver activity.
 from crescendo_engine.runtime import bind_text
 _contract_text = bind_text()
 
+from contextlib import contextmanager
 import math
 import time
 
@@ -18,6 +19,7 @@ class DiagnosticTiming(object):
         self._state = ('not_started', None, None, None, {})
         self._last_time = None
         self._available = True
+        self._operations = {}
 
     def _now(self):
         if not self._available:
@@ -69,6 +71,13 @@ class DiagnosticTiming(object):
     def active_phase(self):
         return self._state[1]
 
+    def operation(self, name, seconds, byte_count):
+        if seconds is None:
+            return
+        previous = self._operations.get(name, (0.0, 0, 0.0, 0))
+        self._operations[name] = (previous[0] + seconds, previous[1] + 1,
+                                  max(previous[2], seconds), previous[3] + byte_count)
+
     def snapshot(self):
         status, active, started, phase_started, old_phases = self._state
         phases = dict(old_phases)
@@ -88,6 +97,21 @@ class DiagnosticTiming(object):
         return {'status': status, 'available': available,
                 'total_seconds': total, 'phases_seconds': phases,
                 'active_phase': active}
+
+    def operations_snapshot(self):
+        return {key: {'seconds': seconds, 'calls': calls, 'max_seconds': maximum, 'bytes': byte_count}
+                for key, (seconds, calls, maximum, byte_count) in self._operations.copy().items()}
+
+
+@contextmanager
+def observe_operation(observer, name, byte_count=0):
+    """Read the clock around existing work, without adding storage or waits."""
+    start = timing_tick() if observer is not None and observer.active_phase is not None else None
+    try:
+        yield
+    finally:
+        if start is not None:
+            observer.operation(name, elapsed_seconds(start), byte_count)
 
 
 CANDIDATE_PHASE_LABELS = {
@@ -128,12 +152,33 @@ CANDIDATE_PHASE_LABELS = {
 }
 GENERATION_PHASE_LABELS = {
     'ask': 'Ask / plan',
+    'netlist_prepare': 'Generation netlist preparation',
     'evaluate': 'Evaluation',
     'tell': 'Tell',
     'settlement': 'Settlement',
     'persist': 'Checkpoint persistence',
     'candidate_persist': 'Candidate persistence',
     'candidate_cleanup': 'Candidate cleanup',
+}
+STORAGE_OPERATION_LABELS = {
+    'checkpoint_transaction': 'Checkpoint transaction',
+    'checkpoint_planned_rows': 'Save planned candidates',
+    'checkpoint_dataset_reference': 'Build dataset reference',
+    'checkpoint_document': 'Build checkpoint document',
+    'checkpoint_disk_space': 'Disk space check',
+    'checkpoint_previous_anchor': 'Read and verify previous anchor',
+    'checkpoint_pending_build': 'Build pending journal',
+    'checkpoint_pending_write_verify': 'Write and verify pending journal',
+    'checkpoint_run_write': 'Encode, write and sync run checkpoint',
+    'checkpoint_run_verify': 'Verify run checkpoint',
+    'checkpoint_anchor_write': 'Encode, write and sync continuation anchor',
+    'checkpoint_anchor_verify': 'Verify continuation anchor',
+    'checkpoint_pending_clear': 'Clear pending journal',
+    'dataset_prefix_scan': 'Read and hash dataset prefix',
+    'dataset_read_new_records': 'Read and parse new dataset records',
+    'point_record_commit': 'Commit simulation point receipt',
+    'dataset_append_write': 'Append dataset bytes',
+    'dataset_append_sync': 'Sync dataset append',
 }
 
 
@@ -235,7 +280,8 @@ def generation_timing_summary(generation, observer, rows, resumed=False):
     return dict(snapshot, schema_version=_contract_text('crescendo.generation_timing.v1'), generation=generation + 1,
                 resumed_segment=bool(resumed), candidate_count=len(rows),
                 timed_candidate_count=measured_candidates,
-                candidate_phase_sums=[samples[key] for key in sorted(samples)])
+                candidate_phase_sums=[samples[key] for key in sorted(samples)],
+                storage_operations=observer.operations_snapshot())
 
 
 def generation_report_timing(timing):
@@ -253,6 +299,10 @@ def generation_report_timing(timing):
         'candidate_count': timing.get('candidate_count'),
         'timed_candidate_count': timing.get('timed_candidate_count'),
         'resumed_segment': timing.get('resumed_segment'),
+        'storage_operations': {
+            name: [rounded(item['seconds']), item['calls'], rounded(item['max_seconds']), item['bytes']]
+            for name, item in (timing.get('storage_operations') or {}).items()
+        },
         'phase_sums': {
             scope: {item['phase']: [rounded(item['elapsed_seconds']), item['count'], item['total_count']]
                     for item in timing.get('candidate_phase_sums') or [] if item['scope'] == scope}

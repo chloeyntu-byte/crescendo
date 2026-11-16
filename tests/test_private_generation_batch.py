@@ -128,17 +128,20 @@ class PrivateGenerationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             adapter = self.adapter(root)
             manifest = {'candidate_id': 'g000_c0000'}
-            item = {'manifest': manifest, 'future': Future()}
+            item = {'manifest': manifest, 'future': Future(), 'batch_reference': {'batch_epoch': 'g000'}}
             calls = []
             def evaluate(index, generation, values, manifest):
                 calls.append(index)
                 return {'status': 'completed', 'candidate_id': 'g000_c0000',
-                    'metrics': parsed(3), 'completion_evidence': {'ok': True}}
+                    'metrics': parsed(3), 'completion_evidence': {'ok': True},
+                    'timing': {'phases': {'solver': {'elapsed_seconds': 2.0}}}}
             adapter._evaluate_candidate = evaluate
             with ThreadPoolExecutor(max_workers=4) as pool:
                 rows = list(pool.map(lambda i: adapter.evaluate(i, 0, {'x': 1}, item), range(4)))
             self.assertEqual(len(calls), 1)
             self.assertEqual(len({row['candidate_id'] for row in rows}), 4)
+            self.assertEqual(rows[0]['timing']['phases']['solver']['elapsed_seconds'], 2.0)
+            self.assertTrue(all(not row['timing']['phases'] for row in rows[1:]))
             for row in rows:
                 path = os.path.join(root, 'candidates', row['candidate_id'], 'candidate.json')
                 with open(path) as stream:

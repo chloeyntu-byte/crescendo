@@ -94,8 +94,16 @@ def owned_solver_log_reader(path, owned_root, launch_epoch=None, task=None):
     root, source = os.path.abspath(owned_root), os.path.abspath(path)
     if not _under(source, root) or root == os.sep:
         raise OwnedSolverLogError('unowned_or_linked_path')
+    # A companion alias can resolve into its own PSF. Fence that task only,
+    # even when the ownership check is anchored at the entire run directory.
+    psf = (task or {}).get('psf_dir')
+    scope = source
+    if isinstance(psf, str) and os.path.isabs(psf):
+        psf = os.path.abspath(psf)
+        if source in (psf + '.log', psf + '.warn'):
+            scope = os.path.dirname(psf)
     root_fd = source_parent = target_parent = opened = None
-    with native_log_read_scope():
+    with native_log_read_scope(scope):
         try:
             root_fd = _open_directory(root)
             source_parent = _open_directory(os.path.relpath(os.path.dirname(source), root), root_fd) if os.path.dirname(source) != root else os.dup(root_fd)

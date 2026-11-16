@@ -1,7 +1,7 @@
 from __future__ import print_function
 
 import copy
-from crescendo_engine.runtime import result_extension as _result_extension, bind_text
+from crescendo_engine.runtime import result_extension as _result_extension, bind_text, contract
 _contract_text = bind_text()
 
 from .gui_performance import ScopeIndex, snapshot_copy, parameter_defaults, CachedCanvas, json_detail_tail
@@ -1123,6 +1123,8 @@ class OptimizerGui(object):
         self.pages = {}
         self.result_page = 0
         self.result_page_size = 250
+        identity = contract()["identity"]
+        self.application_window_title = " ".join(filter(None, (identity["display_name"], identity["version"])))
         self._configure_root()
         self._configure_styles()
         self._build_shell()
@@ -1141,7 +1143,7 @@ class OptimizerGui(object):
             raise
 
     def _configure_root(self):
-        title = "Cadence ADE Circuit Optimizer"
+        title = self.application_window_title
         if self.launch_context:
             source = self.launch_context.get("source") or {}
             title += " — {}/{}/{}".format(
@@ -4029,7 +4031,7 @@ class OptimizerGui(object):
             if context else "Manually selected saved setup: {}".format(self.active_setup_path))
         if hasattr(self, "setup_source_var"):
             self.setup_source_var.set(identity)
-        self.root.title(_contract_text("Crescendo · ") + identity)
+        self.root.title(self.application_window_title + " · " + identity)
         if selection.get("eda_setup"):
             self._render_eda_setup(selection["eda_setup"])
         if hasattr(self, "launch_history_summary_var"):

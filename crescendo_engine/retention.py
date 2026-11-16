@@ -45,36 +45,42 @@ _CLEANUP_THREAD_LOCK = threading.RLock()
 _CLEANUP_LOCAL = threading.local()
 
 
-def _serialize_cleanup(run_root_index):
-    """One writer per run, including recovery, without another persistent file."""
+def _serialize_cleanup(run_root_index, target_key=None):
+    """Serialize cleanup transactions and fence only the affected log paths."""
     def decorate(function):
         @functools.wraps(function)
         def serialized(*args, **kwargs):
             value = args[run_root_index] if len(args) > run_root_index else kwargs["run_root"]
             run_root, _device = _validated_cleanup_root(value)
-            try:
-                with native_log_cleanup_scope() as barrier:
-                    result = locked_cleanup(*args, **kwargs)
-                    if isinstance(result, dict):
-                        result.setdefault("reader_barrier", barrier)
-                    return result
-            except OwnedLogReadersBusy as error:
-                detail = {"payload_root": run_root, "failed_path": run_root,
-                          "artifact_cleanup_complete": False, "retryable": True,
-                          "reader_barrier": error.detail, "attempt_count": 0,
-                          "retry_hint": "Owned log readers are still active; artifacts retained. Retry Exit after the bounded read closes."}
-                raise ArtifactCleanupError(OSError(errno.EBUSY, str(error), run_root), detail)
+            if run_root_index == 0:
+                paths = (run_root,)
+            else:
+                target = args[0] if args else kwargs[target_key or "candidate_root"]
+                paths = (target, os.path.join(run_root, _CLEANUP_PENDING_DIRECTORY))
 
-        def locked_cleanup(*args, **kwargs):
-            value = args[run_root_index] if len(args) > run_root_index else kwargs["run_root"]
-            run_root, _device = _validated_cleanup_root(value)
+            def protected_cleanup():
+                try:
+                    with native_log_cleanup_scope(paths=paths) as barrier:
+                        result = function(*args, **kwargs)
+                        if isinstance(result, dict):
+                            result.setdefault("reader_barrier", barrier)
+                        return result
+                except OwnedLogReadersBusy as error:
+                    detail = {"payload_root": run_root, "failed_path": run_root,
+                              "artifact_cleanup_complete": False, "retryable": True,
+                              "reader_barrier": error.detail, "attempt_count": 0,
+                              "retry_hint": "Overlapping log access or cleanup is active. Artifacts retained for retry."}
+                    raise ArtifactCleanupError(OSError(errno.EBUSY, str(error), run_root), detail)
+
+            # Enter the writer serialization before claiming paths. Nested
+            # transactions cannot deadlock behind another retention writer.
             with _CLEANUP_THREAD_LOCK:
                 active = getattr(_CLEANUP_LOCAL, "active", None)
                 if active is None:
                     active = {}
                     _CLEANUP_LOCAL.active = active
                 if run_root in active:
-                    return function(*args, **kwargs)
+                    return protected_cleanup()
                 descriptor = os.open(run_root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) |
                                      getattr(os, "O_NOFOLLOW", 0))
                 try:
@@ -83,7 +89,7 @@ def _serialize_cleanup(run_root_index):
                         raise UnsafeCleanupError("cleanup run directory changed before locking")
                     active[run_root] = descriptor
                     try:
-                        return function(*args, **kwargs)
+                        return protected_cleanup()
                     finally:
                         del active[run_root]
                 finally:
@@ -243,7 +249,7 @@ def _diagnostic_directory_fd(run_root, components, run_device, create=False):
 
 def _read_diagnostic_bytes(run_root, relative, run_device, limit):
     parts = relative.split("/")
-    with native_log_read_scope():
+    with native_log_read_scope(os.path.join(run_root, relative)):
         directory = _diagnostic_directory_fd(run_root, parts[:-1], run_device)
         descriptor = None
         try:
@@ -790,7 +796,7 @@ def _finish_pending_entry(run_root, pending_root, entry_root):
             raise
 
 
-@_serialize_cleanup(1)
+@_serialize_cleanup(1, "source_root")
 def _quarantine_and_delete(source_root, run_root, cleanup_kind, source_relative,
                            proof_kind=None, evidence=None):
     run_root, run_device = _validated_cleanup_root(run_root)
@@ -2628,7 +2634,7 @@ def _require_remote_batch_quiescent(epoch_root):
         )
 
 
-@_serialize_cleanup(1)
+@_serialize_cleanup(1, "epoch_root")
 def safe_delete_worker_epoch(epoch_root, run_root, source_guard):
     epoch_root, run_root, _workers_root, _worker_root = _validated_worker_epoch_paths(
         epoch_root, run_root,
@@ -2848,7 +2854,7 @@ def cleanup_terminal_candidate_artifacts(candidate_root, run_root, source_verifi
     )
 
 
-@_serialize_cleanup(1)
+@_serialize_cleanup(1, "epoch_root")
 def cleanup_abandoned_worker_epoch(epoch_root, run_root, source_verifier, termination_proof=None):
     epoch_root, run_root, _workers_root, _worker_root = _validated_worker_epoch_paths(
         epoch_root, run_root,
@@ -2868,7 +2874,7 @@ def cleanup_abandoned_worker_epoch(epoch_root, run_root, source_verifier, termin
     return safe_delete_worker_epoch(epoch_root, run_root, source_guard)
 
 
-@_serialize_cleanup(1)
+@_serialize_cleanup(1, "epoch_root")
 def cleanup_abandoned_controller_epoch(epoch_root, run_root, liveness_proof):
     proof_kind = _validate_controller_liveness_proof(liveness_proof)
     epoch_root, run_root, _controllers_root, _slot_root, run_device = (

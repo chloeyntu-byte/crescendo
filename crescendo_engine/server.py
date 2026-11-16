@@ -7740,13 +7740,16 @@ class OptimizerService(PrivateSuiteServiceMixin):
                     return
                 yield opened
         else:
-            _path, opened = self._open_run_relative(run_name, descriptor['relative_path'],
-                                                     directory=False, missing_ok=True)
-            try:
-                yield opened
-            finally:
-                if opened is not None:
-                    os.close(opened)
+            from .native_log_io import native_log_read_scope
+            path = os.path.join(self.run_path(run_name, ''), descriptor['relative_path'])
+            with native_log_read_scope(path):
+                _path, opened = self._open_run_relative(run_name, descriptor['relative_path'],
+                                                         directory=False, missing_ok=True)
+                try:
+                    yield opened
+                finally:
+                    if opened is not None:
+                        os.close(opened)
 
     def read_candidate_log_chunk(self, run_name, candidate_id, log_id, offset=0,
                                  max_bytes=262144, file_token=None):
@@ -7783,8 +7786,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 "file_token": None, "eof": True, "reset": False,
                 "removed": removed, "waiting": not removed,
             }
-        from .native_log_io import native_log_read_scope
-        with native_log_read_scope(), self._candidate_log_reader(run_name, descriptor) as opened:
+        with self._candidate_log_reader(run_name, descriptor) as opened:
             if opened is None:
                 status = str(candidate.get("status") or "pending")
                 removed = status in _TERMINAL_CANDIDATE_STATES or status in ("stopped", "cancelled")

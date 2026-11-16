@@ -1,6 +1,7 @@
 """Timing views keep native unknowns and diagnostic/formal identities separate."""
 import os
 import unittest
+from unittest import mock
 from crescendo_engine.gui_timing import candidate_timing_lines, generation_timing_lines
 from tests import test_gui_light_loading as light
 
@@ -31,6 +32,18 @@ class TimingViewTests(unittest.TestCase):
     _wait = light.GuiLightLoadingTests._wait
     _pump = light.GuiLightLoadingTests._pump
 
+    def test_application_title_is_available_before_custom_root_configuration(self):
+        from crescendo_engine import gui
+        observed = []
+        original = gui.OptimizerGui._configure_root
+        def configure(app):
+            observed.append(app.application_window_title)
+            original(app)
+        with mock.patch.object(gui.OptimizerGui, '_configure_root', configure):
+            app = self._open(parameter_count=2)
+        self.assertEqual(observed, [app.application_window_title])
+        self.assertTrue(observed[0])
+
     def test_actual_timing_button_and_selected_candidate_display(self):
         app = self._open(parameter_count=2)
         app.root.geometry('1080x760')
@@ -38,7 +51,9 @@ class TimingViewTests(unittest.TestCase):
         app._live_timing_snapshot = ('formal', [{'generation': 9, 'total_seconds': 999}])
         app.display_dataset = {'metadata': {'display_name': 'Diagnostic Private Netlist'},
             'generation_timings': [{'generation': 2, 'status': 'completed', 'total_seconds': 8,
-                                   'phases_seconds': {'settlement': 0.4, 'persist': 0.1}}],
+                                   'phases_seconds': {'settlement': 0.4, 'persist': 0.1},
+                                   'storage_operations': {'dataset_prefix_scan': {
+                                       'seconds': 0.08, 'calls': 6, 'max_seconds': 0.03, 'bytes': 1048576}}}],
             'candidates': [{'candidate_id': 'g001_c0000', 'generation': 1, 'status': 'completed',
                 'timing': {'elapsed_seconds': 6, 'phases': {'solver': {
                     'elapsed_seconds': 4, 'scope': 'task_sum', 'count': 2, 'total_count': 2}}}}]}
@@ -49,6 +64,7 @@ class TimingViewTests(unittest.TestCase):
         self._pump(.05)
         text = app.timing_details_text.get('1.0', 'end')
         self.assertIn('Generation 2', text)
+        self.assertIn('Read and hash dataset prefix · 0.080s · 6 calls · max 0.030s · 1.00 MiB', text)
         self.assertNotIn('Generation 9', text)
         self.assertIn('Solver: 4.000s [task_sum]', text)
         self.assertIn('coverage 2/2', text)

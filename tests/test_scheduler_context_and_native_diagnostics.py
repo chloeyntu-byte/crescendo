@@ -17,9 +17,11 @@ from crescendo_engine.native_environment import (
     LEGACY_NATIVE_ENV_NAMES, NATIVE_ENV_SCHEMA, SCHEDULER_HOME_SET,
     SCHEDULER_HOME_VALUE, parse_native_environment_snapshot, scheduler_environment,
 )
+from crescendo_engine import native_log_io
 from crescendo_engine.native_log_io import (
     OwnedLogReadersBusy, native_log_cleanup_scope, native_log_read_scope,
 )
+from crescendo_engine.owned_solver_logs import owned_solver_log_reader
 from crescendo_engine.retention import ArtifactCleanupError, cleanup_abandoned_controller_epoch
 
 
@@ -338,7 +340,7 @@ class OwnedLogReaderTests(unittest.TestCase):
             self.assertTrue(entered.wait(10))
             try:
                 with mock.patch('crescendo_engine.retention.native_log_cleanup_scope',
-                                side_effect=lambda: native_log_cleanup_scope(0.03)):
+                                side_effect=lambda **kwargs: native_log_cleanup_scope(0.03, **kwargs)):
                     with self.assertRaises(ArtifactCleanupError) as raised:
                         cleanup_abandoned_controller_epoch(epoch, root,
                             {'ok': True, 'kind': 'recorded_pid_is_dead'})
@@ -356,6 +358,96 @@ class OwnedLogReaderTests(unittest.TestCase):
             self.assertTrue(result['removed'])
             self.assertTrue(result['reader_barrier']['readers_closed_before_delete'])
             self.assertFalse(os.path.lexists(epoch))
+
+    def test_point_cleanup_does_not_block_an_unrelated_controller_epoch(self):
+        with tempfile.TemporaryDirectory() as root:
+            point = root + '/candidates/g000_c0000/simulation/tasks/tt'
+            epoch = root + '/controllers/slot_000/epoch_000'
+            os.makedirs(epoch)
+            with open(epoch + '/controller_liveness.lock', 'w') as stream:
+                stream.write('released')
+            psf = root + '/candidates/g000_c0001/simulation/tasks/tt/psf'
+            os.makedirs(psf)
+            with open(psf + '/logFile', 'wb') as stream:
+                stream.write(b'alps log')
+            os.symlink('psf/logFile', psf + '.log')
+            entered, release = threading.Event(), threading.Event()
+
+            def cleanup_point():
+                with native_log_cleanup_scope(paths=(point,)):
+                    entered.set()
+                    release.wait(5)
+
+            thread = threading.Thread(target=cleanup_point, name='point-cleanup-fixture')
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                task = {'psf_dir': psf, 'execution_simulator': 'alps'}
+                with native_log_cleanup_scope(paths=(os.path.dirname(psf),)):
+                    with owned_solver_log_reader(psf + '.log', root, time.time() - 5, task) as (fd, _):
+                        self.assertEqual(os.read(fd, 32), b'alps log')
+                with mock.patch('crescendo_engine.retention.native_log_cleanup_scope',
+                                side_effect=lambda **kwargs: native_log_cleanup_scope(0, **kwargs)):
+                    result = cleanup_abandoned_controller_epoch(epoch, root,
+                        {'ok': True, 'kind': 'recorded_pid_is_dead'})
+                self.assertTrue(result['removed'])
+                self.assertTrue(thread.is_alive())
+                with self.assertRaises(OwnedLogReadersBusy) as raised:
+                    with native_log_cleanup_scope(0, paths=(os.path.dirname(point),)):
+                        self.fail('Overlapping deletion must wait')
+                detail = raised.exception.detail
+                self.assertEqual(detail['state'], 'cleanup_busy')
+                self.assertEqual(detail['readers_after_wait']['active_reader_count'], 0)
+                self.assertEqual(detail['conflicting_cleanups'][0]['paths'], (point,))
+            finally:
+                release.set()
+                thread.join(2)
+            self.assertFalse(thread.is_alive())
+
+    def test_nested_alias_reader_finishes_with_cleanup_waiting_on_real_scope(self):
+        with tempfile.TemporaryDirectory() as root:
+            target = os.path.join(root, 'point')
+            os.makedirs(target)
+            alias = os.path.join(root, 'alias')
+            os.symlink(target, alias)
+            completed, errors = [], []
+            def cleanup():
+                try:
+                    with native_log_cleanup_scope(2, paths=(target,)):
+                        completed.append(True)
+                except OwnedLogReadersBusy as error:
+                    errors.append(error)
+            with native_log_read_scope(target):
+                worker = threading.Thread(target=cleanup)
+                worker.start()
+                with native_log_io._STATE:
+                    self.assertTrue(native_log_io._STATE.wait_for(
+                        lambda: bool(native_log_io._WRITERS), 1))
+                with native_log_read_scope(alias):
+                    self.assertEqual(completed, [])
+                self.assertEqual(errors, [])
+            worker.join(3)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(completed, [True])
+
+    def test_alias_reader_fences_real_target_and_alias_leaf(self):
+        with tempfile.TemporaryDirectory() as root:
+            target = os.path.join(root, 'point', 'solver.log')
+            os.makedirs(os.path.dirname(target))
+            with open(target, 'w') as stream:
+                stream.write('owned log')
+            alias = os.path.join(root, 'log-alias')
+            os.symlink(target, alias)
+            with native_log_read_scope(alias):
+                for path in (target, alias, os.path.dirname(target)):
+                    with self.assertRaises(OwnedLogReadersBusy):
+                        with native_log_cleanup_scope(0, paths=(path,)):
+                            self.fail('Aliased reader must close before deletion')
+                with native_log_cleanup_scope(0, paths=(os.path.join(root, 'unrelated'),)):
+                    pass
+            with native_log_cleanup_scope(0, paths=(target,)) as proof:
+                self.assertTrue(proof['readers_closed_before_delete'])
 
     def test_same_thread_reader_is_not_a_reentrant_cleanup_proof(self):
         with native_log_read_scope():

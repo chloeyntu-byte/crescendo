@@ -477,9 +477,14 @@ class PrivateNetlistOptimizer(object):
             row['physical_execution_candidate'] = manifest['candidate_id']
             if cid != manifest['candidate_id']:
                 row['shared_with'] = manifest['candidate_id']
-            row['timing'] = {'schema_version': _contract_text('crescendo.candidate_timing.v1'),
-                'candidate_id': cid, 'phases': {}, 'shared_batch': row['batch_reference'],
-                'physical_execution_candidate': manifest['candidate_id']}
+            # The logical candidate owning the physical execution retains
+            # the measured phases. Reused results must not add a second solve.
+            timing = (row.get('timing') or {}) if cid == manifest['candidate_id'] else {}
+            timing.setdefault('phases', {})
+            timing.update(schema_version=_contract_text('crescendo.candidate_timing.v1'),
+                          candidate_id=cid, shared_batch=row['batch_reference'],
+                          physical_execution_candidate=manifest['candidate_id'])
+            row['timing'] = timing
         root = ensure_dir(os.path.join(self.run_root, 'candidates', cid))
         if row.get('completion_evidence'):
             row['completion_evidence']['candidate_id'] = cid
@@ -488,7 +493,7 @@ class PrivateNetlistOptimizer(object):
                     row['completion_evidence'][key] = copy.deepcopy(row[key])
             atomic_write_json(os.path.join(root, _contract_text('completion_evidence.json')), row['completion_evidence'])
         atomic_write_json(os.path.join(root, _contract_text('candidate.json')), row)
-        atomic_write_json(os.path.join(root, _contract_text('timing.json')), row.get('timing') or {})
+        save_timing(os.path.join(root, _contract_text('timing.json')), row.get('timing') or {})
         return row
 
     def _evaluate_candidate(self, index, generation, values, pre_generated=None):

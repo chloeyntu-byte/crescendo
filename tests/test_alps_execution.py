@@ -377,7 +377,7 @@ print('owned fixture process exited')
             return {'ok': True}
         try:
             with mock.patch.object(execution, 'native_log_cleanup_scope',
-                                   lambda: native_log_io.native_log_cleanup_scope(timeout=0.05)):
+                                   lambda **kwargs: native_log_io.native_log_cleanup_scope(timeout=0.05, **kwargs)):
                 result = self.context(point_commit_callback=commit).evaluate(self.manifest)
             cleanup = result['task_results'][0]['point_raw_cleanup']
             self.assertFalse(cleanup['artifact_cleanup_complete'])

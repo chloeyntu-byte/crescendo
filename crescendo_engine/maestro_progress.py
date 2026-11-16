@@ -40,7 +40,7 @@ def owned_regular(path, root):
 
 @contextlib.contextmanager
 def _owned_binary_stream(path, root):
-    with native_log_read_scope():
+    with native_log_read_scope(path):
         with _owned_binary_stream_unlocked(path, root) as stream:
             yield stream
 

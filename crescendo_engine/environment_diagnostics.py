@@ -144,7 +144,7 @@ def package_identity():
 
 def _read(path, maximum=None):
     from .native_log_io import native_log_read_scope
-    with native_log_read_scope():
+    with native_log_read_scope(path):
         return _read_closed(path, maximum)
 
 

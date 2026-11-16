@@ -236,7 +236,13 @@ def _execution_parallelism(status, candidates, spec):
                                     if proof.get("ok") is True),
         "policy": status.get("parallel_execution_policy"),
     }
+    native_batch_count = len({row['batch_reference'].get('batch_epoch') for row in candidates
+                              if row.get('status') == 'completed' and row.get('batch_reference')})
+    if native_batch_count:
+        result["native_batch_count"] = native_batch_count
     if engine == "maestro_baseline":
+        if native_batch_count:
+            result["policy"] = "native_generation_batch"
         readbacks = ((proof.get("execution_pipeline") or {}).get("native_parallelism")
                      for proof in completions)
         result["native_point_policy"] = next((readback for readback in readbacks if readback), None)
@@ -263,7 +269,10 @@ def _execution_parallelism(status, candidates, spec):
     native = engine == "maestro_netlist" or any(
         (item.get("netlist_generation") or {}).get("native_generation_required") is True
         for item in candidates)
-    result["netlist_build"] = "serialized_native_generation" if native else "shared_template_then_candidate_materialization"
+    if native_batch_count:
+        result["netlist_build"] = "native_generation_batch_observed"
+    else:
+        result["netlist_build"] = "serialized_native_generation" if native else "shared_template_then_candidate_materialization"
     return result
 
 
@@ -1231,6 +1240,8 @@ class EnvironmentTestManager(object):
                 if generation_timings:
                     overview['generation_timings'] = generation_timings
                     overview['phase_sum_fields'] = ['seconds', 'measured', 'total']
+                    overview['storage_operation_fields'] = ['seconds', 'calls', 'max_seconds', 'bytes']
+                    overview['storage_operation_scope'] = 'nested timings, included in generation wall time'
                 self._append_report(row, 'diagnostic_overview ' + _json(overview) + '\n', wait=True)
                 sections = collections.OrderedDict()
                 successes = collections.OrderedDict()

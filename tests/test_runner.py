@@ -4920,6 +4920,69 @@ class RunnerTest(unittest.TestCase):
                 [],
             )
 
+    def test_generation_disk_tampering_stops_before_tell_and_records_first_cause(self):
+        from crescendo_engine.run_data_store import RunDataStore, RunDataError
+        from crescendo_engine.optimizers import PopulationGenerator
+        for timing in ("during_generation", "before_scan_open"):
+            with self.subTest(timing=timing), tempfile.TemporaryDirectory() as root:
+                prepared = {
+                    "maestro_path": "/portable/design/maestro",
+                    "setup": {"tests": [{"name": "main", "enabled": True}], "selected_test": "main",
+                              "_source_tests": [{"name": "main", "enabled": True}], "corners": []},
+                    "hierarchy": {"designs": []},
+                    "parameters": [{"parameter_id": "x", "backend": "schematic", "optimizable": True}],
+                    "outputs": [{"key": "mock::cost"}],
+                }
+                spec = {"evaluator": "mock", "generations": 2, "population": 4, "jobs": 1, "seed": 7,
+                        "variables": [{"parameter_id": "x", "minimum": 0.0, "maximum": 2.0}],
+                        "objectives": [{"output_key": "mock::cost", "direction": "minimize"}], "constraints": []}
+                config = {"runtime": {"run_root": root, "max_parallel_jobs": 1}}
+                writers, evaluated = [], []
+                original_init, scan = RunDataStore.__init__, RunDataStore._disk_prefix_sha256
+                def opened(writer, *args, **kwargs):
+                    original_init(writer, *args, **kwargs)
+                    writers.append(writer)
+                def mutate(writer):
+                    # Preserve valid JSON length, but change an already parsed
+                    # prefix after at least one intra-generation checkpoint.
+                    with open(writer.path, "r+b") as stream:
+                        raw = stream.read()
+                        offset = raw.index(b'"spec":')
+                        stream.seek(offset + 1)
+                        stream.write(b"S")
+                def evaluate(_root, index, generation, values, *unused):
+                    evaluated.append((generation, index))
+                    if timing == "during_generation" and len(evaluated) == 2:
+                        mutate(writers[-1])
+                    value = values["x"]
+                    return {"candidate_id": "g%03d_c%04d" % (generation, index), "generation": generation,
+                            "index": index, "values": values, "status": "completed",
+                            "metrics": {"objectives": [{"score": value, "value": value}], "constraints": [],
+                                        "feasible": True, "total_violation": 0.0, "merit": value}}
+                def before_scan(writer, *args, **kwargs):
+                    if timing == "before_scan_open":
+                        mutate(writer)
+                    return scan(writer, *args, **kwargs)
+                with mock.patch.object(RunDataStore, "__init__", opened), mock.patch.object(
+                        RunDataStore, "_disk_prefix_sha256", before_scan), mock.patch(
+                        "crescendo_engine.runner._evaluate_candidate", side_effect=evaluate), mock.patch.object(
+                        PopulationGenerator, "tell", side_effect=AssertionError("tell must not accept corruption")) as tell:
+                    with self.assertRaises(RunDataError):
+                        run_optimization(spec, config, prepared=prepared, run_root=os.path.join(root, "run"))
+                    tell.assert_not_called()
+                status = load_json(os.path.join(root, "run", "status.json"))
+                self.assertEqual(status["state"], "failed")
+                cause = status["primary_failure"]
+                self.assertEqual(cause["failure_stage"], "generation_commit")
+                self.assertEqual(cause["storage"]["generation"], 0)
+                self.assertIn(cause["storage"]["reason"], ("checksum", "unstable_scan"))
+                self.assertEqual(len(evaluated), 4)
+                self.assertTrue(writers[-1].failed)
+                checkpoint = load_json(os.path.join(root, "run", "checkpoint.json"))
+                # A damaged intra-generation checkpoint cannot be resumed.
+                with self.assertRaisesRegex(ValueError, "history is unavailable or invalid"):
+                    checkpoint_candidates(checkpoint)
+
     def test_checkpoint_resume_skips_completed_and_reuses_pending_values(self):
         with tempfile.TemporaryDirectory() as root:
             prepared = {
@@ -4947,8 +5010,28 @@ class RunnerTest(unittest.TestCase):
                 }
 
             baseline_root = os.path.join(root, "baseline")
-            with mock.patch("crescendo_engine.runner._evaluate_candidate", side_effect=completed):
+            from crescendo_engine.run_data_store import RunDataStore
+            barriers = []
+            verify = RunDataStore.verify_generation
+            def audit(writer, generation):
+                barriers.append((generation, writer.offset))
+                return verify(writer, generation)
+            with mock.patch.object(RunDataStore, "verify_generation", autospec=True, side_effect=audit), mock.patch(
+                    "crescendo_engine.runner._evaluate_candidate", side_effect=completed):
                 baseline = run_optimization(spec, config, prepared=prepared, run_root=baseline_root)
+            storage = [row["storage_operations"] for row in baseline["generation_timings"]]
+            self.assertEqual(len(storage), 2)
+            self.assertEqual([entry[0] for entry in barriers], [0, 1])
+            for operations, (_, commit_bytes) in zip(storage, barriers):
+                transactions = operations["checkpoint_transaction"]["calls"]
+                self.assertGreater(transactions, 0)
+                self.assertEqual(operations["checkpoint_run_write"]["calls"], transactions)
+                self.assertEqual(operations["checkpoint_anchor_write"]["calls"], transactions)
+                self.assertEqual(operations["checkpoint_run_verify"]["calls"], transactions * 2)
+                # One full scan at tell, independent of checkpoint count.
+                self.assertEqual(operations["dataset_prefix_scan"]["calls"], 1)
+                self.assertEqual(operations["dataset_prefix_scan"]["bytes"], commit_bytes)
+                self.assertGreater(operations["dataset_append_sync"]["calls"], 0)
 
             crashed_root = os.path.join(root, "crashed")
 

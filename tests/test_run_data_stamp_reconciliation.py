@@ -36,7 +36,8 @@ class RunDataStampReconciliationTest(unittest.TestCase):
                 try:
                     before = self.read_bytes(writer.path)
                     self.drift(writer.path)
-                    self.invoke(writer, reference, action)
+                    with writer.checkpoint_evidence():
+                        self.invoke(writer, reference, action)
                     self.assertEqual(writer.expected_stamp, writer._file_stamp())
                     self.assertEqual(dataset_from_reference(reference)['prefix_sha256'], hashlib.sha256(before).hexdigest())
                 finally:
@@ -82,9 +83,16 @@ class RunDataStampReconciliationTest(unittest.TestCase):
                                 os.symlink(alternate, writer.path)
                         else:
                             os.link(writer.path, writer.path + '.link')
-                        with self.assertRaises(RunDataError) as raised:
-                            self.invoke(writer, reference, action)
-                        self.assertEqual(raised.exception.detail['stage'], action)
+                        with writer.checkpoint_evidence():
+                            if mutation == 'same_length':
+                                self.invoke(writer, reference, action)
+                            with self.assertRaises(RunDataError) as raised:
+                                if mutation == 'same_length':
+                                    writer.verify_generation(0)
+                                else:
+                                    self.invoke(writer, reference, action)
+                        self.assertEqual(raised.exception.detail['stage'],
+                                         'generation_commit' if mutation == 'same_length' else action)
                         self.assertIn('reason', raised.exception.detail)
                     finally:
                         writer.close()
@@ -98,8 +106,10 @@ class RunDataStampReconciliationTest(unittest.TestCase):
                     stream.seek(reference['bytes'])
                     stream.write(b'!')
                 self.drift(writer.path)
-                with self.assertRaisesRegex(RunDataError, 'checksum'):
+                with writer.checkpoint_evidence():
                     dataset_from_reference(reference)
+                with self.assertRaisesRegex(RunDataError, 'checksum'):
+                    writer.verify_generation(0)
             finally:
                 writer.close()
 
@@ -118,17 +128,17 @@ class RunDataStampReconciliationTest(unittest.TestCase):
             try:
                 self.drift(writer.path)
                 original = writer._disk_prefix_sha256
-                def changed(stop):
-                    digest = original(stop)
+                def changed(stop, **kwargs):
+                    digest = original(stop, **kwargs)
                     self.drift(writer.path)
                     return digest
                 with mock.patch.object(writer, '_disk_prefix_sha256', side_effect=changed):
-                    with self.assertRaisesRegex(RunDataError, 'stamp_changed_during_verification'):
-                        dataset_from_reference(reference)
+                    with self.assertRaisesRegex(RunDataError, 'unstable_scan'):
+                        writer.verify_generation(0)
             finally:
                 writer.close()
 
-    def test_bad_reference_hash_and_same_stamp_tampering_still_rejected(self):
+    def test_bad_reference_hash_and_explicit_same_stamp_audit_still_rejected(self):
         with tempfile.TemporaryDirectory() as root:
             writer, reference = self.make(root)
             try:
@@ -138,11 +148,11 @@ class RunDataStampReconciliationTest(unittest.TestCase):
                 stamp = writer.expected_stamp
                 with open(writer.path, 'r+b') as stream:
                     stream.write(b'!')
-                with mock.patch.object(writer, '_file_stamp', return_value=stamp):
+                with mock.patch("crescendo_engine.run_data_store._stat_stamp", return_value=stamp):
                     with self.assertRaisesRegex(RunDataError, 'checksum'):
+                        writer.reference(force_full=True)
+                    with writer.checkpoint_evidence(), self.assertRaises(RunDataError):
                         dataset_from_reference(reference)
-                    with self.assertRaisesRegex(RunDataError, 'checksum'):
-                        writer.reference()
             finally:
                 writer.close()
 

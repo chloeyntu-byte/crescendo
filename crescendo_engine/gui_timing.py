@@ -1,6 +1,6 @@
 """Small timing projections for the existing results UI; no I/O or probes."""
 from .diagnostic_timing import (candidate_timing_summary, timing_seconds,
-                               CANDIDATE_PHASE_LABELS, GENERATION_PHASE_LABELS)
+                               CANDIDATE_PHASE_LABELS, GENERATION_PHASE_LABELS, STORAGE_OPERATION_LABELS)
 
 
 def seconds_text(value):
@@ -47,6 +47,16 @@ def generation_timing_lines(rows):
         phases = row.get('phases_seconds') or {}
         lines.append('  ' + ' | '.join('{} {}'.format(label, seconds_text(phases.get(name)))
                                       for name, label in GENERATION_PHASE_LABELS.items()))
+        operations = row.get('storage_operations') or {}
+        if operations:
+            lines.append('  Storage operations (nested within wall time)')
+            for name, label in STORAGE_OPERATION_LABELS.items():
+                if name not in operations:
+                    continue
+                item = operations[name]
+                volume = ' · {:.2f} MiB'.format(item['bytes'] / (1024 * 1024)) if item['bytes'] else ''
+                lines.append('    {} · {} · {} calls · max {}{}'.format(
+                    label, seconds_text(item['seconds']), item['calls'], seconds_text(item['max_seconds']), volume))
         for phase in row.get('candidate_phase_sums') or []:
             lines.append('  ' + phase_text(phase.get('phase', '?'), phase))
     return lines or ['Generation timing: unavailable.']

@@ -1771,8 +1771,9 @@ class NetlistExecutionContext(object):
         return result
 
     def _cleanup_measured_point(self, manifest, task, committed, progress_identity=None, companion_evidence=None):
+        task_root = os.path.dirname(task["psf_dir"])
         try:
-            with native_log_cleanup_scope() as barrier:
+            with native_log_cleanup_scope(paths=(task_root,)) as barrier:
                 result = self._cleanup_measured_point_unlocked(manifest, task, committed,
                     progress_identity=progress_identity, companion_evidence=companion_evidence)
                 result["reader_barrier"] = barrier

@@ -24,6 +24,28 @@ Every generation records ask/plan, evaluation, tell, settlement, checkpoint pers
 
 In **Live Results**, select a candidate for its main phases, then click **Timing details...** for per-task and per-generation details. Loaded or diagnostic results use their own timings without replacing the formal run or borrowing another run's timings. While a run is active, status retains the latest 20 generations; final results retain all recorded generation summaries. Resumed generations are labelled as resumed segments. Old results without detailed timing display unavailable; pure solver time cannot be reconstructed from a coarse execution duration.
 
+## Checkpoint storage measurements
+
+Generation summaries include netlist preparation and nested storage-operation counters. Each operation reports cumulative seconds, call count, maximum elapsed time and processed bytes. These intervals include parts of the same checkpoint transaction and overlap its wall time. Timing details shows planned rows, dataset references, document construction, disk-space checks, previous anchors, pending journals, checkpoint and anchor writes/verifications, journal clearing, point commits, appends and syncs. `dataset_prefix_scan` counts bytes actually read for disk hash verification; JSON record parsing has its own operation.
+
+While one exclusive writer is held, its SHA256 state is incrementally updated from the exact byte slices it issues to `os.write`, including short writes, and promoted only after the record is synchronized. Intra-generation checkpoint references use that intended-byte hash without rereading disk prefixes. Cheap regular-file, link-count, `samestat` and exact-size checks reject replacement, truncation and external append immediately; a diagnostic full scan cannot restore a rejected writer. Timestamp changes alone do not trigger scans.
+
+Immediately before each generation reaches the optimizer's `tell`, one mandatory full disk scan compares the entire current file with the writer's hash. A mismatch or unstable scan stops the run before accepting generation results. `status.json` retains `primary_failure.failure_stage = generation_commit` and the storage reason, generation, revision and expected/actual evidence. A rejected writer stays failed. `RunDataStore.reference(force_full=True)` remains available for an explicit full audit. The former every-128-check audit and post-append full scans have been removed.
+
+Only the owning writer's explicit `checkpoint_evidence()` transaction may reuse its immutable checkpoint snapshots for run, anchor and journal verification. An ordinary `dataset_from_reference` load (including its first load), another thread, a new process, opening an existing writer and Resume verify disk contents in full before use. Cooperating in-process readers serialize with the writer. Stable full scans carry one file-state sample through opening, reading and return. Record schemas, checkpoint meanings, injected application naming and public optimizer contracts remain unchanged.
+
+Residual risk: an external same-length rewrite of an already written prefix, including one whose timestamps do not change or are overwritten by an own write, may remain undetected until the current generation's commit barrier. Intra-generation checkpoints issued before that barrier refer to the bytes written by the writer itself. Any checkpoint loaded for Resume or export is fully verified against its reference before use, so damaged data is rejected. Parsing newly appended records may detect damage earlier. The exclusive advisory lock excludes cooperating writers, but cannot exclude uncooperative filesystem access. No stat-only scheme establishes immediate content integrity without reading those bytes.
+
+Within a generation, disk reading is O(new bytes) for record parsing, independent of the number of checkpoint verifications. Each generation adds exactly one full scan of the file as it exists at commit. For the four-generation, four-candidate, two-corner fixture, per-generation reads are approximately newly appended bytes plus current file size. Total full-scan cost still grows with accumulated history; this is a deliberate generation-level integrity barrier, not a claim of constant cost across arbitrary generation counts.
+
+The standalone synthetic benchmark uses the normal runner and checkpoint transaction, a fake evaluator and 32 separately appended point records of approximately 1 MiB. Run each checkout in a fresh process with writable output directories.
+
+```sh
+python3 -B scripts/benchmark_checkpoint_prefix.py --engine-root /path/to/checkout --output-root /path/to/benchmark
+```
+
+It emits per-generation checkpoint and audit seconds, transaction counts, hash reads, parser reads, append bytes and file size at commit, plus total disk reads. Filesystem cache, synchronization latency and host load affect wall time. Byte counts provide the deterministic regression signal.
+
 ## Link diagnostics
 
 Diagnostics retain the Native Run → Template Netlist → Maestro Netlist order and the same frozen samples for each mode. The default is two generations and six candidates per mode. The diagnostic page accepts 1–10 generations, 1–16 samples per generation and at most 64 candidates per mode; total candidates must divide evenly by generations. These settings can be saved/restored and do not change formal optimization size. A small finite search domain may repeat candidates, so distinct-candidate counts are reported separately.

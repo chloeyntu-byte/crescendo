@@ -484,7 +484,7 @@ def _completed_model_resolution(workspace, setup, command, status, config, snaps
             info = os.lstat(path)
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 256 * 1024:
                 raise ValueError('Native point runSimulation is not a bounded regular file')
-            with native_log_read_scope():
+            with native_log_read_scope(path):
                 descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
                 with os.fdopen(descriptor, 'rb') as stream:
                     if not os.path.samestat(info, os.fstat(stream.fileno())):
@@ -573,7 +573,7 @@ def _prepare_native_point_identity(workspace, setup, command, history_name, stat
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > MAX_NETLIST_BYTES:
             raise UnsupportedCompletionEvidence("native corner netlist is not a bounded regular file: %s" % path)
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-        with native_log_read_scope():
+        with native_log_read_scope(path):
             descriptor = os.open(path, flags)
             with os.fdopen(descriptor, "rb") as stream:
                 if not os.path.samestat(info, os.fstat(stream.fileno())):
@@ -642,7 +642,7 @@ def _prepare_native_point_identity(workspace, setup, command, history_name, stat
     if scope_path:
         import json
         _artifact_reference(scope_path, workspace, "native batch scope metadata")
-        with native_log_read_scope():
+        with native_log_read_scope(scope_path):
             descriptor = os.open(scope_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             with os.fdopen(descriptor, "rb") as stream:
                 info = os.fstat(stream.fileno())

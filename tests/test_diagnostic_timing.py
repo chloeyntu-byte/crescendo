@@ -1,6 +1,10 @@
 import unittest
 
-from crescendo_engine.diagnostic_timing import DiagnosticTiming, generation_timing_summary
+from unittest import mock
+
+from crescendo_engine.diagnostic_timing import (
+    DiagnosticTiming, generation_report_timing, generation_timing_summary, observe_operation,
+)
 
 
 class FakeClock(object):
@@ -15,6 +19,22 @@ class FakeClock(object):
 
 
 class DiagnosticTimingTests(unittest.TestCase):
+    def test_storage_summary_preserves_counts_bytes_and_max_without_extra_wall_time(self):
+        timing = DiagnosticTiming(lambda: 0)
+        timing.start('persist')
+        with mock.patch('crescendo_engine.diagnostic_timing.timing_tick', side_effect=[0, 2, 4, 7, None]):
+            with observe_operation(timing, 'dataset_prefix_scan', 100):
+                pass
+            with self.assertRaisesRegex(OSError, 'original I/O error'):
+                with observe_operation(timing, 'dataset_prefix_scan', 300):
+                    raise OSError('original I/O error')
+            with observe_operation(timing, 'unavailable'):
+                pass
+        timing.finish()
+        report = generation_report_timing(generation_timing_summary(0, timing, []))
+        self.assertEqual(report['wall_seconds'], 0)
+        self.assertEqual(report['storage_operations'], {'dataset_prefix_scan': [5, 2, 3, 400]})
+
     def test_lifecycle_intervals_and_live_snapshot(self):
         clock = FakeClock()
         timing = DiagnosticTiming(clock)

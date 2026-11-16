@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.4 (2026-11-16)
+
+- Scope native-log readers and cleanup to overlapping paths, including resolved aliases. Preserve physical candidate timings during generation fanout and expose batch counts.
+- Record generation netlist preparation and nested checkpoint/storage operations, with calls, elapsed time and bytes in diagnostics and Timing details. Use the startup application identity for the engine window title.
+- Compute checkpoint SHA256 references incrementally from the exclusive writer's own byte slices, including short writes. Intra-generation checkpoints do not reread disk prefixes; identity, links and exact-size checks immediately reject and diagnostically scan replacement, truncation or external append.
+- Verify the entire disk file once before each generation reaches optimizer `tell`. Reject mismatches or unstable scans, stop the run and retain the generation-commit first cause. Remove both post-append full scans and every-128-check audits; retain explicit full audits.
+- Limit cached snapshots to the owning writer's checkpoint transaction. Ordinary first loads, other readers, new processes, existing-writer opens and Resume fully verify disk data before use. Keep v1 records, legacy identity/dialect, optimizer signatures and registry identity compatible.
+- Residual risk: an external rewrite of an already written prefix can remain undetected until the current generation's commit barrier. Earlier intra-generation checkpoints reference the writer's own bytes. Checkpoints loaded for Resume or export undergo full verification, so damaged data cannot be used as valid history.
+- Add exact byte-count, generation-rejection and reader-isolation regressions and a four-generation checkpoint benchmark with 32 synthetic 1 MiB point records. Per-generation reads comprise new record bytes plus one current-file audit.
+
 ## 1.1.3 (2026-11-13)
 
 - Declare the optimizer a headless library: `crescendo_engine.optimizers` (`PopulationGenerator`, `validate_variables`, new `ALGORITHMS`), `metrics` and `engineering` import and run ask/tell without application startup, scheduler providers, bootstrap, GUI, Tk or Cadence, as root or an ordinary user. Documented in docs/HEADLESS_API.md and pinned by contract tests.

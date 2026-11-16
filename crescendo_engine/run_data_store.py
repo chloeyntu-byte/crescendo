@@ -11,12 +11,15 @@ _contract_text = bind_text()
 
 
 import copy
+from contextlib import contextmanager
 import bisect
 import hashlib
 import json
 import os
 import stat
 import threading
+
+from .diagnostic_timing import observe_operation
 
 try:
     import fcntl
@@ -43,6 +46,11 @@ class RunDataError(RuntimeError):
 def _encoded(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=True, allow_nan=False).encode("utf-8")
+
+
+def _stat_stamp(value):
+    return (getattr(value, "st_mtime_ns", value.st_mtime),
+            getattr(value, "st_ctime_ns", value.st_ctime), value.st_size)
 
 
 def _safe_stat(path):
@@ -184,6 +192,10 @@ class RunDataReader(object):
             self.file_stamp = stamp
             self.tail_incomplete = False
             with _open_read(self.path) as stream:
+                opened = os.fstat(stream.fileno())
+                if strict and (not os.path.samestat(value, opened)
+                               or _stat_stamp(value) != _stat_stamp(opened)):
+                    raise RunDataError("optimization data changed before reading")
                 stream.seek(self.offset)
                 while stop_bytes is None or self.offset < stop_bytes:
                     remaining = (stop_bytes - self.offset) if stop_bytes is not None else MAX_RECORD_BYTES + 1
@@ -202,6 +214,14 @@ class RunDataReader(object):
                     self._apply(document)
                     self.hasher.update(raw)
                     self.offset += len(raw)
+                if strict:
+                    after = os.fstat(stream.fileno())
+                    current = _safe_stat(self.path)
+                    if (not os.path.samestat(opened, after)
+                            or not os.path.samestat(after, current)
+                            or _stat_stamp(opened) != _stat_stamp(after)
+                            or _stat_stamp(after) != _stat_stamp(current)):
+                        raise RunDataError("optimization data changed while reading")
             if stop_bytes is not None and self.offset != stop_bytes:
                 raise RunDataError("checkpoint optimization data prefix is incomplete")
             if strict and self.tail_incomplete:
@@ -247,7 +267,10 @@ class RunDataStore(object):
         self.lock = threading.RLock()
         self.fd = None
         self.failed = False
+        self.persistence_timing = None
         self._reference_datasets = {}
+        self._owner_thread = threading.get_ident()
+        self._checkpoint_depth = 0
         created = not os.path.lexists(self.path)
         flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
         if created:
@@ -277,6 +300,15 @@ class RunDataStore(object):
                 self.expected_stamp = None
                 self.append_event("metadata", metadata)
             self.expected_stamp = self._file_stamp()
+            if value.st_size:
+                # Opening/Resume parses and hashes the complete disk file.
+                # Only a stable read can seed the held writer's intended hash.
+                current = _safe_stat(self.path)
+                if (not os.path.samestat(value, current)
+                        or _stat_stamp(value) != self.expected_stamp
+                        or _stat_stamp(current) != self.expected_stamp
+                        or current.st_size != self.offset):
+                    raise RunDataError("optimization data changed while opening its writer")
             if created:
                 _fsync_dir(os.path.dirname(self.path))
             with _ACTIVE_WRITERS_LOCK:
@@ -300,101 +332,175 @@ class RunDataStore(object):
                 raise RunDataError("optimization record exceeds the size limit")
             try:
                 self._check_held_writer("append")
-                os.lseek(self.fd, self.offset, os.SEEK_SET)
-                written = 0
-                while written < len(raw):
-                    amount = os.write(self.fd, raw[written:])
-                    if amount <= 0:
-                        raise RunDataError("optimization data write did not advance")
-                    written += amount
-                os.fsync(self.fd)
-            except Exception:
+                write_hasher = self.hasher.copy()
+                with observe_operation(self.persistence_timing, 'dataset_append_write', len(raw)):
+                    os.lseek(self.fd, self.offset, os.SEEK_SET)
+                    written = 0
+                    while written < len(raw):
+                        before_write = os.fstat(self.fd)
+                        current = _safe_stat(self.path)
+                        if (not os.path.samestat(before_write, current)
+                                or before_write.st_size != self.offset + written
+                                or current.st_size != self.offset + written):
+                            raise RunDataError("optimization data changed before append write")
+                        amount = os.write(self.fd, raw[written:])
+                        after_write = os.fstat(self.fd)
+                        if amount <= 0:
+                            raise RunDataError("optimization data write did not advance")
+                        write_hasher.update(raw[written:written + amount])
+                        written += amount
+                        if (not os.path.samestat(before_write, after_write)
+                                or after_write.st_nlink != 1
+                                or after_write.st_size != self.offset + written):
+                            raise RunDataError("optimization data changed during append write")
+                with observe_operation(self.persistence_timing, 'dataset_append_sync'):
+                    os.fsync(self.fd)
+                after_sync = os.fstat(self.fd)
+                current = _safe_stat(self.path)
+                if (not os.path.samestat(after_write, after_sync)
+                        or not os.path.samestat(after_sync, current)
+                        or after_sync.st_size != self.offset + written
+                        or current.st_size != self.offset + written):
+                    raise RunDataError("optimization data changed while syncing append")
+            except Exception as error:
                 # No later checkpoint/raw cleanup may claim this record durable.
                 self.failed = True
+                if isinstance(error, RunDataError) and not error.detail:
+                    self._reject_writer_change(str(error), {"stage": "append", "reason": "write_boundary",
+                        "revision": self.revision, "expected_bytes": self.offset})
                 raise
             self.revision += 1
             self.head = document["sha256"]
             self.offset += len(raw)
-            self.hasher.update(raw)
+            self.hasher = write_hasher
             self.expected_stamp = self._file_stamp()
             return self.revision
 
     def _file_stamp(self):
-        value = os.fstat(self.fd)
-        return (getattr(value, "st_mtime_ns", value.st_mtime),
-                getattr(value, "st_ctime_ns", value.st_ctime), value.st_size)
+        return _stat_stamp(os.fstat(self.fd))
+
+    def _reject_writer_change(self, message, detail):
+        # Failure is sticky. Scan for diagnostics only, never adopt the bytes or
+        # let restoration of the path resurrect a rejected writer.
+        self.failed = True
+        try:
+            digest, size = hashlib.sha256(), 0
+            with _open_read(self.path) as stream:
+                while True:
+                    raw = stream.read(1024 * 1024)
+                    if not raw:
+                        break
+                    digest.update(raw)
+                    size += len(raw)
+            detail.update(observed_bytes=size, observed_sha256=digest.hexdigest())
+        except Exception as error:
+            detail["scan_error"] = str(error)
+        raise RunDataError(message, detail)
 
     def _check_held_writer(self, stage):
-        """Validate the held file; timestamps are hints, bytes are authority.
-
-        Callers hold self.lock. Normal appends only stat the file; a metadata
-        change requires a stable full committed-prefix hash before accepting
-        the new stamp, including bytes beyond an older checkpoint reference.
-        """
+        """Cheap identity/size checks; content is audited at generation commit."""
         detail = {"stage": stage, "revision": self.revision, "expected_bytes": self.offset}
         if self.fd is None or self.failed:
             detail["reason"] = "writer_unavailable"
             raise RunDataError("optimization data writer is unavailable", detail)
         held = os.fstat(self.fd)
-        current = os.lstat(self.path)
+        try:
+            current = os.lstat(self.path)
+        except OSError as error:
+            detail.update(reason="path_unavailable", error=str(error))
+            self._reject_writer_change("optimization data path is unavailable", detail)
         detail.update(actual_bytes=current.st_size,
                       held_identity=[held.st_dev, held.st_ino],
                       path_identity=[current.st_dev, current.st_ino])
         if (not stat.S_ISREG(current.st_mode) or current.st_nlink != 1
                 or not stat.S_ISREG(held.st_mode) or held.st_nlink != 1):
             detail["reason"] = "file_type_or_links"
-            raise RunDataError("optimization data must be a regular file without links", detail)
+            self._reject_writer_change("optimization data must be a regular file without links", detail)
         if not os.path.samestat(held, current):
             detail["reason"] = "identity"
-            raise RunDataError("optimization data changed outside its held writer", detail)
+            self._reject_writer_change("optimization data changed outside its held writer", detail)
         if held.st_size != self.offset or current.st_size != self.offset:
-            detail["reason"] = "size"
-            detail["held_bytes"] = held.st_size
-            raise RunDataError("optimization data changed outside its held writer", detail)
-        stamp = self._file_stamp()
-        if self.expected_stamp is None or stamp == self.expected_stamp:
-            return
-        detail.update(expected_stamp=self.expected_stamp, actual_stamp=stamp)
-        digest = self._disk_prefix_sha256(self.offset)
-        if digest != self.hasher.hexdigest():
-            detail["reason"] = "checksum_after_stamp_change"
-            raise RunDataError("optimization data prefix checksum changed outside its writer", detail)
-        if self._file_stamp() != stamp:
-            detail["reason"] = "stamp_changed_during_verification"
-            raise RunDataError("optimization data changed while verifying its prefix", detail)
-        self.expected_stamp = stamp
+            detail.update(reason="size", held_bytes=held.st_size)
+            self._reject_writer_change("optimization data changed outside its held writer", detail)
+        self.expected_stamp = _stat_stamp(held)
+        return held
 
-    def _disk_prefix_sha256(self, stop_bytes):
-        """Strict evidence hashes bytes even when same-tick stat is unchanged.
+    def _verify_disk_prefix(self, stage="explicit_audit", generation=None):
+        """Compare one full, stable disk scan with the writer's own byte hash."""
+        detail = {"stage": stage, "revision": self.revision,
+                  "expected_bytes": self.offset, "expected_sha256": self.hasher.hexdigest()}
+        if generation is not None:
+            detail["generation"] = generation
+        try:
+            held = self._check_held_writer(stage)
+            actual = self._disk_prefix_sha256(self.offset, expected_file=held)
+            current = _safe_stat(self.path)
+            if (not os.path.samestat(held, current)
+                    or _stat_stamp(current) != _stat_stamp(held)
+                    or self._file_stamp() != _stat_stamp(held)):
+                raise RunDataError("optimization data changed after verifying its prefix")
+            if actual != self.hasher.hexdigest():
+                detail.update(reason="checksum", actual_sha256=actual)
+                raise RunDataError("optimization data prefix checksum changed before commit", detail)
+        except Exception as error:
+            self.failed = True
+            if isinstance(error, RunDataError) and error.detail:
+                error.detail.update((key, value) for key, value in detail.items() if key not in error.detail)
+                raise
+            detail.update(reason="unstable_scan", cause=str(error))
+            raise RunDataError(str(error), detail)
 
-        Keep the parsed dataset cache and UI's incremental reader. Only the
-        checkpoint/cleanup-authority APIs use this bounded-memory disk check.
-        A separate reader leaves the exclusive writer's position untouched.
-        """
-        if self.fd is None or type(stop_bytes) is not int or not 0 < stop_bytes <= self.offset:
+    def verify_generation(self, generation):
+        """Mandatory barrier before results reach the optimizer's tell method."""
+        with self.lock:
+            self._verify_disk_prefix(stage="generation_commit", generation=generation)
+
+    @contextmanager
+    def checkpoint_evidence(self):
+        """Reuse issued snapshots only inside the owning writer's transaction."""
+        with self.lock:
+            if threading.get_ident() != self._owner_thread:
+                raise RunDataError("checkpoint evidence requires its owning writer thread")
+            self._checkpoint_depth += 1
+            try:
+                yield
+            finally:
+                self._checkpoint_depth -= 1
+
+    def _disk_prefix_sha256(self, stop_bytes, expected_file=None):
+        """Hash the full prefix, binding one file-state sample through the scan."""
+        if (self.fd is None or type(stop_bytes) is not int
+                or not 0 < stop_bytes <= self.offset):
             raise RunDataError("optimization data prefix length is invalid")
-        held = os.fstat(self.fd)
         digest = hashlib.sha256()
+        held = os.fstat(self.fd)
+        if expected_file is not None and (
+                not os.path.samestat(expected_file, held)
+                or _stat_stamp(expected_file) != _stat_stamp(held)):
+            raise RunDataError("optimization data changed before verifying its prefix")
         with _open_read(self.path) as stream:
             before = os.fstat(stream.fileno())
-            if not os.path.samestat(held, before) or before.st_size != self.offset:
+            if (not os.path.samestat(held, before) or before.st_size != self.offset
+                    or _stat_stamp(held) != _stat_stamp(before)):
                 raise RunDataError("optimization data changed outside its held writer")
             remaining = stop_bytes
-            while remaining:
-                data = stream.read(min(remaining, 1024 * 1024))
-                if not data:
-                    raise RunDataError("optimization data prefix is incomplete")
-                digest.update(data)
-                remaining -= len(data)
+            if remaining:
+                with observe_operation(self.persistence_timing, 'dataset_prefix_scan', remaining):
+                    while remaining:
+                        data = stream.read(min(remaining, 1024 * 1024))
+                        if not data:
+                            raise RunDataError("optimization data prefix is incomplete")
+                        digest.update(data)
+                        remaining -= len(data)
             after = os.fstat(stream.fileno())
             current = _safe_stat(self.path)
-            before_stamp = (getattr(before, "st_mtime_ns", before.st_mtime),
-                            getattr(before, "st_ctime_ns", before.st_ctime), before.st_size)
-            after_stamp = (getattr(after, "st_mtime_ns", after.st_mtime),
-                           getattr(after, "st_ctime_ns", after.st_ctime), after.st_size)
+            held_after = os.fstat(self.fd)
             if (not os.path.samestat(before, after) or not os.path.samestat(after, current)
-                    or not os.path.samestat(after, os.fstat(self.fd))
-                    or after.st_nlink != 1 or before_stamp != after_stamp):
+                    or not os.path.samestat(after, held_after)
+                    or after.st_nlink != 1 or held_after.st_nlink != 1
+                    or _stat_stamp(before) != _stat_stamp(after)
+                    or _stat_stamp(after) != _stat_stamp(current)
+                    or _stat_stamp(after) != _stat_stamp(held_after)):
                 raise RunDataError("optimization data changed while verifying its prefix")
         return digest.hexdigest()
 
@@ -410,23 +516,29 @@ class RunDataStore(object):
         summary["representative_candidate_id"] = representative.get("candidate_id") if representative else None
         return self.append_event("result", summary)
 
-    def reference(self):
+    def reference(self, force_full=False):
         with self.lock:
             if self.failed:
                 raise RunDataError("failed optimization data cannot be checkpoint evidence")
             self._check_held_writer("reference")
-            if self._disk_prefix_sha256(self.offset) != self.hasher.hexdigest():
-                raise RunDataError("optimization data prefix checksum changed before checkpoint evidence")
+            if force_full:
+                self._verify_disk_prefix()
             reference = {"schema_version": SCHEMA_VERSION, "path": self.path,
                     "revision": self.revision, "bytes": self.offset,
                     "head_sha256": self.head, "prefix_sha256": self.hasher.hexdigest()}
-            # This process owns the exclusive writer. Verify newly appended
-            # bytes once, then reuse this immutable prefix for run+anchor+WAL
-            # verification. A later process/resume always verifies from disk.
+            # Parse only new records for writer-owned checkpoint snapshots.
+            # The reference hash always comes from bytes issued by this writer.
             if self.revision not in self._reference_datasets:
-                dataset = self.reader.read(strict=True, stop_bytes=self.offset,
-                                           since_revision=self.reader.revision,
-                                           include_candidates=False, include_metadata=False)
+                try:
+                    with observe_operation(self.persistence_timing, 'dataset_read_new_records'):
+                        dataset = self.reader.read(strict=True, stop_bytes=self.offset,
+                                                   since_revision=self.reader.revision,
+                                                   include_candidates=False, include_metadata=False)
+                    if dataset["prefix_sha256"] != self.hasher.hexdigest():
+                        raise RunDataError("optimization data parsed prefix checksum differs from writer bytes")
+                except Exception:
+                    self.failed = True
+                    raise
                 dataset["metadata"] = self.reader.metadata
                 # Parsed records are immutable in this reader: later updates
                 # replace dictionaries. Fixed-prefix snapshots share those
@@ -438,12 +550,13 @@ class RunDataStore(object):
             return reference
 
     def close(self):
-        with _ACTIVE_WRITERS_LOCK:
-            if _ACTIVE_WRITERS.get(self.path) is self:
-                del _ACTIVE_WRITERS[self.path]
-        if self.fd is not None:
-            os.close(self.fd)
-            self.fd = None
+        with self.lock:
+            with _ACTIVE_WRITERS_LOCK:
+                if _ACTIVE_WRITERS.get(self.path) is self:
+                    del _ACTIVE_WRITERS[self.path]
+            if self.fd is not None:
+                os.close(self.fd)
+                self.fd = None
 
 
 def read_run_data(path, since_revision=0):
@@ -504,7 +617,12 @@ def export_dataset(source, target):
     return target
 
 
-def dataset_from_reference(reference, embedded=None):
+def dataset_from_reference(reference, embedded=None, force_full=False):
+    """Load a fully verified prefix, or an owning checkpoint's issued snapshot.
+
+    Ordinary loads always read disk in full. force_full also disables snapshot
+    reuse when an explicit load occurs inside the writer checkpoint scope.
+    """
     if not isinstance(reference, dict) or reference.get("schema_version") != SCHEMA_VERSION:
         raise RunDataError("checkpoint optimization data reference is invalid")
     for name in ("revision", "bytes"):
@@ -531,16 +649,24 @@ def dataset_from_reference(reference, embedded=None):
         path = reference.get("path") or ""
         with _ACTIVE_WRITERS_LOCK:
             writer = _ACTIVE_WRITERS.get(path)
-        cached = writer._reference_datasets.get(reference["revision"]) if writer else None
-        if cached is not None and cached[0] == reference:
+        dataset = None
+        if (writer is not None and not force_full and writer._checkpoint_depth
+                and writer._owner_thread == threading.get_ident()):
             with writer.lock:
-                writer._check_held_writer("cached_reference")
-                if writer._disk_prefix_sha256(reference["bytes"]) != reference["prefix_sha256"]:
-                    raise RunDataError("checkpoint optimization data prefix checksum is invalid")
-                dataset = cached[1]
-        else:
-            reader = RunDataReader(path)
-            dataset = reader.read(stop_bytes=reference["bytes"], strict=True)
+                cached = writer._reference_datasets.get(reference["revision"])
+                if cached is not None and cached[0] == reference:
+                    writer._check_held_writer("cached_reference")
+                    # Only an owning checkpoint transaction may use its snapshot.
+                    # Other readers and explicit loads verify the disk in full.
+                    dataset = cached[1]
+        if dataset is None:
+            # Cooperating readers serialize with this process's writer but do
+            # not inherit its issued snapshots. A fresh reader hashes all bytes.
+            if writer is not None:
+                with writer.lock:
+                    dataset = RunDataReader(path).read(stop_bytes=reference["bytes"], strict=True)
+            else:
+                dataset = RunDataReader(path).read(stop_bytes=reference["bytes"], strict=True)
         if dataset["prefix_sha256"] != reference["prefix_sha256"]:
             raise RunDataError("checkpoint optimization data prefix checksum is invalid")
     if dataset["revision"] != reference["revision"] or dataset["head_sha256"] != reference["head_sha256"]:

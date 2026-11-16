@@ -21,7 +21,7 @@ _contract_text = bind_text()
 
 from .diagnostic_timing import (
     DiagnosticTiming, elapsed_seconds, generation_timing_summary, observer_phases,
-    phase_seconds, timing_seconds, timing_tick,
+    observe_operation, phase_seconds, timing_seconds, timing_tick,
 )
 from .cadence import check_command_cancellation, detect_pdk_context
 from .continuation import (
@@ -68,6 +68,7 @@ from .cluster_execution import (
     serial_timeout_seconds,
 )
 from .retention import (
+    ArtifactCleanupError,
     cleanup_abandoned_nonterminal_candidate,
     cleanup_proven_terminal_infrastructure_candidate,
     lightweight_candidate_record, persist_lightweight_candidate,
@@ -5031,7 +5032,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
     all_rows = checkpoint_candidates(resume_checkpoint) if resume_checkpoint is not None else []
     if resume_checkpoint is not None and resume_checkpoint.get("candidate_store") is not None:
         resumed_dataset = dataset_from_reference(resume_checkpoint["candidate_store"],
-                                                 resume_checkpoint.get("candidate_store_embedded"))
+                                                 resume_checkpoint.get("candidate_store_embedded"), force_full=True)
         all_rows = sorted([copy.deepcopy(row) for row in resumed_dataset["candidates"]
                            if row.get("status") in DATA_TERMINAL_STATES],
                           key=lambda row: (row["generation"], row["index"]))
@@ -5779,19 +5780,22 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
 
     anchor_root = checkpoint_anchor_root or os.path.dirname(run_root)
 
-    def persist_checkpoint(path, document, description):
+    def persist_checkpoint(path, document, description, timing_name):
         if os.path.lexists(path) and (os.path.islink(path) or not os.path.isfile(path)):
             raise RuntimeError("%s is not a safe regular file" % description)
-        validate_checkpoint_integrity(document)
-        atomic_write_text(
-            path, json.dumps(document, separators=(",", ":"), sort_keys=True) + "\n",
-        )
+        with observe_operation(generation_timing, timing_name + "_verify"):
+            validate_checkpoint_integrity(document)
+        with observe_operation(generation_timing, timing_name + "_write"):
+            atomic_write_text(
+                path, json.dumps(document, separators=(",", ":"), sort_keys=True) + "\n",
+            )
         if os.path.islink(path) or not os.path.isfile(path):
             raise RuntimeError("%s was not persisted safely" % description)
-        persisted = load_json(path)
-        validate_checkpoint_integrity(persisted)
-        if persisted.get("payload_sha256") != document.get("payload_sha256"):
-            raise RuntimeError("%s verification failed" % description)
+        with observe_operation(generation_timing, timing_name + "_verify"):
+            persisted = load_json(path)
+            validate_checkpoint_integrity(persisted)
+            if persisted.get("payload_sha256") != document.get("payload_sha256"):
+                raise RuntimeError("%s verification failed" % description)
 
     def begin_resource_guard_recycle(generation, plan, worker, candidate_id,
                                      phase, decision):
@@ -5920,45 +5924,51 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                                          "execution_backend": spec["execution_backend"]})
                     planned_core_ids.add(identity)
             if planned_rows:
-                data_store.commit_candidates(planned_rows)
-        document = _checkpoint_document(
-            spec, prepared, generator, all_rows, selection_history, next_generation, plan, status,
-            ancestry=ancestry, terminal_state=terminal_state,
-            terminal_reason=terminal_reason,
-            candidate_layout=(resume_checkpoint or {}).get("candidate_layout"),
-            candidate_store=data_store.reference(),
-        )
-        startup_storage_preflight(
-            run_root, anchor_root,
-            runtime_config.get("persistent_min_free_disk_mib", 1024),
-            checkpoint=document, workspace_required=False,
-        )
+                with observe_operation(generation_timing, "checkpoint_planned_rows"):
+                    data_store.commit_candidates(planned_rows)
+        with observe_operation(generation_timing, "checkpoint_dataset_reference"):
+            candidate_store = data_store.reference()
+        with observe_operation(generation_timing, "checkpoint_document"):
+            document = _checkpoint_document(
+                spec, prepared, generator, all_rows, selection_history, next_generation, plan, status,
+                ancestry=ancestry, terminal_state=terminal_state,
+                terminal_reason=terminal_reason,
+                candidate_layout=(resume_checkpoint or {}).get("candidate_layout"),
+                candidate_store=candidate_store,
+            )
+        with observe_operation(generation_timing, "checkpoint_disk_space"):
+            startup_storage_preflight(
+                run_root, anchor_root,
+                runtime_config.get("persistent_min_free_disk_mib", 1024),
+                checkpoint=document, workspace_required=False,
+            )
         anchor_path = continuation_checkpoint_path(
             anchor_root, continuation_id, create=True,
         )
         anchored_checksum = None
-        if os.path.lexists(anchor_path):
-            if os.path.islink(anchor_path) or not os.path.isfile(anchor_path):
-                raise RuntimeError("continuation checkpoint anchor is not a safe regular file")
-            anchored = load_json(anchor_path)
-            validate_checkpoint_integrity(anchored)
-            if (
-                checkpoint_continuation_id(anchored) != continuation_id
-                or checkpoint_continuation_schema(anchored)
-                != checkpoint_continuation_schema(document)
-                or not checkpoint_model_profile_transition(anchored, document)
-            ):
-                raise RuntimeError(
-                    "continuation checkpoint anchor belongs to a different optimization"
-                )
-            anchored_checksum = _checkpoint_checksum(anchored)
-            if checkpoint_parent_checksum is None:
-                if anchored_checksum != document.get("payload_sha256"):
-                    raise RuntimeError("continuation checkpoint anchor appeared unexpectedly")
-            elif anchored_checksum != checkpoint_parent_checksum:
-                raise RuntimeError(
-                    "continuation checkpoint anchor changed outside the held lease"
-                )
+        with observe_operation(generation_timing, "checkpoint_previous_anchor"):
+            if os.path.lexists(anchor_path):
+                if os.path.islink(anchor_path) or not os.path.isfile(anchor_path):
+                    raise RuntimeError("continuation checkpoint anchor is not a safe regular file")
+                anchored = load_json(anchor_path)
+                validate_checkpoint_integrity(anchored)
+                if (
+                    checkpoint_continuation_id(anchored) != continuation_id
+                    or checkpoint_continuation_schema(anchored)
+                    != checkpoint_continuation_schema(document)
+                    or not checkpoint_model_profile_transition(anchored, document)
+                ):
+                    raise RuntimeError(
+                        "continuation checkpoint anchor belongs to a different optimization"
+                    )
+                anchored_checksum = _checkpoint_checksum(anchored)
+                if checkpoint_parent_checksum is None:
+                    if anchored_checksum != document.get("payload_sha256"):
+                        raise RuntimeError("continuation checkpoint anchor appeared unexpectedly")
+                elif anchored_checksum != checkpoint_parent_checksum:
+                    raise RuntimeError(
+                        "continuation checkpoint anchor changed outside the held lease"
+                    )
         pending_path = continuation_pending_path(
             anchor_root, continuation_id, create=True,
         )
@@ -5966,18 +5976,21 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
             raise RuntimeError(
                 "an unresolved continuation pending journal must be recovered before optimization"
             )
-        pending = build_continuation_pending(
-            document, continuation_id,
-            int((document.get("state") or {}).get("checkpoint_revision", 0)),
-            anchored_checksum,
-            continuation_schema_sha256(checkpoint_continuation_schema(document)),
-        )
-        persist_continuation_pending(anchor_root, continuation_id, pending)
+        with observe_operation(generation_timing, "checkpoint_pending_build"):
+            pending = build_continuation_pending(
+                document, continuation_id,
+                int((document.get("state") or {}).get("checkpoint_revision", 0)),
+                anchored_checksum,
+                continuation_schema_sha256(checkpoint_continuation_schema(document)),
+            )
+        with observe_operation(generation_timing, "checkpoint_pending_write_verify"):
+            persist_continuation_pending(anchor_root, continuation_id, pending)
         persist_checkpoint(
-            os.path.join(run_root, _contract_text("checkpoint.json")), document, "run checkpoint",
+            os.path.join(run_root, _contract_text("checkpoint.json")), document, "run checkpoint", "checkpoint_run",
         )
-        persist_checkpoint(anchor_path, document, "continuation checkpoint anchor")
-        clear_continuation_pending(anchor_root, continuation_id)
+        persist_checkpoint(anchor_path, document, "continuation checkpoint anchor", "checkpoint_anchor")
+        with observe_operation(generation_timing, "checkpoint_pending_clear"):
+            clear_continuation_pending(anchor_root, continuation_id)
         checkpoint_ancestry = ancestry
         checkpoint_parent_checksum = document["payload_sha256"]
         if terminal_state == "completed":
@@ -5993,7 +6006,8 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
         if phase is not None:
             generation_timing.transition("persist")
         try:
-            persist_generation_checkpoint(next_generation, plan, terminal_state, terminal_reason)
+            with data_store.checkpoint_evidence(), observe_operation(generation_timing, "checkpoint_transaction"):
+                persist_generation_checkpoint(next_generation, plan, terminal_state, terminal_reason)
         finally:
             if phase is not None:
                 generation_timing.transition(phase)
@@ -6087,7 +6101,8 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
             return
         try:
             for request in requests:
-                request["revision"] = data_store.append_event("point", request["point"])
+                with observe_operation(generation_timing, "point_record_commit"):
+                    request["revision"] = data_store.append_event("point", request["point"])
             # One checkpoint ACK covers all points currently waiting. Candidate
             # status and the plan/RNG stay unchanged; a partial point is never
             # reported completed or skipped on a fresh Resume.
@@ -6137,7 +6152,8 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
         data_store.commit_candidates([row])
         save_checkpoint(generation, active_plan)
         try:
-            result = compact_successful_candidate_artifacts(candidate_root, run_root)
+            with data_store.checkpoint_evidence():
+                result = compact_successful_candidate_artifacts(candidate_root, run_root)
         except Exception as error:
             # A stopped task's small summary deletion is housekeeping. The
             # durable core/checkpoint remain valid and the exact files stay
@@ -6179,6 +6195,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
             generation_rows, infrastructure_rows = [], []
             generation_timing = DiagnosticTiming()
             generation_timing.start("evaluate")
+            data_store.persistence_timing = generation_timing
             resumed_segment = bool(active_plan is not None and active_plan.get("generation") == generation)
             status.update({"generation": generation + 1, "message": "evaluating generation %d" % (generation + 1)})
             atomic_write_json(status_path, status)
@@ -7206,6 +7223,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                 elif pending:
                     generation_inputs = {}
                     if netlist_optimizer is not None and generation_batching_enabled(spec):
+                        generation_timing.transition("netlist_prepare")
                         try:
                             generation_inputs = netlist_optimizer.prepare_generation(generation, pending)
                         except Exception:
@@ -7216,6 +7234,8 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                             save_checkpoint(generation, active_plan)
                             finish_generation('stopped')
                             break
+                        finally:
+                            generation_timing.transition("evaluate")
                     with ThreadPoolExecutor(max_workers=jobs) as executor:
                         pending_iter = iter(pending)
                         active_futures = {}
@@ -7342,6 +7362,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
             generation_rows.sort(key=lambda row: (
                 int(row.get("index", 0)), str(row.get("candidate_id") or ""),
             ))
+            data_store.verify_generation(generation)
             generation_timing.transition("tell")
             generation_accepted = generator.tell(generation_rows)
             generation_timing.transition("settlement")
@@ -7439,16 +7460,25 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
     except Exception as error:
         finish_generation("failed")
         message = "%s: %s" % (error.__class__.__name__, error)
-        status.setdefault("primary_failure", {
+        primary_failure = {
             "error_type": error.__class__.__name__, "message": str(error),
             "failure_stage": getattr(error, "startup_stage", None) or "optimization",
             "diagnostic_path": getattr(error, "startup_diagnostic_path", None),
-        })
+        }
+        if getattr(error, "detail", {}).get("stage") == "generation_commit":
+            primary_failure["failure_stage"] = "generation_commit"
+            primary_failure["storage"] = copy.deepcopy(error.detail)
+        if isinstance(error, ArtifactCleanupError):
+            primary_failure["failure_stage"] = "cleanup_artifacts"
+            barrier = error.detail.get("reader_barrier")
+            if barrier is not None:
+                primary_failure["reader_barrier"] = barrier
         shared_failure = getattr(netlist_optimizer, "preparation_failure", None)
         if isinstance(shared_failure, dict):
             status["shared_preparation_failure"] = copy.deepcopy(shared_failure)
-            status["primary_failure"]["failure_stage"] = shared_failure.get("failure_stage") or "native_template_preparation"
-            status["primary_failure"]["diagnostic_path"] = shared_failure.get("diagnostic_path")
+            primary_failure["failure_stage"] = shared_failure.get("failure_stage") or "native_template_preparation"
+            primary_failure["diagnostic_path"] = shared_failure.get("diagnostic_path")
+        status.setdefault("primary_failure", primary_failure)
         status.update({"state": "failed", "message": message, "finished_at": utc_timestamp()})
         try:
             data_store.append_event("status", status)
