@@ -184,9 +184,18 @@ class NetlistExecutionTests(unittest.TestCase):
         script = self.task["argv"][1]
         with open(script, "r", encoding="utf-8") as stream:
             original = stream.read()
-        # The simulator leaves one exited child unreaped. The shell's kill -0
-        # sees its zombie group until the outer owned subreaper finishes.
-        atomic_write_text(script, "import os,time\nif os.fork()==0: os._exit(0)\ntime.sleep(0.05)\n" + original)
+        receipt_path = os.path.join(self.task["cwd"], "execution", "terminal.receipt")
+        # An owned helper holds a confirmed zombie until the raw shell receipt
+        # exists. The outer guardian must then reap both, before point commit.
+        atomic_write_text(script, "import os,time\nread_fd,write_fd=os.pipe()\nif os.fork()==0:\n"
+            " os.close(read_fd)\n zombie=os.fork()\n"
+            " if zombie==0: os._exit(0)\n"
+            " os.waitid(os.P_PID,zombie,os.WEXITED|os.WNOWAIT)\n"
+            " os.write(write_fd,b'R'); os.close(write_fd)\n"
+            " deadline=time.monotonic()+30\n"
+            " while not os.path.exists(%r) and time.monotonic()<deadline: time.sleep(0.005)\n"
+            " os._exit(0)\nos.close(write_fd); assert os.read(read_fd,1)==b'R'; os.close(read_fd)\n" % receipt_path + original)
+        self.spec["candidate_timeout_seconds"] = 30
         points = []
 
         def commit(point, cancelled):
@@ -277,19 +286,49 @@ class NetlistExecutionTests(unittest.TestCase):
             os.rmdir(outside)
 
     def test_cancellation_stops_owned_local_sleep(self):
-        self.task = self.make_task("sleep", delay=20)
+        self.task = self.make_task("sleep", delay=120)
         self.manifest["tasks"] = [self.task]
         context = self.context()
-        timer = threading.Timer(0.3, context.cancel)
-        timer.start()
-        started = time.monotonic()
+        ready = os.path.join(self.task["cwd"], "started")
+        script = self.task["argv"][1]
+        with open(script, encoding="utf-8") as stream:
+            original = stream.read()
+        # Publish a complete PID atomically. Existence of an open/truncated PID
+        # file is not a ready handshake and can expose int("") under contention.
+        atomic_write_text(script, "import os\nwith open(%r, 'w') as stream: stream.write(str(os.getpid()))\nos.replace(%r, %r)\n" % (
+            ready + ".tmp", ready + ".tmp", ready) + original)
+        child_pids, errors = [], []
+        finished = threading.Event()
+        def cancel_started_task():
+            deadline = time.monotonic() + 30
+            while not finished.is_set() and not os.path.isfile(ready) and time.monotonic() < deadline:
+                finished.wait(0.005)
+            if not os.path.isfile(ready):
+                errors.append("owned simulator never reached its ready handshake")
+            else:
+                with open(ready) as stream:
+                    child_pids.append(int(stream.read()))
+            context.cancel()
+        worker = threading.Thread(target=cancel_started_task)
+        worker.start()
         try:
-            with self.assertRaises(execution.NetlistExecutionError):
-                context.evaluate(self.manifest, timeout_seconds=20)
+            with self.assertRaises(execution.NetlistExecutionError) as caught:
+                context.evaluate(self.manifest, timeout_seconds=60)
         finally:
-            timer.cancel()
-        self.assertLess(time.monotonic() - started, 7)
+            finished.set()
+            worker.join(30)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(len(child_pids), 1)
+        self.assertTrue(caught.exception.detail["cancelled"], caught.exception.detail)
+        self.assertFalse(caught.exception.detail["timed_out"])
         self.assertTrue(context.close()["cleanup_proven"])
+        self.assertFalse(os.path.exists(self.task["spectre_log"]))
+        try:
+            with open("/proc/%d/stat" % child_pids[0]) as stream:
+                self.assertEqual(stream.read().rsplit(")", 1)[1].split()[0], "Z")
+        except (FileNotFoundError, ProcessLookupError):
+            pass
 
     def test_capacity_shared_across_candidates_and_smaller_than_generation(self):
         context = self.context()
@@ -414,6 +453,25 @@ class NetlistExecutionTests(unittest.TestCase):
         self.assertTrue(result['remote_stop_proven'])
         self.assertEqual(calls, [[binaries['batch-cancel'], '10000002'], [binaries['batch-query'], '10000002']])
         self.assertEqual(result['capability']['source'], 'user_templates')
+
+    def test_diagnostic_query_census_counts_repeated_unknown_without_granting_authority(self):
+        binaries = self._positional_scheduler()
+        context = self.context(command_runner=lambda *args, **kwargs: {
+            'returncode': 0, 'stdout_tail': 'JOB_ID 10000002\nJOB_STATE UNKNOWN\n'})
+        context.spec['environment_test'] = {'test_id': 'fixture'}
+        record = None
+        for index in range(40):
+            record = context._scheduler_observe({'submit_argv': [binaries['batch-submit']]},
+                '10000002', self.root, os.environ, record,
+                {'task_id': 'a', 'candidate_id': 'g000_c0000'})
+        self.assertEqual(record['diagnostic_query_states']['UNKNOWN'], 40)
+        self.assertLess(len(record['samples']), 40)
+        self.assertFalse(record['latest']['terminal'])
+        self.assertFalse(record['native_completion_authority'])
+        context.spec.pop('environment_test')
+        ordinary = context._scheduler_observe({'submit_argv': [binaries['batch-submit']]},
+            '10000002', self.root, os.environ, None, {'task_id': 'b'})
+        self.assertNotIn('diagnostic_query_states', ordinary)
 
     def test_scheduler_query_spawn_error_is_unknown_not_stop_or_solver_proof(self):
         binaries = self._positional_scheduler()

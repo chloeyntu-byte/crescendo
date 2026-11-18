@@ -188,11 +188,15 @@ def persist_prepared_baseline(prepared):
     baseline = verify_setup_baseline(prepared.get("setup") or {})
     if not baseline:
         return None
-    payload = copy.deepcopy(prepared)
+    from . import catalog_json, prepared_store
+    payload = dict(prepared)
     payload.pop("setup_baseline_snapshot", None)
-    name = "prepared_%s.json" % uuid.uuid4().hex
+    name = "prepared_%s.json" % catalog_json.digest(payload)
     path = os.path.join(baseline["root"], name)
-    atomic_write_json(path, payload)
+    if not os.path.exists(path):
+        prepared_store.write(path, payload, root=baseline["root"])
+    elif catalog_json.digest(prepared_store.load(_regular(path))) != catalog_json.digest(payload):
+        raise ValueError("Saved Maestro catalogue content address changed")
     record = {"schema_version": SCHEMA, "baseline_id": baseline["baseline_id"],
               "path": path, "sha256": sha256_file(path)}
     prepared["setup_baseline_snapshot"] = record
@@ -204,8 +208,8 @@ def load_prepared_baseline(record):
     if (record.get("schema_version") != SCHEMA or not path or not os.path.isabs(path) or
             os.path.realpath(path) != path or sha256_file(_regular(path)) != record.get("sha256")):
         raise ValueError("Checkpoint saved Maestro reference snapshot is unavailable or changed")
-    with open(path) as stream:
-        prepared = json.load(stream)
+    from .prepared_store import load
+    prepared = load(path)
     baseline = verify_setup_baseline(prepared.get("setup") or {})
     if (not baseline or baseline["baseline_id"] != record.get("baseline_id") or
             os.path.dirname(path) != baseline["root"]):

@@ -36,7 +36,7 @@ ERROR = re.compile(r'\*Error\*|syntax error|\bfatal\b|\bexception\b|Traceback|'
                    r'\b(?:ERROR|SFE-\d+|SPECTRE-\d+|ASSEMBLER-5031)\b|'
                    r'undefined function|unbound variable|token.*(?:missing|not found)|'
                    r'permission denied|quota exceeded|no space left|cannot.*submit', re.I)
-JSON_NAMES = frozenset((_contract_text('baseline_shutdown_roots.json'), _contract_text('raw_cleanup_proof.json'), _contract_text('native_baseline_evidence.json'), _contract_text('native_baseline_result.json'), _contract_text('native_baseline_state.json'), _contract_text('corner_identity.json'), _contract_text('preparation_failure.json'),
+JSON_NAMES = frozenset((_contract_text('baseline_shutdown_roots.json'), _contract_text('raw_cleanup_proof.json'), _contract_text('native_baseline_evidence.json'), _contract_text('native_baseline_result.json'), _contract_text('native_baseline_state.json'), _contract_text('native_skill_diagnostics.json'), _contract_text('corner_identity.json'), _contract_text('preparation_failure.json'),
     _contract_text('reader_request.json'), _contract_text('reader_status.json'),
     _contract_text('portability_settings.json'), _contract_text('capture_diagnostics.json'), _contract_text('capture_generation.json'),
     _contract_text('command.json'), _contract_text('native_storage.json'), _contract_text('native_storage_readback.json'),
@@ -744,12 +744,21 @@ def _pipeline_artifact_summary(document):
     return document
 
 
-def _windows(text, radius=4, max_lines=240, console_source=None):
+def _windows(text, radius=4, max_lines=240, console_source=None, simulators=(), library_warnings=None):
     """Include first error context, all bounded distinct errors, and final state."""
     lines = text.splitlines()
     si_log = isinstance(console_source, str) and os.path.basename(console_source) == _contract_text('si.foregnd.log')
     warning = re.compile(r'^\s*WARNING\s*\([A-Z]+-\d+\)\s*:', re.I)
+    from .native_diagnostics import (ocean_console_warnings, ocean_tool_error,
+                                     library_init_console_warnings, ocean_warning_lines)
+    if library_warnings is None:
+        library_warnings = library_init_console_warnings(lines, console_source)
+    library_lines = ocean_warning_lines(library_warnings)
+    tool_warnings = ocean_console_warnings(lines, simulators, console_source) if simulators else {}
     def is_error(line):
+        tool = ocean_tool_error(line, simulators) if simulators else None
+        if tool and tool['severity'] == 'WARN':
+            return False
         if warning.match(line):
             # Cadence codes such as SFE-2322 occur in both warnings and errors.
             # Their explicit severity takes precedence over a code match.
@@ -760,8 +769,9 @@ def _windows(text, radius=4, max_lines=240, console_source=None):
             # literal "error"/"fatal" in those two formats is not a failure.
             return False
         return bool(ERROR.search(line))
-    hits = [i for i, line in enumerate(lines) if is_error(line)]
-    warning_hits = [i for i, line in enumerate(lines) if warning.match(line)]
+    hits = [i for i, line in enumerate(lines) if i not in library_lines and is_error(line)]
+    warning_hits = [i for i, line in enumerate(lines)
+                    if i in library_warnings or i in tool_warnings or warning.match(line)]
     # Repeated startup messages must not spend the context budget before a
     # later, different solver/measurement failure. Keep their counts and first
     # occurrence without guessing which native errors are harmless.
@@ -851,6 +861,10 @@ def _windows(text, radius=4, max_lines=240, console_source=None):
             'semantic_event_distinct': len(semantic),
             'semantic_event_repeated': sum(len(indices) - 1 for indices in semantic.values()),
             'semantic_event_omitted': sum(1 for indices in semantic.values() if indices[0] not in chosen)}
+    if tool_warnings:
+        result['ocean_tool_warnings'] = list(tool_warnings.values())
+    if library_warnings:
+        result['library_init_warnings'] = [library_warnings[i] for i in sorted(library_warnings)]
     if (isinstance(console_source, str) and os.path.basename(console_source) in ('ocean.stdout', 'ocean.stderr')
             and '[diagnostic byte gap:' not in text):
         from .native_diagnostics import cdf_callback_failures
@@ -920,6 +934,9 @@ def _reader_capability_summary(document, path):
     result = dict((key, document.get(key)) for key in
         ('task_id', 'test', 'corner', 'point_id', 'execution_simulator', 'result_reader', 'psf_dir',
          'netlist_sha256', 'open_results_status', 'analysis_names', 'analysis_inventory_status'))
+    for key in ('ocean_tool_warnings', 'library_init_warnings'):
+        if document.get(key):
+            result[key] = document[key]
     result.update({
             'path': path, 'status': 'RECORDED',
             'native_parameter_readback': dict(parameters, ok=parameter_ok),
@@ -931,7 +948,8 @@ def _reader_capability_summary(document, path):
 
 def _event_log_context(text):
     """Keep stage/message plus error detail from structured native Crescendo logs."""
-    events, unstructured = [], []
+    from .variable_selection_notice import VARIABLE_NOTICE_STAGE
+    events, unstructured, tool_warnings, selection_notices = [], [], [], []
     for line in text.splitlines():
         try:
             row = json.loads(line[line.index('{'):])
@@ -940,6 +958,13 @@ def _event_log_context(text):
             continue
         entry = dict((key, row.get(key)) for key in
                      ('event', 'kind', 'stage', 'message', 'error', 'failure_stage', 'level') if row.get(key) is not None)
+        if row.get('stage') == 'ocean_tool_warning' and isinstance(row.get('details'), dict):
+            if row['details'] not in tool_warnings:
+                tool_warnings.append(row['details'])
+        if row.get('stage') in (VARIABLE_NOTICE_STAGE, 'template_variable_notice') and row.get('level') == 'WARN':
+            notice = dict(entry, details=row.get('details'))
+            if notice not in selection_notices and len(selection_notices) < MAX_ROWS:
+                selection_notices.append(notice)
         label = _serialized(entry)
         if not entry:
             entry = {'record_keys': sorted(row), 'record_sha256': _sha(line.encode('utf-8'))}
@@ -951,7 +976,8 @@ def _event_log_context(text):
     for event in events:
         if not unique or event != unique[-1]:
             unique.append(event)
-    return {'event_count': len(events), 'events': unique[:MAX_ROWS],
+    return {'event_count': len(events), 'events': unique[:MAX_ROWS], 'ocean_tool_warnings': tool_warnings,
+            'variable_selection_notices': selection_notices,
             'events_truncated': max(0, len(unique) - MAX_ROWS),
             'unstructured_context': _windows('\n'.join(unstructured)) if unstructured else None}
 
@@ -1252,15 +1278,17 @@ def _reported_patch_context(text, locations, identity, console_text):
         context['omission_reason'] = 'source exceeds existing per-file/read budget; head/tail kept; no excerpt line promoted to a physical location'
     return context
 
-def _error_locations(text, source):
+def _error_locations(text, source, simulators=(), skipped=()):
     """Only error locations with a filename can identify a generated script.
 
     Library warnings and unrelated system stack frames often contain `Line N`;
     a line number alone must never become a capture.il source position.
     """
+    from .native_diagnostics import ocean_tool_error
     rows = []
     for console_line, line in enumerate(text.splitlines(), 1):
-        if not ERROR.search(line):
+        tool = ocean_tool_error(line, simulators) if simulators else None
+        if console_line - 1 in skipped or not ERROR.search(line) or (tool and tool['severity'] == 'WARN'):
             continue
         load_location = re.search(r"\bload:\s*error while loading file\s*-\s*([\"'])(.+?)\1\s+at line\s+(\d+)", line, re.I)
         if load_location:
@@ -1772,8 +1800,27 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
                             error_text=None, cancel=None):
     """Return at most 1 MiB of deduplicated, inline evidence before compaction."""
     root, config, prepared, spec = os.path.abspath(root), config or {}, prepared or {}, spec or {}
-    environment = dict(os.environ)
+    from .native_diagnostics import (ocean_console_warnings, ocean_tool_error, recorded_ocean_warnings, ocean_warning_key,
+                                     library_init_console_warnings, ocean_warning_lines)
     cadence = config.get('cadence') or {}
+    actual_simulator = spec.get('simulator') or cadence.get('simulator')
+    source_simulators = {(row.get('simulator') or 'spectre') for row in
+                         (prepared.get('setup') or {}).get('tests') or [] if row.get('enabled', True)}
+    ocean_simulators = tuple(source_simulators) + (actual_simulator,) if actual_simulator else ()
+    tool_warning_keys = set()
+
+    def add_tool_warnings(warnings, relative):
+        for warning in warnings:
+            if not isinstance(warning, dict):
+                continue
+            key = ocean_warning_key(warning)
+            if (warning.get('severity') == 'WARN' and all(isinstance(item, str) for item in key[:2])
+                    and all(isinstance(item, (str, int, type(None))) for item in key[2:])
+                    and key not in tool_warning_keys):
+                if add('ocean_tool_warning', dict(warning, path=relative)):
+                    tool_warning_keys.add(key)
+
+    environment = dict(os.environ)
     snapshot = cadence.get('launch_environment')
     if isinstance(snapshot, dict):
         environment.update(snapshot)
@@ -2108,9 +2155,14 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
                             'scope': 'producer-recorded source/file metadata; not native execution, solver or completion proof'}
                         if not _would_truncate(payload, depth=0) and add(kind, payload):
                             input_reports_seen.add((kind, digest))
-                if name == _contract_text('capture_diagnostics.json') and not metadata.get('read_truncated'):
+                if (name == _contract_text('capture_diagnostics.json') and isinstance(document, dict)
+                        and not metadata.get('read_truncated')):
                     native_captures[relative] = (document, metadata)
-                    skill = document.get('skill') if isinstance(document, dict) else None
+                    skill = document.get('skill')
+                    if isinstance(skill, dict):
+                        add_tool_warnings(recorded_ocean_warnings(skill), relative)
+                    for worker_log in (document.get('native_worker_diagnostics') or {}).get('logs') or []:
+                        add_tool_warnings(recorded_ocean_warnings(worker_log), relative)
                     if isinstance(skill, dict) and skill.get('ok') is False:
                         errors = [dict((key, item.get(key)) for key in
                                   ('message', 'console_source', 'console_line', 'native_run_boundary') if key in item)
@@ -2123,6 +2175,9 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
                         _worker_report_references(document, worker_reports_seen), input_reports_seen))
                     if failure_index:
                         add('producer_failure', {'path': relative, 'identity': metadata, 'data': failure_index})
+                if isinstance(document, dict) and name in (_contract_text('native_skill_diagnostics.json'),
+                                                               _contract_text('result_reader_capability.json')):
+                    add_tool_warnings(recorded_ocean_warnings(document), relative)
                 if name == _contract_text('result_reader_capability.json'):
                     add('result_reader_capability', _reader_capability_summary(document, relative))
                 if name == _contract_text('corner_identity.json') and isinstance(document, dict):
@@ -2168,11 +2223,13 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
                 capture_invocations.append({'path': relative, 'cwd': fields[0] if fields else None,
                                             'argv': fields[1:], 'identity': metadata})
             elif name in POINT_READER_FILES and os.path.basename(os.path.dirname(path)) == 'native_point_parameters':
-                context = _windows(text, console_source=relative)
+                context = _windows(text, console_source=relative, simulators=ocean_simulators)
+                add_tool_warnings(recorded_ocean_warnings(context), relative)
                 if not metadata.get('read_truncated') and len(data) <= 65536 and len(text.splitlines()) <= 256:
-                    context = {'lines': [{'line': i + 1, 'text': line} for i, line in enumerate(text.splitlines())],
-                               'line_count': len(text.splitlines()), 'complete_text_included': True,
-                               'context_truncated': False}
+                    lines = text.splitlines()
+                    context.update(lines=[{'line': i + 1, 'text': line} for i, line in enumerate(lines)],
+                                   lines_retained=len(lines), lines_omitted=0, lines_with_truncated_text=0,
+                                   complete_text_included=True, context_truncated=False)
                 add('point_parameter_reader', {'path': relative, 'identity': metadata,
                     'context': context, 'diagnostic_only': True})
             elif name in ('capture.il', 'bootstrap.il') or (name in ('startup.il', 'run.il', 'finish.il', 'stop.il') and os.path.basename(os.path.dirname(path)) == 'native_baseline'):
@@ -2208,6 +2265,13 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
         if stopped():
             omitted.append({'reason': stopped(), 'phase': 'text processing'})
             break
+        simulators = ocean_simulators if os.path.basename(relative) in ('ocean.stdout', 'ocean.stderr', _contract_text('Job1.log')) else ()
+        lines = text.splitlines()
+        library_warnings = library_init_console_warnings(lines, relative)
+        skipped = ocean_warning_lines(library_warnings)
+        add_tool_warnings(library_warnings.values(), relative)
+        if simulators:
+            add_tool_warnings(ocean_console_warnings(lines, simulators, relative).values(), relative)
         if os.path.basename(relative) in ('ocean.stdout', 'ocean.stderr'):
             capture_path = os.path.join(os.path.dirname(relative), _contract_text('capture_diagnostics.json'))
             capture, capture_identity = native_captures.get(capture_path, ({}, {}))
@@ -2239,7 +2303,11 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
             add('native_dispatch', {'path': relative, 'identity': metadata, 'rows': rows,
                                     'rows_truncated': max(0, len(text.splitlines()) - MAX_ROWS)})
         elif os.path.basename(relative) == _contract_text('crescendo.log'):
-            add('log_context', {'path': relative, 'identity': metadata, 'context': _event_log_context(text)})
+            event_context = _event_log_context(text)
+            add_tool_warnings(event_context.get('ocean_tool_warnings') or [], relative)
+            for notice in event_context['variable_selection_notices']:
+                add('variable_selection_notice', dict(notice, path=relative))
+            add('log_context', {'path': relative, 'identity': metadata, 'context': event_context})
         elif os.path.basename(relative) in ('effective_job_policy.tsv', 'startup.tsv', 'persistent_worker_status.tsv',
                                            'started.receipt', 'terminal.receipt', 'compute_metadata.tsv'):
             add('protocol', {'path': relative, 'identity': metadata, 'context': _protocol_context(os.path.basename(relative), text)})
@@ -2250,7 +2318,8 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
             add('log_context', {'path': relative, 'identity': metadata,
                 'attribution': 'unbound_raw_scheduler_text', 'current_job_authority': False,
                 'scope': 'raw appendix only; current JobID/exit context comes from producer solver_artifacts',
-                'context': _windows(text, console_source=relative)})
+                'context': _windows(text, console_source=relative, simulators=ocean_simulators,
+                                    library_warnings=library_warnings)})
             continue
         elif os.path.basename(relative) not in ('native_capture_ready',):
             successful_capture_log = os.path.dirname(relative) in successful_capture_phases and 'ocean' in os.path.basename(relative)
@@ -2262,7 +2331,7 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
                                     'skill_ok': True, 'real_spectre_execution_started': False}})
                 else:
                     add('log_context', {'path': relative, 'identity': metadata,
-                        'capture_wrapper_failures_expected': True, 'context': _windows(text, radius=1, max_lines=48, console_source=relative)})
+                        'capture_wrapper_failures_expected': True, 'context': _windows(text, radius=1, max_lines=48, console_source=relative, simulators=simulators, library_warnings=library_warnings)})
                     expected_capture_context_recorded = True
                 continue
             from .solver_artifacts import log_context
@@ -2272,11 +2341,14 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
                 'context': log_context(text) if os.path.basename(relative).endswith('.warn') else
                     _windows(text, radius=8 if 'ocean' in os.path.basename(relative) and
                              (failed_capture.get('skill') or {}).get('ok') is False else 4,
-                             console_source=relative)})
+                             console_source=relative, simulators=simulators, library_warnings=library_warnings)})
         if os.path.basename(relative) != _contract_text('crescendo.log'):
-            locations.extend(_error_locations(text, relative))
-        if os.path.basename(relative) != _contract_text('crescendo.log') and any(ERROR.search(line) and 'ASSEMBLER-5031' not in line for line in text.splitlines()):
-            unexpected_error = True
+            locations.extend(_error_locations(text, relative, simulators=simulators, skipped=skipped))
+            for index, line in enumerate(lines):
+                tool = ocean_tool_error(line, simulators) if simulators else None
+                if index not in skipped and ERROR.search(line) and 'ASSEMBLER-5031' not in line and not (tool and tool['severity'] == 'WARN'):
+                    unexpected_error = True
+                    break
     # A Cadence load failure can name a parameter patch instead of capture.il.
     # Read only that owned reported patch; all ordinary patches remain unscanned.
     reported_patches = collections.OrderedDict()
@@ -2478,7 +2550,7 @@ def collect_run_diagnostics(root, engine, config=None, prepared=None, spec=None,
 def failure_layer(primary):
     """Map an explicit producer stage; vague solver/results failures stay unknown."""
     stage = str((primary or {}).get('failure_stage') or '')
-    if stage == 'native_point_parameter_readback':
+    if stage in ('native_point_parameter_readback', 'native_measurement_evaluation'):
         return 'measurement'
     if stage.startswith(('model_include', 'native_template', 'native_capture', 'native_user_scripts', 'capture', 'netlist',
                          'native_parameter', 'native_device_parameter', 'native_run', 'native_history',

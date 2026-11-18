@@ -17,6 +17,7 @@ import tempfile
 from crescendo_engine.runtime import bind_text
 _contract_text = bind_text()
 
+from .design_variables import native_parameter
 from .utils import atomic_write_json, atomic_write_text
 
 SCHEMA = _contract_text("crescendo.same_library_views.v1")
@@ -223,7 +224,7 @@ def _quote(value):
 
 def config_designs_for_same_library(hierarchy, parameters):
     from .config_binding import config_designs
-    selected = set(_design(row) for row in parameters or [] if row.get("backend", "schematic") == "schematic")
+    selected = set(_design(row) for row in parameters or [] if native_parameter(row))
     known = dict((tuple(row[name] for name in ("library", "cell", "view")), row)
                  for row in config_designs(hierarchy))
     result = []
@@ -432,7 +433,7 @@ def _legacy_copy_setup_view(workspace, source, key):
 def build_same_library_clone_plan(workspace, parameters, values, clone_state="absent"):
     result = {}
     for parameter in parameters:
-        if parameter.get("backend", "schematic") != "schematic" or parameter["parameter_id"] not in values:
+        if not native_parameter(parameter) or parameter["parameter_id"] not in values:
             continue
         design = _design(parameter)
         path = parameter.get("owner_occurrence_path") or "/"

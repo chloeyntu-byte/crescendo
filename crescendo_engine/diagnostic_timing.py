@@ -20,6 +20,8 @@ class DiagnosticTiming(object):
         self._last_time = None
         self._available = True
         self._operations = {}
+        self.prefix_scans = []
+        self.generation_commit = []
 
     def _now(self):
         if not self._available:
@@ -150,6 +152,14 @@ CANDIDATE_PHASE_LABELS = {
     'result_collection': 'Point result collection',
     'metric_evaluation': 'Metrics',
 }
+# Kept separate from lifecycle totals: these stages partition preparation only.
+CANDIDATE_PHASE_LABELS.update({
+    'prepare_template_qualification': 'Template qualification (exclusive)',
+    'prepare_session_lifecycle': 'One-shot session startup / shutdown',
+    'prepare_model_dependency_freeze': 'Model and dependency freeze',
+    'prepare_native_batch_capture': 'Native capture (batch or scalar fallback)',
+    'prepare_other': 'Other preparation / lock waits',
+})
 GENERATION_PHASE_LABELS = {
     'ask': 'Ask / plan',
     'netlist_prepare': 'Generation netlist preparation',
@@ -281,7 +291,10 @@ def generation_timing_summary(generation, observer, rows, resumed=False):
                 resumed_segment=bool(resumed), candidate_count=len(rows),
                 timed_candidate_count=measured_candidates,
                 candidate_phase_sums=[samples[key] for key in sorted(samples)],
-                storage_operations=observer.operations_snapshot())
+                netlist_preparation=getattr(observer, "netlist_preparation", {}),
+                storage_operations=observer.operations_snapshot(),
+                prefix_scans=list(observer.prefix_scans),
+                generation_commit=list(observer.generation_commit))
 
 
 def generation_report_timing(timing):
@@ -292,6 +305,9 @@ def generation_report_timing(timing):
 
     return {
         'generation': timing.get('generation'),
+        'netlist_preparation': timing.get('netlist_preparation') or {},
+        'prefix_scans': timing.get('prefix_scans') or [],
+        'generation_commit': timing.get('generation_commit') or [],
         'status': timing.get('status'),
         'wall_seconds': rounded(timing.get('total_seconds')),
         'phases_seconds': {phase: rounded(seconds)

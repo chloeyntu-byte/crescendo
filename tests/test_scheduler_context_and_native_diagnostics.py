@@ -228,6 +228,69 @@ class SchedulerContextTests(unittest.TestCase):
 
 
 class NativeDiagnosticsTests(unittest.TestCase):
+    def test_unrelated_tool_warnings_preserve_multiline_ocean_text(self):
+        from crescendo_engine.environment_diagnostics import _windows
+        from crescendo_engine.netlist_measurement import _reader_console_diagnostics
+        first = "ERROR (ADE-5066): Tool 'fooS' has not been registered."
+        second = ("ERROR (ADE-5067): Unable to initialize tool 'fooS'; either tool class is not\n"
+                  "        defined or tool is not registered.")
+        stdout = "start\n" + first + "\n" + second + "\nDONE\n"
+        command = {'returncode': 0, 'stdout_tail': stdout}
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, 'ocean.stdout')
+            with open(path, 'w') as stream:
+                stream.write(stdout)
+            report = skill_command_diagnostics(command, os.path.join(root, 'capture.il'),
+                                               'DONE', root, simulators=('spectre',))
+        self.assertTrue(report['ok'])
+        self.assertIsNone(report['first_error'])
+        self.assertEqual([item['message'] for item in report['ocean_tool_warnings']], [first, second])
+        self.assertEqual([item['severity'] for item in report['ocean_tool_warnings']], ['WARN', 'WARN'])
+        context = _windows(stdout, console_source='ocean.stdout', simulators=('spectre',))
+        self.assertIsNone(context['first_error_line'])
+        self.assertEqual(context['warning_count'], 2)
+        self.assertEqual(context['ocean_tool_warnings'][1]['message'], second)
+        reader = _reader_console_diagnostics(command, ('spectre',))
+        self.assertIsNone(reader['reader_first_error'])
+        self.assertEqual(reader['ocean_tool_warnings'][1]['message'], second)
+
+    def test_active_tool_and_unverified_simulator_remain_errors(self):
+        from crescendo_engine.native_diagnostics import ocean_tool_error
+        from crescendo_engine.netlist_measurement import _reader_console_diagnostics
+        cases = [('spectre', ('spectre',)), ('spectre', ('aps',)), ('aps', ('spectre',)),
+                 ('ALPSS', ('spectre', 'alps')), ('fooS', ()), ('fooS', ('unknown',))]
+        for tool, simulators in cases:
+            with self.subTest(tool=tool, simulators=simulators):
+                line = "ERROR (ADE-5066): Tool '%s' has not been registered." % tool
+                command = {'returncode': 0, 'stdout_tail': line + '\nDONE'}
+                with tempfile.TemporaryDirectory() as root:
+                    report = skill_command_diagnostics(command, os.path.join(root, 'capture.il'),
+                                                       'DONE', root, simulators=simulators)
+                self.assertFalse(report['ok'])
+                self.assertEqual(report['first_error']['message'], line)
+                self.assertEqual(report['first_simulator_tool_error']['message'], line)
+                self.assertEqual(ocean_tool_error(line, simulators)['severity'], 'ERROR')
+                self.assertEqual(_reader_console_diagnostics(command, simulators)['reader_first_error'], line)
+
+    def test_mixed_errors_choose_real_failure_and_keep_warning(self):
+        from crescendo_engine.environment_diagnostics import _windows
+        from crescendo_engine.runner import _diagnostic_tail_reason
+        warning = "ERROR (ADE-5066): Tool 'fooS' has not been registered."
+        errors = ["*Error* actual SKILL failure", "ERROR (ADE-5068): other ADE failure",
+                  "ERROR (ADE-5066): Tool could not be identified"]
+        with tempfile.TemporaryDirectory() as root:
+            for error in errors:
+                with self.subTest(error=error):
+                    text = warning + '\n' + error
+                    report = skill_command_diagnostics({'returncode': 0, 'stdout_tail': text},
+                        os.path.join(root, 'capture.il'), simulators=('spectre',))
+                    self.assertFalse(report['ok'])
+                    self.assertEqual(report['first_error']['message'], error)
+                    self.assertEqual(report['ocean_tool_warnings'][0]['message'], warning)
+                    window = _windows(text, console_source='ocean.stdout', simulators=('spectre',))
+                    self.assertEqual(window['first_error_line'], 2)
+                    self.assertEqual(_diagnostic_tail_reason({'ocean.stdout': text}, simulators=('spectre',)), error)
+
     def test_native_error_following_frames_survive_without_becoming_generated_guard(self):
         from crescendo_engine.native_diagnostics import native_error_context
         with tempfile.TemporaryDirectory() as root:

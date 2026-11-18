@@ -24,6 +24,7 @@ from .hierarchy import parse_physical_number
 
 
 SCHEMA = _contract_text("crescendo.native_device_parameter_plan.v1")
+PLAN_V2 = _contract_text("crescendo.native_parameter_plan.v2")
 GENERATION_PROTOCOL = _contract_text("crescendo.native_run_device_parameters.v1")
 MAX_SELECTED = 512
 MAX_CORNERS = 1024
@@ -72,7 +73,38 @@ def build_native_parameter_plan(parameter_rows, corners, inherited_parameters=No
     this CV is working and reachable from its working config.  A non-working
     source path is not made working by this function.
     """
+    from .design_variables import is_design
     rows, corners = list(parameter_rows or []), list(corners or [])
+    design_rows = [row for row in rows if is_design(row)]
+    if design_rows:
+        if len(rows) > MAX_SELECTED or len(corners) > MAX_CORNERS:
+            raise ValueError("Native parameter selection/corner count is invalid")
+        enabled_names = [_text(c["name"] if isinstance(c, dict) else c, "corner name", 256)
+                         for c in corners if not isinstance(c, dict) or c.get("enabled", True)]
+        if len(set(enabled_names)) != len(enabled_names) or len(rows) * (len(enabled_names) + 1) > MAX_SETTINGS:
+            raise ValueError("Native design-variable corner/setting count is invalid")
+        if len({r["parameter_id"] for r in rows}) != len(rows):
+            raise ValueError("Native selected parameter identity is duplicated")
+        names = {row["name"] for row in design_rows}
+        for corner in corners:
+            if isinstance(corner, dict) and corner.get("enabled", True):
+                for variable in corner.get("variables") or []:
+                    if variable.get("name") in names:
+                        raise ValueError("Design variable conflict: corner %s defines variable %s" % (corner["name"], variable["name"]))
+        devices = [row for row in rows if not is_design(row)]
+        plan = build_native_parameter_plan(devices, corners, inherited_parameters, owned_paths, allowed_symbols) if devices else {
+            "schema_version": SCHEMA, "selected": [], "enabled_corners": enabled_names, "owned_paths": [], "allowed_symbols": []}
+        names = set()
+        for row in design_rows:
+            name = _text(row.get("name"), "design variable")
+            if not _IDENTIFIER.match(name) or name in names:
+                raise ValueError("Invalid or duplicate design variable name")
+            names.add(name)
+            plan["selected"].append(dict(parameter_id=_text(row["parameter_id"], "identity"), path=name, value=_number(row["value"]),
+                source_kind=row["source_kind"], variable_source=row["source"], variable_test=row["variable_test"]))
+        plan["schema_version"] = PLAN_V2
+        plan["selected"].sort(key=lambda r: r["parameter_id"])
+        return plan
     if not rows or len(rows) > MAX_SELECTED or len(corners) > MAX_CORNERS:
         raise ValueError("Native parameter selection/corner count is invalid")
     selected, paths, identifiers = [], set(), set()
@@ -130,6 +162,9 @@ def native_parameter_skill_lines(plan, verification_path,
     enabling the top Parameters switch without activating unrelated entries.
     A later failure taints the caller's working generation workspace.
     """
+    if plan.get("schema_version") == PLAN_V2:
+        from .design_variable_native import skill_lines
+        return skill_lines(plan, verification_path, session_expr, main_sdb_expr)
     if plan.get("schema_version") != SCHEMA:
         raise ValueError("Unknown native device parameter plan")
     raw_rows = []
@@ -214,6 +249,9 @@ def native_parameter_skill_lines(plan, verification_path,
 
 def parse_native_parameter_settings(path, plan):
     """Check raw native getter values with physical numeric equivalence."""
+    if plan.get("schema_version") == PLAN_V2:
+        from .design_variable_native import parse_settings
+        return parse_settings(path, plan)
     from .workspace import _record_literal, _physical_values_match
     if not os.path.isfile(path) or os.path.islink(path) or os.path.getsize(path) > 4 * 1024 * 1024:
         raise ValueError("Native device override records unavailable or unsafe")
@@ -299,6 +337,10 @@ def read_native_parameter_points(parameter_rows, tasks, setup=None, parsed=None)
     tests = dict((row["name"], row) for row in (setup or {}).get("tests") or [])
     result = []
     for row in parameter_rows:
+        from .design_variables import is_design, read_design_points
+        if is_design(row):
+            result.append(read_design_points(row, tasks))
+            continue
         points = []
         for task in tasks:
             test = tests.get(task["test"], {})
@@ -386,8 +428,12 @@ def read_native_parameter_points(parameter_rows, tasks, setup=None, parsed=None)
 
 
 def verify_native_parameter_application(parameter_rows, tasks, expected_values, setup=None,
-                                        parsed=None, allow_effective_adjustment=False):
+                                        parsed=None, allow_effective_adjustment=False, exact=False):
     from .workspace import _physical_values_match
+    matches = _physical_values_match
+    if exact:
+        from .generation_batch import _native_run_values_match
+        matches = _native_run_values_match
     parameters = read_native_parameter_points(parameter_rows, tasks, setup, parsed)
     for row in parameters:
         requested = expected_values[row["parameter_id"]]
@@ -395,11 +441,11 @@ def verify_native_parameter_application(parameter_rows, tasks, expected_values, 
         actual = [point["effective"] for point in row["points"]]
         for point in row["points"]:
             point["requested"] = requested
-            point["matches_requested"] = _physical_values_match(requested, point["effective"])
+            point["matches_requested"] = matches(requested, point["effective"])
             if not allow_effective_adjustment and not point["matches_requested"]:
                 raise ValueError("Native Run changed selected candidate %s at %s/%s: requested=%s effective=%s" %
                                  (row["parameter_id"], point["test"], point["corner"], requested, point["effective"]))
-        row["effective"] = actual[0] if all(_physical_values_match(actual[0], value) for value in actual) else None
+        row["effective"] = actual[0] if all(matches(actual[0], value) for value in actual) else None
         row["callback_status"] = "native_Run_parameterization"
     from .native_qualification import NATIVE_QUALIFICATION_REVISION
     return {"ok": True, "proof_kind": "native_run_device_parameters",

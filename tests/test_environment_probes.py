@@ -49,28 +49,82 @@ class EnvironmentProbeTests(unittest.TestCase):
         self.assertFalse(os.path.exists(marker))
 
     def test_timeout_kills_only_owned_descendant_group_and_closes_pipes(self):
-        script = ("import subprocess,sys,time; p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(20)']);"
-                  "print(p.pid,flush=True); time.sleep(20)")
+        import signal
+        from types import SimpleNamespace
+        # A descendant holds both pipes after its parent exits. Timeout must
+        # signal the owned group and close pipes, never wait for descendant EOF.
+        script = ("import subprocess,sys; p=subprocess.Popen([sys.executable,'-c',"
+                  "'import time;time.sleep(120)']); print(p.pid,flush=True)")
         started = time.monotonic()
-        result = probes.bounded_command([sys.executable, "-u", "-c", script], timeout=0.1)
-        self.assertTrue(result["timed_out"])
-        self.assertLess(time.monotonic() - started, 1.0)
-        child_pid = int(result["stdout_tail"].strip())
-        # Delivery to another process is asynchronous even after the parent
-        # was reaped. Keep the command's existing <1 s budget above, then wait
-        # briefly for the separately scheduled child to consume its signal.
-        deadline = time.monotonic() + 0.5
-        while True:
-            try:
-                with open("/proc/%d/stat" % child_pid) as stream:
-                    state = stream.read().rsplit(")", 1)[1].split()[0]
-            except (FileNotFoundError, ProcessLookupError):
-                break
-            if state == "Z":
-                break
-            if time.monotonic() >= deadline:
-                self.fail("Owned descendant did not terminate: " + state)
-            time.sleep(0.005)
+        child_pids, processes, selectors = [], [], []
+        real_read, real_popen = os.read, probes.subprocess.Popen
+        real_selector = probes.selectors.DefaultSelector
+
+        def read_ready(fd, size):
+            chunk = real_read(fd, size)
+            if chunk.strip().isdigit():
+                child_pids.append(int(chunk.strip()))
+            return chunk
+
+        def clock_after_ready():
+            # Expire deterministically only after stdout was actually consumed.
+            # 30 s is a fixture startup watchdog, not a responsiveness verdict.
+            return started + (1 if child_pids else max(0, time.monotonic() - started - 30))
+
+        def launch(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        def selector():
+            value = real_selector()
+            selectors.append(value)
+            return value
+
+        try:
+            with mock.patch.object(probes, "time", SimpleNamespace(monotonic=clock_after_ready)), \
+                    mock.patch.object(probes.os, "read", side_effect=read_ready), \
+                    mock.patch.object(probes.subprocess, "Popen", side_effect=launch), \
+                    mock.patch.object(probes.selectors, "DefaultSelector", side_effect=selector), \
+                    mock.patch.object(probes.os, "killpg", wraps=os.killpg) as kill_group:
+                result = probes.bounded_command([sys.executable, "-u", "-c", script], timeout=0.1)
+            self.assertEqual(len(child_pids), 1, result)
+            self.assertTrue(result["timed_out"], result)
+            self.assertEqual(kill_group.call_args_list, [
+                mock.call(processes[0].pid, signal.SIGTERM),
+                mock.call(processes[0].pid, signal.SIGKILL)])
+            self.assertIsNotNone(result["returncode"])
+            self.assertTrue(processes[0].stdout.closed)
+            self.assertTrue(processes[0].stderr.closed)
+            self.assertFalse(selectors[0].get_map())
+            # Signal delivery is asynchronous. This is only a fixture watchdog;
+            # semantic assertions above do not include OS scheduling delays.
+            deadline = time.monotonic() + 30
+            while True:
+                try:
+                    with open("/proc/%d/stat" % child_pids[0]) as stream:
+                        state = stream.read().rsplit(")", 1)[1].split()[0]
+                except (FileNotFoundError, ProcessLookupError):
+                    break
+                if state == "Z":
+                    break
+                if time.monotonic() >= deadline:
+                    self.fail("Owned descendant did not terminate: " + state)
+                time.sleep(0.005)
+        finally:
+            for process in processes:
+                # Only this test's newly created session is eligible for cleanup.
+                probes._stop_owned_group(process)
+
+    def test_owned_stop_has_finite_wait_budgets_even_if_parent_is_unresponsive(self):
+        import signal
+        process = mock.Mock(pid=12345)
+        process.wait.side_effect = probes.subprocess.TimeoutExpired('owned fixture', 0.2)
+        with mock.patch.object(probes.os, 'killpg') as kill_group:
+            probes._stop_owned_group(process)
+        self.assertEqual(kill_group.call_args_list, [
+            mock.call(12345, signal.SIGTERM), mock.call(12345, signal.SIGKILL)])
+        self.assertEqual(process.wait.call_args_list, [mock.call(timeout=0.2)] * 3)
 
     def test_output_flood_is_bounded_and_stopped(self):
         result = probes.bounded_command([sys.executable, "-c",

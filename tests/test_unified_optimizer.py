@@ -115,6 +115,7 @@ class UnifiedOptimizerTests(unittest.TestCase):
                              'pdk': {'ok': True, 'pdk_name': 'FIXTURE', 'pdk_adapter': 'generic-cdf'},
                              'submission': {'controller': 'maestro', 'simulator': 'spectre'}}}
         self.config = {'runtime': {'run_root': self.root, 'max_parallel_jobs': 1,
+                                  'native_candidate_batching': 'serial',
                                   'candidate_timeout_seconds': 60}}
         self.spec = {'algorithm': 'random', 'generations': 2, 'population': 4, 'jobs': 1, 'seed': 7,
                      'variables': [{'parameter_id': 'x', 'minimum': 0, 'maximum': 1}],
@@ -286,6 +287,7 @@ class UnifiedAdapterEvidenceTests(unittest.TestCase):
             from crescendo_engine.native_maestro_parameters import GENERATION_PROTOCOL
             from crescendo_engine.optimized_schematic import OptimizedSchematicError
             application = {'proof_kind': 'native_run_device_parameters', 'ok': True,
+                           'generation_protocol': GENERATION_PROTOCOL,
                            'parameters': [{'parameter_id': 'p1', 'effective': 3.5e-6}]}
 
             def numeric(prepared, selected, values, config, capture_root, candidate_id, **kwargs):
@@ -316,6 +318,6 @@ class UnifiedAdapterEvidenceTests(unittest.TestCase):
                     self.assertEqual(row['values']['p1'], 4e-6)
                     self.assertEqual(row['completion_evidence']['parameters']['p1'], 3.5e-6)
                     self.assertNotEqual(row['completion_evidence']['parameters']['p1'], row['values']['p1'])
-                    with self.assertRaisesRegex(OptimizedSchematicError, 'no verified OA/CDF backannotation snapshot'):
+                    with self.assertRaisesRegex(OptimizedSchematicError, 'Effective parameter point coverage'):
                         build_export_evidence(row, parameters)
                 self.assertTrue(adapter.close()['cleanup_proven'])

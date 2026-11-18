@@ -108,7 +108,7 @@ def constraint_violation(value, definition):
     raise ValueError("unsupported constraint operator: %s" % operator)
 
 
-def evaluate_metrics(parsed, objectives, constraints):
+def evaluate_metrics(parsed, objectives, constraints, diagnostic=False):
     objective_rows = []
     for definition in objectives:
         value = aggregate_output(parsed, definition["output_key"], definition.get("aggregation", "mean"), definition.get("corners"), allow_native_alias=False)
@@ -138,7 +138,7 @@ def evaluate_metrics(parsed, objectives, constraints):
     merit = sum(row["score"] for row in objective_rows)
     if not math.isfinite(merit):
         merit = float("inf")
-    return {
+    result = {
         "objectives": objective_rows,
         "constraints": constraint_rows,
         "selected_output_statistics": _selected_output_statistics(parsed, list(objectives) + list(constraints)),
@@ -146,6 +146,13 @@ def evaluate_metrics(parsed, objectives, constraints):
         "total_violation": total_violation,
         "merit": merit,
     }
+    if diagnostic:
+        try:
+            from .diagnostic_focus import raw_output_points
+            result["diagnostic_raw_points"] = raw_output_points(parsed)
+        except Exception as error:
+            result["diagnostic_raw_points_error"] = str(error)
+    return result
 
 
 def dominates(left, right):

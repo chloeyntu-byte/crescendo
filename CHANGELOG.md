@@ -1,5 +1,146 @@
 # Changelog
 
+## Unreleased
+
+## 1.4.5 (2026-11-18)
+
+- Make run-data generation audit tests deterministic on coarse filesystem clocks.
+  Cover a timestamp change during the scan and checksum rejection of a
+  same-length rewrite made before the scan with unchanged timestamps.
+- Native Run penalizes verified Calculator failures by output and corner, retains teardown diagnostics alongside valid results, retries private ADE directory errors after proven cleanup (runtime `native_directory_retries`, default 1), waits briefly for Spectre terminal logs before closing Maestro, and reports termination and timeout details.
+- Fix launching Crescendo from Maestro on IC 6.1.8 by atomically creating a private local IPC directory with exclusive launch script and context files.
+- Add an interactive, retained Canvas 3D Pareto view for three objectives, preserving pairwise projections and candidate selection. Include a deterministic curved-surface demo with HD rotation/generation PNG exports and compact JSON for web playback.
+- Fit the projected 3D box to the viewport, tighten data bounds and ticks, show an optional translucent front mesh and generation depth cues, and export a 16:9 hero plus web triangles. Wrap sidebar version information.
+- Engine version is 3.4.0.
+
+## 1.4.4 (2026-11-18)
+
+- Default new runs to generation batching when the engine configuration omits the
+  setting. Restoring settings without it keeps the current GUI selection. Explicit
+  serial settings and frozen checkpoint behavior are preserved.
+- Native Run qualifies library initialization diagnostics against completed
+  candidate points and continues after isolated completion failures with proven
+  cleanup. Generation batches retain the outcome of each mapped candidate.
+- Normalize Native Run optimizer grid values in decimal and retain valid
+  quantization when another input cannot be represented. Record the candidate
+  and values that caused serial fallback, and report batching per generation.
+- Engine version is 3.3.4.
+
+## 1.4.3 (2026-11-18)
+
+- Detect stalled Native Run startup when Ocean reports the missing Cadence crash
+  reporter, retry after bounded owned-process cleanup, and continue with the
+  remaining candidates when startup retries are exhausted and cleanup is proven.
+- Show a non-blocking advisory for selections over 50 variables in Native Run, Maestro Netlist, and Template Netlist. Run logs and diagnostics include the mode-specific advice, and Template Netlist repeats it after a reference capture crash.
+- Native Run candidate batching stays as configured: runs whose specification sets `native_candidate_batching` to `serial` evaluate candidates one at a time; set it to `generation` (or `runtime.native_candidate_batching` when the specification leaves it unset) to batch each generation.
+- Engine version is 3.3.3.
+
+## 1.4.2 (2026-11-18)
+
+- Report stackless ICRP library initialization errors as warnings only when the
+  same Ocean capture proves their origin and the matching worker point
+  completes netlisting with zero errors.
+- Engine version is 3.3.2.
+
+## 1.4.1 (2026-11-18)
+
+- Preserve source config view and stop lists in working copies, keep per-occurrence
+  bindings and stops explicit, and reject lists over 3,500 bytes before IC618 netlisting. Long hierarchies with over a hundred optimized instances previously crashed the netlister. Engine version is 3.3.1.
+
+## 1.4.0 (2026-11-18)
+
+- Persist one completed candidate from Native Run, Maestro Netlist, or Template Netlist as new schematic views. Show verified instance writes, name collisions, skipped design controls, and failed cells in a copyable report.
+- Keep external EDA artifacts in the environment identity when unrelated directory entries change during reads. Detect directory replacement, symlink changes, and file changes as before.
+- Report Cadence-caught SKILL library initialization errors as warnings when the native stack and matching stage completion prove the recovery. Retain the original stack in capture and compact diagnostics.
+- Round continuous Native Run generation inputs to Maestro-safe precision before recording the plan. Verify exact native conditions, corner values and netlist values, and use scalar runs when batch precision would change fixed inputs or break linked ranges.
+- Report unrelated Ocean tool registration and initialization messages (ADE-5066 and ADE-5067) as warnings. Preserve their native text and keep active simulator failures in the first-cause diagnostics.
+- Engine version is 3.3.0.
+
+## 1.3.2 (2026-11-18)
+
+- Restore original first-cause text in each compact mode verdict, retaining a separate first-cause reference. Bound verdict lines to 200 characters with an explicit truncation marker, normalize whitespace and apply existing secret redaction; full reports and lossless sidecars retain their formats.
+- Synchronize process fixtures with consumed descendant output and atomically published simulator PIDs. Verify owned group signals, finite cleanup wait budgets, closed pipes, cancellation identity and proven cleanup instead of treating host scheduling delays as product latency. Preserve execution, timeout and Stop policies; engine version is 3.2.2.
+
+## 1.3.1 (2026-11-17)
+
+- Fix compact report format markers under injected runtime identities so copied sections retain run roots, first causes and verified evidence manifests. Bind evidence schemas/filenames, instance-path and scoped-discovery schemas consistently.
+- Match mixed Global/device batch template transformations to the bound SKILL symbols and retain aliased solver control evidence. Add fictional legacy identity round trips for compact/full reports, sidecar integrity, run data v2 evidence/query/deltas, F2/F3, configuration and native batch templates. Default naming, registry identity and execution gates stay unchanged; engine version is 3.2.1.
+
+## 1.3.0 (2026-11-17)
+
+- Split netlist preparation into exclusive template qualification, one-shot session lifecycle, model/dependency freeze, native generation capture and other/lock intervals. Carry versioned passive observations through candidate/generation timing and focused diagnostic reports, deduplicating shared generation fanout and retaining incomplete coverage on failure.
+- Reuse the final freeze pass's freshly read netlist SHA256 instead of hashing that same artifact twice; retain independent manifest verification. Add synthetic frontend timing evidence and regression coverage without changing native qualification or execution semantics.
+- Restrict point-receipt projections to receipts with explicit `candidate_completed: false` and a token, matching reopened writers and readers. Preserve other point receipts through ordinary evidence storage.
+
+- Restore F3 v2 UNKNOWN counts from complete durable query logs, deduplicate originals across aliases and overlapping snapshots, and retain explicit census completeness and legacy v1 accounting. Clarify that the E5 43x size reduction includes zlib; evidence deduplication and structural reductions alone give about 11x.
+- Surface sidecar integrity failures as report delivery warnings and in the diagnostic card without changing diagnostic verdicts. Validate diagnostic example counts (0–20) at configuration, spec and GUI boundaries; localize Pro log controls. Cover compact focused-summary parity and queue overflow in both report modes.
+
+- Use versioned run data v2 for new runs: content-addressed evidence in the durable JSONL prefix, point-receipt projections, pipeline alias removal and terminal candidate deltas. Keep existing v1 bytes and Resume format unchanged.
+- Retain every scheduler query original with entry/segment hashes while inlining only first/last bodies; verify lazy audit references before cleanup and portable export. Preserve exact Stop proofs, partial-candidate Resume and per-generation full-prefix audits.
+- Support v2 portable checkpoints, pending journals, whole-run retention and legacy schema/dialect aliases; teach F3 to resolve v2 point identities without changing physical byte accounting.
+- Default diagnostic logs to compact summaries with mode/generation phase tables, bounded focused-check examples, merged warnings and lossless content-addressed JSONL sidecars. Verify every sidecar size/hash, carry the manifest in report-ready events, and retain legacy inline output with `runtime.diagnostic_log_detail=full`. Expose detail/example preferences only in Pro mode.
+- Separate native diagnostic identity budget exhaustion from unsafe metadata, retry bounded atomic replacement races without increasing read limits, and refresh post-lifecycle shutdown evidence before advancing the diagnostic ladder. Preserve strict Stop/Resume gates and report missing process, remote terminal and retention proofs.
+- Add Pro instance-path entry with independent line validation and branch-only OA discovery, including exact scalar bus names and leaf devices. Preserve selected scopes in versioned configuration metadata and existing checkpoint identities, and version scoped discovery so reconstruction retains its original hierarchy; retain the tree-selection workflow and default runtime registry.
+- Coalesce Pareto resize events and draw cards into one retained page canvas so wheel/scrollbar events only move the viewport. Invalidate only changed plots, retain candidate clicks, and display the selected corner name for a single corner. Keep resize timers owned by the root so host-wide cancellation and child teardown remain safe on Tk 8.5/8.6.
+- Resolve ancestor instance names directly, materialize only requested synthetic parameter records on cold manual entry, and retain native startup/ancestor costs explicitly in the path documentation.
+
+- Keep selected scalar outputs and scalar dependencies in F2 comparisons when idle or required `value` expressions reference them; prefer finite scalar readback over waveform type inference so differences and missing observations remain visible.
+- Preserve the pinned headless import set with lazy Native status parsing; keep legacy missing-state evidence unclassified and show unapplied tolerance policies for missing required outputs.
+- Retain CLI dependency observations and per-output collection/non-finite/evaluation states, preserve reader first errors in candidate evidence, and prevent failed dependencies from reusing stale aliases in single and batch readers.
+- Scope F2 to selected scalar metrics and dependencies, separate waveform/idle outputs, report actual candidate counts and unit provenance, and use magnitude-aware relative tolerance for unknown units.
+- Project frozen diagnostic candidates, plans and verification expectations onto scope-qualified surviving design dimensions. Retain point order and values, verify original digests, and reject cross-mode projection differences.
+- Add explicit Global and top/Test design controls in the Pro parameter catalogue, with current values and source labels. Preserve device-only configurations and checkpoint fingerprints.
+- Apply selected design controls through owned native Global columns and parametric sets; qualify generated top-level declarations and symbolic templates with native reference captures. Reject selected-variable corner collisions, retain single-value Global/Local guards, and lock device dimensions using exact lexical/alias dependency evidence.
+- Persist design-variable source/Test identity with `crescendo.design_variables.v1` and opt mixed native plans into `crescendo.native_parameter_plan.v2`.
+
+## 1.2.0 (2026-11-17)
+
+- Freeze linked diagnostic current values as a complete group; fall back to a seeded legal group when members are missing or inconsistent. Enumerate independent enum choices without duplicates when filling linked diagnostic grids.
+
+- Add optional parameter `link_group` in Crescendo 1.2 / engine 3.1. Linked members share one search coordinate across all four algorithms; ask returns every member mapped to its own linear/log range or equal-count grid. Support mixed linear continuous/stepped groups; reject enum linking with group/member errors. Preserve unlinked v1.1.4 candidate bytes with a golden contract fixture.
+- Retain optional `step`, `grid_origin` and `link_group` through unified configuration, Restore Last and working-copy preferences. Add validated Link Selected / Unlink Selected controls and group labels in Pro mode, with English translations.
+- Save linked runs as checkpoint v2 so older versions reject them; retain v1 for unlinked runs. Include group membership in continuation identity, dataset variable metadata and optional per-member CSV columns. Cover complete ask/tell expansion, seed reproducibility, stop/resume, exports and configuration/UI round trips.
+
+## 1.1.6 (2026-11-17)
+
+- Match both hierarchy-flattening and initial-setup Spectre transient crashes only when the current attempt also contains the internal-error marker and solver error code; keep deterministic crashes bounded by the configured retry budget.
+
+- Exclude pre-launch log bytes from transient crash signatures, including appended unsigned errors and keywords crossing the attempt boundary; deduplicate passive recovery counts for shared physical executions by attempt identity.
+
+- Retry profile-qualified transient solver crashes through the shared CLI path (two retries by default), retaining each attempt's logs, first error, timing, token and exact scheduler evidence. Exhaustion is an infrastructure failure without design penalties. Add frozen recovery preferences, Pro controls, an optional Local single-CPU last retry and passive per-mode diagnostic counts; old checkpoints retain absent fields and allow the default recovery policy.
+
+- Reconcile interrupted recycle journals during service startup, list refresh and repeated Delete; account for every registered view before marking receipts complete.
+
+- Reject unsafe capture roots and phase directories during isolation checks; preserve all live views when native shutdown evidence is malformed.
+
+- Verify isolated working copies at service startup and list refresh using native process identity, OA locks, leases and exact ownership. Retain verification archives, expose structured block reasons in both GUI presentations, and support evidence-preserving recycling without moving locked or actively owned views.
+- Cache non-default runtime literal resolution with a bounded thread-safe LRU and resolve redaction contracts once per tree, preserving emitted bytes.
+- Synchronize concurrency and owned-process regression fixtures with barriers and readiness handshakes instead of scheduler-dependent sleeps.
+
+## 1.1.5 (2026-11-17)
+
+- Integrate compact prepared catalogues and passive focused diagnostics with generation checkpoint audits.
+- Bridge parent-owned Tk heartbeat windows and frozen report-contributor registrations into GUI service diagnostics using data-only RPC. Keep callbacks in their trusted startup process, apply report redaction/bounds before publication and retain an independent cancellation/response lane.
+
+- Report F4 logical prepared bytes, current reference copies, reachable CAS objects/bytes and reference counts, and total/optimizable parameter counts. Retain explicit legacy dispatch and mark missing or corrupt current references incomplete; never scan historical objects or repair data during diagnostics.
+- Test cooperative worker CPU slices against the existing 200 ms budget, retaining wall-gap distributions while distinguishing observer descheduling from worker stalls. Add a CPU-stall negative control and a delayed-observer control. Product heartbeat thresholds remain unchanged.
+
+- Allow concurrent prepared publishers to create their shared content directory without a check-then-create race; retain directory ownership and symlink checks.
+
+- Preserve command cancellation types and cleanup/import evidence across GUI service RPC so cancelled configuration loads keep unsaved interface settings.
+
+- Isolate fresh native GUI services in an owned process. Keep full legacy catalogues, original identity checks and cyclic GC outside Tk, transfer explicitly versioned non-executable summaries, and preserve concurrent control and cleanup evidence. Headless and caller-owned preloaded services retain their original lifecycle.
+
+- Reduce large setup catalogues to eligible controls and share content-addressed prepared, hierarchy and parameter objects. Stream compact JSON and canonical hashes to keep worker operations responsive. Legacy suites/checkpoints retain their original schema and identity validation.
+- Filter CDF candidates before editor-condition evaluation, reuse read-only editor contexts, preserve instance-specific qualification, and record native/parse/phase timings.
+- Bound discovery, model scanning and native-script validation work between GUI scheduling yields. Precompute setting identity summaries, and retain parameter metadata when selectively updating compact suites.
+
+- Recover cross-mode diagnostic output units from the frozen Setup and scope expected points to this run's corner selection and per-Test masks, without changing execution or qualification.
+
+- Add observational focused diagnostic checks for generation checkpoint audits, raw cross-mode results, current-run dataset volume and Setup/Tk responsiveness; retain all phase timings and existing qualification gates.
+- Add bounded, ordered, immutable-input diagnostic report contributors for applications and scheduler providers, carried by report exports and report-ready payloads.
+- Retain raw output points and complete scheduler query-state counts only during diagnostics. Dispatch prepared statistics by format, including compact v2 and shared content-addressed objects.
+
 ## 1.1.4 (2026-11-16)
 
 - Scope native-log readers and cleanup to overlapping paths, including resolved aliases. Preserve physical candidate timings during generation fanout and expose batch counts.

@@ -1,12 +1,22 @@
 # Native Run generation batching
 
-New configurations select `native_candidate_batching: "generation"`; Pro Settings
-can select `serial`. Old configuration files without the field, and old
-checkpoints without the setting keep `serial`. The frozen spec and checkpoint
-manifest carry the setting and `crescendo.generation_batch.v1`. Netlist modes
-also freeze `native_batching_protocol` with the mode-specific version below.
-Native Run continues to require a
-Command Job Setup.
+New runs default to `native_candidate_batching: "generation"`, including when
+an engine configuration file omits the field. Restoring GUI settings without
+the field keeps the current selection, or uses `generation` if the selector is
+empty. To keep new runs serial, select `serial` in Pro Settings, set
+`native_candidate_batching: "serial"` in the run spec, or set
+`runtime.native_candidate_batching: "serial"` in the engine configuration. The
+run spec takes precedence over engine configuration.
+
+Resume uses the checkpoint's frozen batching setting. A checkpoint without the
+field keeps its original serial behavior. Generation runs freeze the setting and
+`crescendo.generation_batch.v1` in the spec and checkpoint manifest. Netlist
+modes also freeze the mode-specific `native_batching_protocol` described below.
+
+Native Run requires a Command Job Setup. A spec frozen as `serial` runs one
+candidate at a time even when Maestro `max_jobs` is higher. That value controls
+Maestro jobs within a Run. Global design-variable columns are supported, subject
+to the batch qualification and precision checks below.
 
 One generation borrows and resets the working copy once, opens one owned Ocean,
 checks that Maestro and XL refer to the same session, writes equal-length Device
@@ -31,8 +41,38 @@ are checked against these fields, never calculated from a candidate ordinal.
 Each partition still passes the existing corner/sweep, PSF, solver terminal,
 output, source and netlist parameter gates before the ordinary metric aggregator.
 
+For Native Run, both Global design variables and device parameters use the
+same six-significant-digit limit. IC618 Device Parameter sets were observed to
+round to seven digits. Before saving a new generation plan, the optimizer
+runner rounds continuous values to six digits and directs rounding inward at a
+bound. Stepped and integer values use the exact decimal point at
+`grid_origin + k * step`, with the lower bound as the default origin. Float
+arithmetic tails are removed without shifting to another grid index. A grid
+point that needs more than six significant digits makes that candidate
+ineligible for Native batching. Numeric enum choices keep their fixed values.
+
+A value that cannot be prepared keeps its original proposal, while independent
+values and other candidates keep their successful quantization. Linked
+continuous members are projected from the rounded anchor and checked with the
+optimizer's shared-coordinate rules. If a linked group fails, its members keep
+their original proposals together. The runner checks the frozen values before
+submitting the batch and uses scalar runs for the pending generation if any
+candidate still fails qualification. Previously persisted plans and explicit
+diagnostic values retain their recorded inputs and use scalar runs if those
+inputs would change in a batch.
+
+The fallback JSON and run log identify offending candidates and parameters
+with the original value, the attempted decimal value when available, and the
+reason. Precision failures on grid values include the six-digit rounded value
+alongside the exact grid point. The generation timing and run log report
+whether Native batching completed for each generation. The dataset, checkpoint
+and optimizer use the same values as execution, including after a setup
+qualification fallback. Differential evolution retains each trial's original
+target in candidate order. Native condition, corner and netlist checks require
+numeric equality for batch inputs.
+
 Duplicate logical candidates have an explicit many-to-many forward/reverse
-physical mapping. First-edition sharing requires deterministic analyses and a
+physical mapping, including candidates that coincide after rounding. Sharing requires deterministic analyses and a
 closed, model-free analog primitive design; external models or unknown/random
 semantics fall back to independent serial Runs. Every logical candidate is
 persisted and included in the ordinary per-generation tell. There is no cache
@@ -56,6 +96,35 @@ cannot substitute for terminal evidence. Otherwise `cleanup_pending` blocks
 Resume. Resume reconciles the previous owner before creating or borrowing a
 suite, skips only durable completed candidates, and assigns a new epoch to all
 unfinished candidates. The optimization ask/tell barrier is unchanged.
+
+## Native startup recovery
+
+Before the first Native Run stage marker, the engine watches the owned Ocean
+logs. The exact stderr line `sh: cdsCrashReport: command not found` enables
+crash detection. Any stdout progress restarts the quiet window, and a startup
+stage marker or a Native protocol record disables the check. Without the
+signature, the regular operation deadline still applies. On the affected IC618
+installation, the Ocean launcher execs Virtuoso and its native crash handler
+invokes the missing helper through the shell with `-nograph`. The
+`CDS_ERRORLOG` controls exercised in signal probes did not establish a fix for
+the startup stall. Native Run uses the observed stderr signature.
+
+| Runtime setting | Default | Meaning |
+| --- | ---: | --- |
+| `native_startup_crash_quiet_seconds` | 15 | Required uninterrupted stdout quiet time before declaring a startup crash. |
+| `native_startup_crash_retries` | 1 | Additional startup attempts. Set to 0 to disable retry. |
+| `native_cleanup_proof_timeout_seconds` | 15 | Time to poll the owned guardian after closing its input for cleanup. |
+
+In the IC618 incident, eight healthy candidates reached READY in 4.24–6.47 s.
+The final guardian receipt followed the pre-TERM `terminating` snapshot by
+5.25 s. The 15 s defaults allow margin over both observations.
+
+Each retry gets its own nonce, logs and guardian receipt. Native Run retries
+only before submission and after the guardian proves process and descendant
+cleanup. Exhausted startup retries record the first crash in
+`infrastructure_failed` and let the run evaluate the other candidates. Missing
+cleanup proof blocks the run. Once submission intent exists, the existing
+native Stop and remote job evidence requirements still apply.
 
 ## Maestro Netlist and Template Netlist
 
@@ -140,3 +209,5 @@ retained across generations. For native Command Runs, omitting
 `scheduler_query_template` leaves insufficient terminal evidence when Stop
 interrupts a Run. Such ownership falls into `cleanup_pending` and blocks Resume
 until exact job terminal and local cleanup evidence are available.
+
+Design-variable columns use the versioned source identity and native variable APIs described in [Design variables](DESIGN_VARIABLES.md). Maestro Netlist and Template Netlist capture retain their existing column format.

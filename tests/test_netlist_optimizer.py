@@ -29,7 +29,7 @@ def fixtures(root, max_jobs=2, population=4):
                 "parameters": [{"parameter_id": "x", "backend": "schematic", "optimizable": True}],
                 "outputs": [{"key": "main::gain"}]}
     config = {"runtime": {"run_root": root, "execution_backend": "auto", "max_parallel_jobs": 1,
-                           "candidate_timeout_seconds": 60}}
+                           "native_candidate_batching": "serial", "candidate_timeout_seconds": 60}}
     spec = {"algorithm": "random", "generations": 2, "population": population, "jobs": 1,
             "execution_backend": "private_netlist", "maestro_job_overrides": {"max_jobs": max_jobs},
             "variables": [{"parameter_id": "x", "minimum": 0.0, "maximum": 1.0}],
@@ -331,6 +331,8 @@ class RunnerEngineTests(unittest.TestCase):
             calls, contexts = [], []
             concurrency = {"active": 0, "peak": 0}
             lock = threading.Lock()
+            capacity = min(max_jobs, population)
+            first_window = threading.Barrier(capacity)
 
             class FakeAdapter(object):
                 def __init__(self, run_root, spec, *_args, **kwargs):
@@ -349,7 +351,10 @@ class RunnerEngineTests(unittest.TestCase):
                     # Real optimizer persisted its full plan before any work.
                     plan = load_json(os.path.join(run_root, "checkpoint.json"))["state"]["active_plan"]
                     self.assert_plan = len(plan["planned"])
-                    time.sleep(0.03)
+                    # Only the first window joins: the last window may be
+                    # smaller than capacity. Each generation reuses the barrier.
+                    if index < capacity:
+                        first_window.wait(timeout=30)
                     calls.append((generation, index))
                     row = {"candidate_id": "g%03d_c%04d" % (generation, index), "generation": generation,
                            "index": index, "values": values, "status": "completed", "execution_backend": "private_netlist",

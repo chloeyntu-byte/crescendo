@@ -17,13 +17,28 @@ initialize(ApplicationIdentity(display_name='Fable', env_prefix='FABLE',
     version='9.4.2',
     schema_aliases={'crescendo.generation_batch.v1':'fable.legacy_batch.v1',
                     'crescendo.optimization_record.v1':'fable.legacy_record.v1',
-                    'crescendo.native_run_device_parameters.v3':'fable.old_device.v1'}),
+                    'crescendo.optimization_record.v2':'fable.legacy_record.v2',
+                    'crescendo.native_run_device_parameters.v3':'fable.old_device.v1',
+                    'crescendo.diagnosis.compact.v1':'fable.concise_legacy.v7',
+                    'crescendo.diagnostic_evidence.v1':'fable.evidence_legacy.v7',
+                    'crescendo.optimization_dataset.v2':'fable.dataset_legacy.v7',
+                    'crescendo.evidence_ref.v2':'fable.pointer_legacy.v7',
+                    'crescendo.evidence_blob.v2':'fable.blob_legacy.v7',
+                    'crescendo.scheduler_query_log.v2':'fable.query_legacy.v7',
+                    'crescendo.scheduler_query_originals.v2':'fable.originals_legacy.v7',
+                    'crescendo.scheduler_task_tracking.v2':'fable.tracking_legacy.v7',
+                    'crescendo.instance_paths.v1':'fable.paths_legacy.v7',
+                    'crescendo.scoped_discovery.v1':'fable.discovery_legacy.v7'}),
     StorageLayout(config_home='fable-optimizer', state_directory='.fable-state',
         result_extension='.fres', log_filename='fable.log', owned_marker='.fable-owned.json',
         view_prefix='fb_s_', temporary_prefix='.fable-create-',
-        leaf_aliases={'persistent_worker_batch.json':'legacy_batch.json'}),
+        leaf_aliases={'persistent_worker_batch.json':'legacy_batch.json',
+                      'diagnostic_evidence.jsonl':'fable_evidence.jsonl',
+                      'error.json':'fable_error.json', 'submission.json':'fable_submission.json',
+                      'task_timeouts.json':'fable_timeouts.json'}),
     ProtocolDialect(procedure_prefix='fb', symbol_prefix='fb_', error_prefix='FABLE_ERR',
         guardian_token_prefix='fable2-',
+        procedure_aliases={'crP':'fbLegacyP', 'crMembersRoot':'fbLegacyMemberRoot'},
         callback_aliases={'crescOwnedPort':'fbLegacyPort'},
         magic_aliases={'CR_BATCH_POINTS_1':'FABLE_LEGACY_POINTS_1',
                        'CRESCENDOFW_':'FABLE_LEGACY_FW_',
@@ -46,6 +61,97 @@ class RuntimePairTests(unittest.TestCase):
                                     env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     universal_newlines=True, timeout=45)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_legacy_schematic_export_pairs_aliased_native_evidence_and_run_name(self):
+        self.isolated("""
+        from unittest import mock
+        from crescendo_engine.runtime import ApplicationIdentity, StorageLayout, ProtocolDialect, initialize, text
+        initialize(ApplicationIdentity(display_name='Fable', env_prefix='FABLE',
+                   schema_namespace='fable', slug='fable'), StorageLayout(
+                   leaf_aliases={'completion_evidence.json': 'old_completion.json',
+                                 'native_baseline_evidence.json': 'old_native.json'}), ProtocolDialect())
+        from crescendo_engine.optimized_schematic import build_export_evidence, build_export_plan
+        from crescendo_engine.server import OptimizerService
+        from crescendo_engine.utils import atomic_write_json
+        from tests.test_native_parameters_export_boundary import native_candidate
+        from tests.test_optimized_schematic import parameter
+        root = sys.argv[1]
+        run = os.path.join(root, 'selected')
+        candidate = native_candidate()
+        selected = dict(candidate, parameter_application={'ok': True})
+        completion = selected.pop('completion_evidence')
+        selected['completion'] = {'ok': True}
+        completion['execution_pipeline'].update(rdb_path='/owned/history.rdb', run_id='77')
+        candidate_id = selected['candidate_id']
+        cand_root = os.path.join(run, 'candidates', candidate_id)
+        os.makedirs(cand_root)
+        native = {'candidate_id': candidate_id, 'status': 'completed', 'source_guard': {'ok': True},
+                  'cleanup_pending': False, 'parameter_application': candidate['parameter_application'],
+                  'command': {'history_name': 'Interactive.0', 'rdb_path': '/owned/history.rdb', 'run_id': '77'}}
+        atomic_write_json(os.path.join(cand_root, 'old_native.json'), native)
+        atomic_write_json(os.path.join(cand_root, 'old_completion.json'), completion)
+        atomic_write_json(os.path.join(cand_root, 'candidate.json'), selected)
+        atomic_write_json(os.path.join(run, 'status.json'), {
+            'schema_version': text('crescendo.run_status.v1'), 'run_id': 'selected', 'run_root': run,
+            'state': 'completed', 'display_name': 'Saved_Optimization'})
+        atomic_write_json(os.path.join(run, 'spec.json'), {'evaluator': 'real'})
+        atomic_write_json(os.path.join(run, 'schematic_export_context.json'), {
+            'schema_version': text('crescendo.schematic_export_context.v1'),
+            'prepared': {'parameters': [parameter()]}, 'config': {'runtime': {'run_root': run}}})
+        service = OptimizerService({'runtime': {'run_root': root}})
+
+        def export(prepared, spec, row, config, path, **kwargs):
+            evidence = build_export_evidence(row, prepared['parameters'])
+            assert evidence['schema_version'] == 'fable.optimized_schematic_evidence.v1'
+            assert evidence['values'] == {'p1': 3.5e-6}
+            return build_export_plan(evidence, spec['display_name'])
+
+        with mock.patch('crescendo_engine.optimized_schematic.export_optimized_schematic', side_effect=export) as engine:
+            result = service.generate_optimized_schematic('selected', candidate_id)
+            assert result['schema_version'] == 'fable.optimized_schematic.v1'
+            assert result['groups'][0]['target_view'] == 'schematic_Saved_Optimization'
+            completion['execution_pipeline']['rdb_path'] = '/other/history.rdb'
+            atomic_write_json(os.path.join(cand_root, 'old_completion.json'), completion)
+            try:
+                service.generate_optimized_schematic('selected', candidate_id)
+            except ValueError as error:
+                assert 'selected candidate' in str(error)
+            else:
+                raise AssertionError('mismatched proof reached native export')
+            assert engine.call_count == 1
+        """, setup=False)
+
+    def test_cached_legacy_literals_are_bounded_thread_safe_and_byte_exact(self):
+        self.isolated('''
+        from concurrent.futures import ThreadPoolExecutor
+        from crescendo_engine import runtime
+        literals=['CRESCENDO_NATIVE_ENV_SNAPSHOT', 'crescendo.native_environment.v1',
+                  'report.crescendo', 'crescOwnedPort', 'user Fable text']
+        text(literals[0])
+        expected=[runtime._codec.__wrapped__(value) for value in literals]
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            actual=list(pool.map(text,literals*100))
+        assert actual == expected*100
+        for index in range(5000): text('literal-'+str(index))
+        assert runtime._codec.cache_info().currsize <= 4096
+        assert [text(value) for value in literals] == expected
+        ''')
+
+    def test_redaction_resolves_contract_once_per_tree_and_preserves_bytes(self):
+        self.isolated('''
+        from unittest import mock
+        from crescendo_engine import environment_probes as probes
+        original=probes._contract_text
+        value={'rows':[{'message':'private-value token=abc', 'safe':['ok',1,True]} for _ in range(500)],
+               'snapshot':{'schema':'fable.native_environment.v1','values':{'path':'hidden'}}}
+        expected=probes._redact(value,{'API_TOKEN':'private-value'})
+        with mock.patch.object(probes,'_contract_text',wraps=original) as resolve:
+            actual=probes._redact(value,{'API_TOKEN':'private-value'})
+        assert resolve.call_count == 2, resolve.call_count
+        assert json.dumps(actual,sort_keys=True).encode() == json.dumps(expected,sort_keys=True).encode()
+        assert actual['snapshot']['values']=='<redacted>'
+        assert actual['rows'][0]['message']=='<redacted> token=<redacted>'
+        ''')
 
     def test_storage_annotations_and_controller_argv_share_runtime_identity(self):
         self.isolated('''
@@ -134,7 +240,7 @@ print(descriptor_json())
         output = subprocess.check_output([sys.executable,'-B','-c',child,root], env=child_environment()).decode().splitlines()
         assert output == [before,descriptor_json()]
         records=[json.loads(line) for line in open(data)]
-        assert all(r['schema_version'] == 'fable.legacy_record.v1' for r in records)
+        assert all(r['schema_version'] == 'fable.legacy_record.v2' for r in records)
         ''')
 
     def test_skill_batch_magic_and_owned_view_producer_consumer_pairs(self):
@@ -343,6 +449,212 @@ assert result.returncode != 0 and b'registry content identity changed' in result
             raise AssertionError('late initialization accepted')
         except RuntimeError: pass
         ''', setup=False)
+
+    def test_legacy_compact_and_full_report_copy_and_sidecar_roundtrip(self):
+        self.isolated('''
+        import inspect
+        from crescendo_engine import environment_test as reports
+        from crescendo_engine.diagnosis_catalog import read_section
+        from crescendo_engine.diagnostic_log import read_evidence, verify_sidecars
+        from tests.test_diagnostic_log_sidecars import synthetic_row, synthetic_focus, render_source, structured
+        for detail in ('compact','full'):
+            directory=os.path.join(root,detail);os.mkdir(directory)
+            row=synthetic_row(directory)
+            row['diagnostic_log_detail']=row['config']['runtime']['diagnostic_log_detail']=detail
+            focus=synthetic_focus(row)
+            report=render_source(inspect.getsource(reports),row,focus)
+            with open(row['main_log'],'w',encoding='utf-8') as stream:stream.write(report)
+            scope='spectre.maestro_baseline'
+            copied=read_section(row['main_log'],scope,'scheduler')
+            assert row['case_contexts'][scope]['run_root'] in copied,copied
+            assert 'fixture scalar unavailable' in copied,copied
+            assert structured(report,'diagnostic_overview')[0]['cases'][0]['case_id']==scope
+            if detail=='full':
+                assert 'context ' in copied
+                assert '"component":' in report
+                assert not row.get('report_sidecars')
+                continue
+            assert 'report_format fable.concise_legacy.v7' in copied,copied
+            assert structured(copied,'run_context')[0]['context']['run_root']==row['case_contexts'][scope]['run_root']
+            manifest=structured(copied,'sidecar_manifest')[0]
+            assert manifest==row['report_sidecars']
+            assert manifest[0]['schema_version']=='fable.evidence_legacy.v7'
+            assert os.path.basename(manifest[0]['path'])=='fable_evidence.jsonl'
+            assert verify_sidecars(manifest)['status']=='PASS'
+            documents=read_evidence(manifest[0]['path'])
+            assert documents['case_contexts']==row['case_contexts']
+            assert documents['focused_checks']==focus
+            assert documents['checks']==list(row['checks'].values())
+            summary=structured(report,'focused_checks_summary')[0]
+            for key in ('F2','F3'):
+                assert summary[key]['status']==focus[key]['status']
+            child="import sys,json; from crescendo_engine.diagnostic_log import read_evidence,verify_sidecars; m=json.loads(sys.argv[1]); assert verify_sidecars(m)['status']=='PASS'; assert read_evidence(m[0]['path'])['focused_checks']['F2']['status']=='WARN'"
+            subprocess.check_call([sys.executable,'-B','-c',child,json.dumps(manifest)],env=child_environment())
+            with open(manifest[0]['path'],encoding='utf-8') as stream:
+                assert json.loads(stream.read().splitlines()[-1])['schema_version']=='fable.evidence_legacy.v7'
+            with open(manifest[0]['path'],'ab') as stream:stream.write(b'changed')
+            assert verify_sidecars(manifest)['status']=='FAIL'
+        ''')
+
+    def test_legacy_report_manager_downstream_regressions(self):
+        self.isolated('''
+        import unittest
+        names=['tests.test_diagnostic_compact_report.CompactVerdictTests',
+               'tests.test_diagnostic_compact_report.CompactReportIntegrationTests.test_default_report_keeps_verdict_and_ui_checks',
+               'tests.test_environment_test.EnvironmentTestManagerTests.test_blocked_prepared_gate_keeps_raw_ui_cause_in_each_case_and_total_log']
+        result=unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromNames(names))
+        assert result.wasSuccessful()
+        ''')
+
+    def test_legacy_run_data_v2_evidence_query_delta_and_f2_f3(self):
+        self.isolated('''
+        import copy, shutil
+        from crescendo_engine.run_data_store import RunDataStore,RunDataReader,CORE_NAME,dataset_from_reference
+        from crescendo_engine.scheduler_audit import append_query
+        from crescendo_engine.diagnostic_focus import consistency_check,volume_check
+        cases={}
+        for mode in ('native','template','generated'):
+            directory=os.path.join(root,mode);os.mkdir(directory)
+            task_root=os.path.join(directory,'candidates','g000_c0000','tasks','p1');os.makedirs(task_root)
+            path=os.path.join(directory,CORE_NAME)
+            tracking={'schema_version':text('crescendo.scheduler_task_tracking.v2'),
+                'candidate_id':'g000_c0000','task_id':'p1','job_id':'42','test':'main','corner':'TT','point_id':1,'query_count':0}
+            for index,state in enumerate(('UNKNOWN','UNKNOWN','DONE'),1):
+                tracking['query_count']=index
+                append_query(tracking,{'stdout_tail':'STATE: '+state},{'state':state},task_root)
+            candidate={'candidate_id':'g000_c0000','generation':0,'index':0,'values':{'x':1},'status':'completed',
+                'metrics':{'feasible':True,'constraints':[],'diagnostic_raw_points':[
+                    {'test':'main','corner':'TT','point_id':1,'output':'main::v','unit':'V','value':2.0}]},
+                'user':'CRESCENDO_USER_LITERAL crP crescendo.user.v1','scheduler_observation':tracking}
+            store=RunDataStore(path,{'spec':{},'user':candidate['user']})
+            store.append_event('point',{'candidate_id':candidate['candidate_id'],'task_id':'p1','test':'main',
+                'corner':'TT','point_id':1,'scheduler_observation':tracking,'proof':'long unchanged proof '*200})
+            store.commit_candidates([candidate])
+            candidate['artifact_summary']={'raw_deleted':True}
+            store.commit_candidates([candidate])
+            reference=store.reference();store.close()
+            assert reference['schema_version']=='fable.dataset_legacy.v7'
+            shutil.rmtree(os.path.join(directory,'candidates'))
+            data=RunDataReader(path).read(strict=True)
+            restored=data['candidates'][0]
+            assert '$audit' in restored['scheduler_observation']['query_log']['evidence']
+            plain=copy.deepcopy(restored)
+            plain['scheduler_observation']['query_log'].pop('evidence')
+            assert plain==candidate,(plain,candidate)
+            assert dataset_from_reference(reference)['candidates']==[restored]
+            assert data['metadata']['user']==candidate['user']
+            cases[mode]=data['candidates']
+            with open(path,encoding='utf-8') as stream:wire=[json.loads(line) for line in stream]
+            assert all(r['schema_version']=='fable.legacy_record.v2' for r in wire)
+            assert any(r['kind']=='evidence' and r['payload']['schema_version']=='fable.blob_legacy.v7' for r in wire)
+            assert any(r['kind']=='candidate_patch' for r in wire)
+            volume=volume_check(path)
+            assert volume['status']=='PASS',volume
+            assert volume['file_bytes']==os.path.getsize(path)
+            assert volume['point_count']==1
+            assert volume['scheduler_unknown_queries']==2,volume
+            assert volume['scheduler_unknown_census_complete']
+            child="import sys,json; from crescendo_engine.run_data_store import RunDataReader; from crescendo_engine.diagnostic_focus import volume_check; r=json.loads(sys.argv[2]); assert RunDataReader(sys.argv[1]).read(strict=True)['candidates']==[r]; assert volume_check(sys.argv[1])['scheduler_unknown_queries']==2"
+            subprocess.check_call([sys.executable,'-B','-c',child,path,json.dumps(restored)],env=child_environment())
+        compared=consistency_check(cases)
+        assert compared['status']=='PASS' and compared['pair_count']==3,compared
+        changed=copy.deepcopy(cases)
+        changed['generated'][0]['metrics']['diagnostic_raw_points'][0]['value']=3.0
+        assert consistency_check(changed)['status']=='FAIL'
+        changed['generated'][0]['metrics']['diagnostic_raw_points']=[]
+        missing=consistency_check(changed)
+        assert missing['status']=='NOT_TESTED' and missing['unpaired'],missing
+        ''')
+
+    def test_legacy_design_variable_templates_pair_with_bound_batch_symbols(self):
+        self.isolated('''
+        import re
+        from tests.test_design_variables import DesignVariablesTest
+        from crescendo_engine.native_maestro_parameters import build_native_parameter_plan
+        from crescendo_engine.generation_batch import build_generation_plan,build_native_columns,native_batch_skill_lines
+        from crescendo_engine.design_variable_native import skill_lines,parse_settings
+        fixture=DesignVariablesTest();fixture.setUp()
+        try:
+            control=dict(fixture.control,value='2')
+            device=dict(fixture.device,value='1k')
+            for selected in ([control],[control,device]):
+                scalar=build_native_parameter_plan(selected,fixture.setup['corners'])
+                values={r['parameter_id']:i+1 for i,r in enumerate(selected)}
+                batch=build_generation_plan(0,[(0,values),(1,values)],selected,'epoch')
+                build_native_columns(batch,scalar['selected'])
+                script='\\n'.join(native_batch_skill_lines(batch,scalar,root+'/CRESCENDO_USER_LITERAL'))
+                assert '"variablesets"' in script and '?name "var"' in script,script
+                assert text('crMembersRoot=') not in script
+                assert text('crLegacyMemberRoot') not in script
+                assert text('crP') in script and 'fbLegacyP' in script
+                assert not re.search(r'\\bcr[A-Z]|\\bcr_',script),script
+                assert '/CRESCENDO_USER_LITERAL' in script
+                assert 'ocnxlSweepVar' in script and 'axlGetAllVarsDisabled' in script
+                assert batch['design_variables_protocol']=='fable.design_variables.v1'
+            scalar=build_native_parameter_plan([control],fixture.setup['corners'])
+            path=root+'/readback'
+            script='\\n'.join(skill_lines(scalar,path))
+            assert 'fb_VarOut' in script and 'cr_VarOut' not in script
+            with open(path,'w',encoding='utf-8') as stream:stream.write(control['name']+'\\t2\\nDONE\\n')
+            assert parse_settings(path,scalar)['ok']
+        finally:fixture.doCleanups()
+        ''')
+
+    def test_legacy_instance_path_configuration_and_scoped_discovery_pairs(self):
+        self.isolated('''
+        from unittest import mock
+        from tests.test_instance_paths import native_body,DESIGN
+        from crescendo_engine import hierarchy,runner
+        from crescendo_engine.unified_configuration import build_configuration,normalize_configuration
+        with mock.patch.object(hierarchy,'probe_hierarchy',return_value=native_body()), mock.patch('crescendo_engine.workspace.resolve_copy_libraries',return_value=('USER',None,{'USER':'/source'})):
+            resolved=hierarchy.resolve_instance_paths({'tests':[DESIGN]}, {}, '/I0')
+        assert resolved['schema_version']=='fable.paths_legacy.v7'
+        with mock.patch.object(hierarchy,'probe_hierarchy') as probe:
+            empty=hierarchy.resolve_instance_paths({'tests':[DESIGN]}, {}, '/I<3:0>')
+        probe.assert_not_called()
+        assert empty['schema_version']==resolved['schema_version']
+        selection={'schema_version':resolved['schema_version'],'scopes':[{'design':resolved['scopes'][0]['design'],'hierarchy_path':'/I0'}]}
+        saved=build_configuration({'instance_path_selection':selection})
+        assert normalize_configuration(json.loads(json.dumps(saved)))['document']['instance_path_selection']==selection
+        discovery={'schema_version':text('crescendo.scoped_discovery.v1')}
+        assert discovery['schema_version']=='fable.discovery_legacy.v7'
+        assert runner.cell_selection_targeted({'discovery':discovery})
+        assert not runner.cell_selection_targeted({})
+        # Existing injected-runtime configuration/checkpoint markers keep their meaning.
+        legacy=dict(selection,schema_version='crescendo.instance_paths.v1')
+        saved=build_configuration({'instance_path_selection':legacy})
+        assert normalize_configuration(json.loads(json.dumps(saved)))['document']['instance_path_selection']==legacy
+        assert runner.cell_selection_targeted({'discovery':{'schema_version':'crescendo.scoped_discovery.v1'}})
+        assert runner.checkpoint_catalog_options({'manifest':{'cell_selection':{'discovery':{'schema_version':'crescendo.scoped_discovery.v1'}}}})['targeted']
+        try:
+            runner.cell_selection_targeted({'discovery':{'schema_version':'fable.discovery_legacy.v99'}})
+            raise AssertionError('unsupported protocol accepted')
+        except ValueError:pass
+        ''')
+
+    def test_legacy_solver_attempt_archives_aliased_control_files(self):
+        self.isolated('''
+        from contextlib import contextmanager
+        from unittest import mock
+        from crescendo_engine import solver_transient
+        from crescendo_engine.utils import atomic_write_json
+        control=os.path.join(root,'control');os.mkdir(control)
+        expected={text(name):{'source':name} for name in ('error.json','submission.json','task_timeouts.json')}
+        for name,body in expected.items():atomic_write_json(os.path.join(control,name),body)
+        @contextmanager
+        def reader(path,*args,**kwargs):
+            descriptor=os.open(path,os.O_RDONLY)
+            try:yield descriptor,{}
+            finally:os.close(descriptor)
+        record={'attempt':1,'token':'a'*32,'control_path':control}
+        task={'task_id':'p1','spectre_log':root+'/missing.log','psf_dir':root+'/missing'}
+        with mock.patch.object(solver_transient,'owned_solver_log_reader',reader):
+            evidence=solver_transient.retain_attempt_evidence(task,{'root':root,'candidate_id':'g000_c0000'},root,record)
+        assert set(evidence['files'])==set(expected),evidence
+        assert not evidence['warnings']
+        for name,body in expected.items():
+            with open(os.path.join(evidence['path'],name),encoding='utf-8') as stream:assert json.load(stream)==body
+        ''')
 
     def test_default_literals_stay_byte_identical(self):
         # Scan actual wired source constants. Generated payloads/user data are

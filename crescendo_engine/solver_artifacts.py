@@ -270,6 +270,8 @@ def collect_solver_artifacts(task, owned_root, launch_epoch, job_id=None,
     """
     psf = task.get('psf_dir') or ''
     execution = os.path.join(os.path.dirname(psf), 'execution') if psf else ''
+    if task.get('solver_attempt_number', 1) > 1:
+        execution = os.path.join(execution, 'attempt_%03d' % task['solver_attempt_number'])
     paths = [('solver', task.get('simulator_log') or task.get('spectre_log')),
         ('solver_stdout', os.path.join(execution, 'simulator.stdout')),
         ('solver_stderr', os.path.join(execution, 'simulator.stderr'))]

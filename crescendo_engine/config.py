@@ -11,6 +11,7 @@ from .native_environment import (
     NATIVE_ENV_SNAPSHOT_VAR, parse_native_environment_snapshot,
     restore_native_environment,
 )
+from .native_startup import DEFAULTS as NATIVE_STARTUP_DEFAULTS
 from .pdk import normalize_pdk_profiles
 from .resources import submit_spectre_script_path
 from .utils import atomic_write_json, ensure_dir, load_json
@@ -59,6 +60,8 @@ DEFAULTS = {
     "runtime": {
         "run_root": default_run_root(),
         "run_root_origin": "derived",
+        "diagnostic_log_detail": "compact",
+        "diagnostic_log_examples": 3,
         "execution_backend": "auto",
         "command_scheduler": "auto",
         "scheduler_receipt_grace_seconds": 10,
@@ -69,9 +72,13 @@ DEFAULTS = {
         "local_scratch_budget_bytes": 128 * 1024 * 1024,
         "max_parallel_jobs": 5,
         "native_candidate_batching": "generation",
+        "native_directory_retries": 1,
         "local_solver_max_jobs": 1,
         "measurement_jobs": None,
         "progress_flush_interval_seconds": 0.5,
+        "solver_transient_retries": 2,
+        "solver_transient_last_retry_single_core": False,
+        **NATIVE_STARTUP_DEFAULTS,
         "persistent_worker_lifetime": "run",
         "spectre_submit_script": submit_spectre_script_path(),
         "simulation_timeout_seconds": 900,
@@ -291,8 +298,8 @@ def load_config(path=None, persist_discovery=True, validate_discovery=True):
         explicit_path = os.path.abspath(os.path.expanduser(explicit_path))
         explicit_payload = load_json(explicit_path)
         config = deep_merge(config, explicit_payload)
-        if "native_candidate_batching" not in (explicit_payload.get("runtime") or {}):
-            config["runtime"]["native_candidate_batching"] = "serial"
+    from .diagnostic_log import report_options
+    report_options(config['runtime'])
     saved_setup = _user_setup(user_path)
     explicit_cadence = explicit_payload.get("cadence", {})
     explicit_mode = explicit_cadence.get("setup_mode")

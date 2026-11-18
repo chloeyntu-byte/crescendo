@@ -7,6 +7,7 @@ import json
 import os
 import re
 import stat
+import time
 import xml.etree.ElementTree as ET
 
 from crescendo_engine.runtime import bind_text
@@ -81,6 +82,8 @@ def _lstat_metadata(path):
             inspected, "st_ctime_ns", int(inspected.st_ctime * 1000000000),
         )),
         "mode": int(stat.S_IMODE(inspected.st_mode)),
+        "uid": int(inspected.st_uid),
+        "gid": int(inspected.st_gid),
         "regular": bool(stat.S_ISREG(inspected.st_mode)),
         "directory": bool(stat.S_ISDIR(inspected.st_mode)),
         "symlink": bool(stat.S_ISLNK(inspected.st_mode)),
@@ -187,7 +190,10 @@ def _resolution_matches(expected, observed):
                 not isinstance(before, dict)
                 or before.get("path") != after.get("path")
                 or before.get("target") != after.get("target")
-                or not _metadata_matches(before.get("lstat"), after.get("lstat"))
+                or not _stable_component_matches(
+                    before.get("lstat"), after.get("lstat"),
+                    final_target=(after.get("path") == observed.get("target_path")),
+                )
             ):
                 return False
     return True
@@ -196,12 +202,17 @@ def _resolution_matches(expected, observed):
 def _stable_component_matches(expected, observed, final_target=False):
     if not isinstance(expected, dict) or not isinstance(observed, dict):
         return False
-    if final_target or expected.get("symlink") or expected.get("regular"):
+    if final_target or not expected.get("directory"):
         return _metadata_matches(expected, observed)
+    # Entry creation and removal can change directory times and size.
     stable_keys = (
         "device", "inode", "mode", "regular", "directory", "symlink",
     )
-    return all(expected.get(key) == observed.get(key) for key in stable_keys)
+    return (
+        all(expected.get(key) == observed.get(key) for key in stable_keys)
+        # Older diagnostics did not record ownership.
+        and all(expected[key] == observed.get(key) for key in ("uid", "gid") if key in expected)
+    )
 
 
 def _fast_resolution_unchanged(expected, metadata_cache, readlink_cache):
@@ -265,6 +276,8 @@ def _stat_result_matches(expected, inspected, full_metadata=False):
         expected.get("device") != int(inspected.st_dev)
         or expected.get("inode") != int(inspected.st_ino)
         or expected.get("mode") != int(stat.S_IMODE(inspected_mode))
+        or ("uid" in expected and expected["uid"] != int(inspected.st_uid))
+        or ("gid" in expected and expected["gid"] != int(inspected.st_gid))
         or expected.get("regular") != bool(stat.S_ISREG(inspected_mode))
         or expected.get("directory") != bool(stat.S_ISDIR(inspected_mode))
         or expected.get("symlink") != bool(stat.S_ISLNK(inspected_mode))
@@ -757,6 +770,8 @@ def _collect_model_tree(collector, path, include_directories):
                 continue
             with open(resolved, "r") as stream:
                 for line_number, line in enumerate(stream, 1):
+                    if line_number % 256 == 0:
+                        time.sleep(.001)
                     reference = _literal_include(line)
                     if reference is None:
                         if re.match(r"^\s*(?:include|ahdl_include|\.include)\b", line, re.I):

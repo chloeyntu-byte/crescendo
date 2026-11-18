@@ -1,0 +1,25 @@
+CRESCENDO_NATIVE_RUN_STAGE Run BEGIN
+ERROR (ADE-5066): Tool 'hspiceS' has not been registered.
+ERROR (ADE-5067): Unable to initialize tool 'hspiceS'; either tool class is not
+        defined or tool is not registered.
+*Error* The default SKILL generic function has not been defined for the function "asiEnvGetVar". Ensure that this function is called with the correct argument(s) (tool partition name).
+
+<<< Stack Trace >>>
+(... in asiEnvGetVar generic ...)
+(... in asiEnvSetVal ...)
+(... in asiSetEnvOptionVal generic ...)
+asiSetEnvOptionVal(asiGetTool('hspiceS) "modelPath" strcat(libPath "/../models/hspice"))
+loadi("/pdk/example/libInit.il")
+(... in unknown ...)
+(... in _axlTraverse ...)
+(... in _axlFindDesignVars ...)
+(... in maeRunSimulation ...)
+maeRunSimulation(?waitUntilDone t ?returnRunId t ?session ... )
+...
+Interactive.0 has finished running.
+CRESCENDO_NATIVE_RUN_STAGE Run RETURN
+CRESCENDO_NATIVE_RUN_VALUE runId 0
+CRESCENDO_NATIVE_RUN_STAGE HistoryLookup BEGIN
+CRESCENDO_NATIVE_RUN_VALUE history 1165
+CRESCENDO_NATIVE_RUN_STAGE HistoryLookup RETURN
+CRESCENDO_PRIVATE_NETLIST_CAPTURE_DONE

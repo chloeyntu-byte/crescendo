@@ -7,6 +7,7 @@ workspace, restores a run, or changes the selected Maestro.
 from __future__ import print_function
 
 import datetime
+import copy
 import errno
 import contextlib
 import fcntl
@@ -34,17 +35,18 @@ PARAMETER_EVIDENCE = (
     "design_library", "design_cell", "design_view", "hierarchy_path", "name",
     "master_library", "master_cell", "owner_library", "owner_cell", "owner_view",
     "bound_library", "bound_cell", "bound_view", "resolved_library", "resolved_cell",
-    "resolved_view", "resolved_view_type", "value_type", "source",
+    "resolved_view", "resolved_view_type", "value_type", "source", "source_kind", "variable_test",
 )
-PARAMETER_CONFIG = ("selected", "minimum", "maximum", "unit", "scale", "value_type")
+PARAMETER_CONFIG = ("selected", "minimum", "maximum", "unit", "scale", "value_type",
+                    "step", "grid_origin", "link_group")
 OPTIMIZATION_FIELDS = (
     "algorithm", "generations", "candidate_timeout_seconds", "run_name",
-    "diagnostic_generations", "diagnostic_total_candidates",
+    "diagnostic_generations", "diagnostic_total_candidates", "diagnostic_log_detail", "diagnostic_log_examples",
     "advanced_visible", "last_single_algorithm", "job_command_override", "job_command",
     "job_max_override", "job_max_jobs", "maestro_candidate_mode", "execution_backend", "simulator",
     "data_root_override_enabled", "data_root_override",
     "native_candidate_batching", "local_solver_max_jobs", "measurement_jobs", "progress_flush_interval_seconds",
-    "command_scheduler",
+    "command_scheduler", "solver_transient_retries", "solver_transient_last_retry_single_core",
 ) + tuple("job_timeout_" + key for key in ("start_seconds", "configure_seconds", "run_seconds", "linger_seconds")) + tuple(
     "job_timeout_override_" + key for key in ("start_seconds", "configure_seconds", "run_seconds", "linger_seconds"))
 
@@ -214,6 +216,9 @@ def _cell_key(row):
 
 def _optimization(row):
     row = row if isinstance(row, dict) else {}
+    if "diagnostic_log_examples" in row:
+        from .diagnostic_log import validate_examples
+        validate_examples(row["diagnostic_log_examples"], allow_text=True)
     value = _fields(row, OPTIMIZATION_FIELDS)
     commands = row.get("execution_commands")
     if isinstance(commands, dict):
@@ -254,6 +259,28 @@ def _metric(row, kind):
     corners = row.get("corners")
     if isinstance(corners, list):
         result["corners"] = [item for item in corners[:4096] if _text(item) is not None]
+    return result
+
+
+def settings_snapshot_context(context, parameter_evidence=None):
+    """Copy setting identities and UI context without native CDF/clone graphs.
+
+    Eligible parameter evidence can be prepared in a worker. Its scalar rows
+    need only fresh dictionaries on the GUI thread, without a graph/marshal scan.
+    """
+    result = copy.deepcopy({key: value for key, value in context.items()
+                            if key not in ('setup', 'parameter_by_id', 'cell_scopes', 'outputs')})
+    result['setup'] = _setup(context.get('setup'))
+    if parameter_evidence is None:
+        result['parameter_by_id'] = {
+            row['parameter_id']: dict(_parameter_evidence(row), parameter_id=row['parameter_id'])
+            for row in _rows(context.get('parameter_by_id')) if 'parameter_id' in row}
+    else:
+        result['parameter_by_id'] = dict((key, dict(row)) for key, row in parameter_evidence.items())
+    result['cell_scopes'] = [dict(_cell_evidence(row), scope_id=row.get('scope_id'),
+                                 selectable=copy.deepcopy(row.get('selectable', True)))
+                             for row in _rows(context.get('cell_scopes'))]
+    result['outputs'] = [_fields(row, ('key', 'test', 'name')) for row in _rows(context.get('outputs'))]
     return result
 
 
@@ -337,20 +364,21 @@ def match_settings_state(document, current_context):
                          ("maestro_candidate_mode", ("auto", "serial", "batch")),
                          ("execution_backend", ("auto", "maestro_netlist", "persistent_maestro", "legacy", "adexl", "private_netlist", "maestro_baseline")),
                          ("simulator", ("spectre", "alps")),
+                         ("diagnostic_log_detail", ("compact", "full")),
                          ("native_candidate_batching", ("serial", "generation")),
                          ("command_scheduler", scheduler_choices())):
         if key in optimization and (not isinstance(optimization[key], str) or optimization[key] not in choices):
             optimization.pop(key)
             warn("Skipped unknown optimization setting: {}.".format(key))
-    for key in ("advanced_visible", "job_command_override", "job_max_override", "data_root_override_enabled") + tuple(
+    for key in ("solver_transient_last_retry_single_core", "advanced_visible", "job_command_override", "job_max_override", "data_root_override_enabled") + tuple(
             "job_timeout_override_" + name for name in ("start_seconds", "configure_seconds", "run_seconds", "linger_seconds")):
         if key in optimization and type(optimization[key]) is not bool:
             optimization.pop(key)
             warn("Skipped invalid checkbox setting: {}.".format(key))
     bad_entry = lambda key: warn("Skipped invalid optimization entry: {}.".format(key))
     _entry_fields(optimization, ("generations", "candidate_timeout_seconds", "job_max_jobs",
-                                 "local_solver_max_jobs", "measurement_jobs", "progress_flush_interval_seconds",
-                                 "diagnostic_generations", "diagnostic_total_candidates"),
+                                 "local_solver_max_jobs", "measurement_jobs", "progress_flush_interval_seconds", "solver_transient_retries",
+                                 "diagnostic_generations", "diagnostic_total_candidates", "diagnostic_log_examples"),
                   numeric=True, skipped=bad_entry)
     _entry_fields(optimization, tuple("job_timeout_" + name for name in
         ("start_seconds", "configure_seconds", "run_seconds", "linger_seconds")), numeric=True, skipped=bad_entry)
@@ -408,6 +436,9 @@ def match_settings_state(document, current_context):
             config.pop("scale")
         _entry_fields(config, ("minimum", "maximum"), numeric=True,
                       skipped=lambda field: warn("Skipped invalid parameter {}: {}.".format(field, identifier)))
+        if "link_group" in config and not isinstance(config["link_group"], str):
+            config.pop("link_group")
+            warn("Skipped invalid parameter link_group: {}.".format(identifier))
         if "unit" in config and (not isinstance(config["unit"], str) or
                 (config["unit"] and config["unit"].lower() not in PHYSICAL_SCALES)):
             config.pop("unit")

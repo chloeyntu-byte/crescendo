@@ -2,6 +2,7 @@ from __future__ import print_function
 from crescendo_engine.runtime import bind_text
 _contract_text = bind_text()
 
+from .design_variables import native_parameter
 from .pdk import adapter_entry_symbol
 
 import ast
@@ -333,7 +334,7 @@ def workspace_reference_plan(setup, hierarchy, sources, primary_library, root, p
     configs = dict((tuple(row[name] for name in ("library", "cell", "view")), row)
                    for row in config_designs(hierarchy))
     selected_designs = set(_design_key(row) for row in parameters or []
-                          if row.get("backend", "schematic") == "schematic")
+                          if native_parameter(row))
     # Explicit netlist variables do not modify OA. A schematic parameter must
     # carry its real test identity, rather than silently materializing all tests.
     for design in sorted(selected_designs):
@@ -1767,10 +1768,16 @@ def bounded_skill_body_lines(lines, result_name=_contract_text("crescSkillBodyRe
     forms, pending = [], []
     depth, quoted, escaped, block_comment = 0, False, False, False
     for number, raw in enumerate(lines, 1):
+        if number % 64 == 0:
+            time.sleep(.001)
         raw = str(raw)
         pending.append(raw)
         index = 0
+        next_yield = 1024
         while index < len(raw):
+            if index >= next_yield:
+                time.sleep(.001)
+                next_yield = index + 1024
             char = raw[index]
             pair = raw[index:index + 2]
             if block_comment:
@@ -1871,7 +1878,7 @@ def build_occurrence_clone_plan(workspace, parameters, values, clone_state="abse
     clone_by_occurrence = {}
     clone_names = {}
     for parameter in parameters:
-        if parameter.get("backend", "schematic") != "schematic" or parameter["parameter_id"] not in values:
+        if not native_parameter(parameter) or parameter["parameter_id"] not in values:
             continue
         chain = parameter.get("occurrence_chain") or []
         if parameter.get("owner_occurrence_path", "/") != "/" and not chain:
@@ -2014,10 +2021,14 @@ def _schematic_parameter_rows(workspace, parameters, values, target_mode="patche
     rows = []
     copied = workspace["copied_libraries"]
     for parameter in parameters:
-        if parameter.get("backend", "schematic") != "schematic":
+        if not native_parameter(parameter):
             continue
         parameter_id = parameter["parameter_id"]
         if parameter_id not in values:
+            continue
+        from .design_variables import is_design, working_row
+        if is_design(parameter):
+            rows.append(working_row(parameter, values[parameter_id] if render_values else None))
             continue
         owner_library = parameter["owner_library"]
         if owner_library not in copied:
@@ -2050,6 +2061,7 @@ def _schematic_parameter_rows(workspace, parameters, values, target_mode="patche
             "master_cell": parameter.get("master_cell"),
             "property": parameter["name"],
             "effective_aliases": list(parameter.get("effective_aliases") or []),
+            "baseline_expression": parameter.get("baseline_expression", parameter.get("current_value")),
             "prop_type": prop_type,
             "value": rendered,
             "parameter_id": parameter_id,

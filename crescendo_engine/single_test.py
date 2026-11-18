@@ -28,7 +28,7 @@ def project_setup(setup, name):
         selected_dependencies = [row for row in dependencies if row.get('test') == name]
         if dependencies and not selected_dependencies:
             continue
-        variable['dependent_tests'] = selected_dependencies
+        variable['dependent_tests'] = None if variable.get('dependent_tests') is None else selected_dependencies
         for child in (variable.get('native_content') or {}).get('children') or []:
             if child.get('tag') == 'dependenttests':
                 child['children'] = [item for item in child.get('children') or []

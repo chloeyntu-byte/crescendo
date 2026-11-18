@@ -119,6 +119,24 @@ class UnifiedConfigurationGuiEdgeTests(unittest.TestCase):
         self.assertFalse(self.showerror.called)
 
     def test_cancelled_load_keeps_ui_and_reports_retained_suite(self):
+        self._check_cancelled_load_keeps_ui_and_reports_retained_suite()
+
+    def test_rpc_cancelled_load_keeps_unsaved_ui_and_reports_retained_suite(self):
+        import sys
+        from crescendo_engine.gui_service import GuiServiceDelegate
+        from tests.gui_service_worker import FixtureService
+        parent = FixtureService({'runtime': {'run_root': os.path.join(self.directory.name, 'rpc')}})
+        transport = GuiServiceDelegate(parent, [sys.executable, '-B', '-m', 'tests.gui_service_worker'])
+        try:
+            self._check_cancelled_load_keeps_ui_and_reports_retained_suite(transport)
+        finally:
+            if transport.process is not None:
+                transport.call('exit_optimizer')
+                transport.process.wait(timeout=15)
+            else:
+                transport.close()
+
+    def _check_cancelled_load_keeps_ui_and_reports_retained_suite(self, transport=None):
         from crescendo_engine.cadence import CommandCancelled
         app = self._install()
         path = self._save()
@@ -129,6 +147,8 @@ class UnifiedConfigurationGuiEdgeTests(unittest.TestCase):
             error = CommandCancelled('stop')
             error.configuration_import = {'document': read_configuration(path), 'cancelled': True,
                 'warnings': ['Cancellation retained working-copy resources and source binding for recovery.']}
+            if transport is not None:
+                return transport.call('cancel_configuration', error.configuration_import)
             raise error
         self.service.load_configuration = cancel
         self._load(path)

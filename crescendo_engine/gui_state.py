@@ -157,6 +157,8 @@ def parameter_group_name(parameter):
 
 
 def parameter_owner_label(parameter):
+    if parameter.get("source_kind") in ("global", "top"):
+        return "Design variables / %s / %s" % (parameter.get("variable_test"), parameter.get("source"))
     path = (
         parameter.get("hierarchy_path") or parameter.get("instance_path") or
         parameter.get("path") or "/"
@@ -302,13 +304,27 @@ def validate_variable_configs(parameters, configs, require_selected=True):
                 "display_name": label, "minimum": minimum,
             })
         if minimum is not None and maximum is not None:
-            variables.append({
+            variable = {
                 "parameter_id": parameter_id,
                 "minimum": int(round(minimum)) if value_type == "integer" else minimum,
                 "maximum": int(round(maximum)) if value_type == "integer" else maximum,
                 "scale": "linear" if value_type == "integer" else scale,
                 "value_type": value_type,
-            })
+            }
+            for field in ("step", "grid_origin", "link_group"):
+                if field in config:
+                    variable[field] = config[field]
+            if parameter.get("source_kind") in ("global", "top"):
+                variable.update(source_kind=parameter["source_kind"], variable_source=parameter["source"], variable_test=parameter["variable_test"])
+            variables.append(variable)
+    if not issues and any(any(field in row for field in ("step", "grid_origin", "link_group")) for row in variables):
+        from .optimizers import validate_variables
+        from .engineering import merge_catalog_domain
+        try:
+            validate_variables([merge_catalog_domain(row, by_id.get(row["parameter_id"], {})) for row in variables])
+        except ValueError as error:
+            issues.append({"code": "invalid_parameter_domain", "parameter_id": None,
+                           "field": "link_group", "message": str(error), "display_name": "Parameter groups / grid"})
     return {"variables": variables, "issues": issues}
 
 

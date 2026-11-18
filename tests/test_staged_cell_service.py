@@ -61,6 +61,41 @@ class StagedCellServiceTest(unittest.TestCase):
                 "parameters": [], "outputs": [], "eda_context": {"pdk": {}},
                 "source_identity": {"schema_version": "crescendo.source_design_identity.v1", "fingerprint": "full-user-source"}}
 
+    def test_manual_validation_uses_targeted_probe_and_apply_not_tree_discovery(self):
+        catalog, _preview = self.service.inspect_tests(self.path)
+        validation = {"schema_version": "crescendo.instance_paths.v1", "lines": [
+            {"line": 1, "valid": True, "design": self.scopes[0]["design"], "hierarchy_path": "/I1"},
+            {"line": 2, "valid": False, "design": self.scopes[0]["design"], "hierarchy_path": "/I10/missing", "reason": "missing"}],
+            "scopes": [self.scopes[0]], "hierarchy": self.hierarchy}
+        with mock.patch.object(hierarchy, "resolve_instance_paths", return_value=copy.deepcopy(validation)) as resolve, \
+             mock.patch.object(hierarchy, "probe_hierarchy", return_value=self.hierarchy) as probe, \
+             mock.patch.object(hierarchy, "cell_scope_records", return_value=self.scopes):
+            token, preview = self.service.inspect_instance_paths(catalog, "T", "/I1\n/I10/missing")
+        self.assertEqual(preview["cell_scopes"], [self.scopes[0]])
+        self.assertEqual(preview["instance_path_validation"]["lines"][1]["line"], 2)
+        self.assertNotIn("hierarchy", preview["instance_path_validation"])
+        self.assertTrue(probe.call_args[1]["targeted"])
+        self.assertEqual(probe.call_args[1]["selected_cell_paths"], [self.scopes[0]])
+        self.assertTrue(self.service.inspections[token]["targeted"])
+        with mock.patch.object(hierarchy, "cell_scope_records", return_value=self.scopes), \
+             mock.patch("crescendo_engine.server.prepare_setup", return_value=self._prepared()) as prepare:
+            _identifier, prepared = self.service.prepare_cells(token, ["scope-I1"])
+        self.assertTrue(prepare.call_args[1]["targeted"])
+        self.assertEqual(prepared["cell_selection"]["scopes"], [self.scopes[0]])
+
+    def test_all_invalid_manual_lines_publish_no_inspection_or_prepared(self):
+        catalog, _preview = self.service.inspect_tests(self.path)
+        validation = {"lines": [{"line": 1, "valid": False, "reason": "invalid"}],
+                      "scopes": [], "hierarchy": {"designs": []}}
+        with mock.patch.object(hierarchy, "resolve_instance_paths", return_value=validation), \
+             mock.patch.object(hierarchy, "probe_hierarchy") as probe:
+            token, preview = self.service.inspect_instance_paths(catalog, "T", "invalid")
+        self.assertIsNone(token)
+        self.assertFalse(preview["cell_scopes"])
+        self.assertFalse(self.service.prepared)
+        self.assertFalse(self.service.inspections)
+        probe.assert_not_called()
+
     def test_preview_is_cells_only_and_does_not_register_or_deep_prepare(self):
         with mock.patch.object(hierarchy, "probe_hierarchy", return_value=self.hierarchy) as probe, \
                 mock.patch.object(hierarchy, "cell_scope_records", return_value=self.scopes, create=True), \
@@ -262,8 +297,42 @@ class StagedCellServiceTest(unittest.TestCase):
                 mock.patch.object(self.service, "_launch", side_effect=launched):
             result = self.service.resume(checkpoint)
         self.assertEqual(result["run_id"], "resumed-scoped")
-        prepare.assert_called_once_with(self.path, backend="maestro", initialize_validation=False,
+        prepare.assert_called_once_with(self.path, backend="maestro", initialize_validation=False, legacy_catalog=True,
                                         selected_cell_paths=prepared["cell_selection"]["scopes"])
+
+    def test_manual_checkpoint_replays_scoped_discovery_in_service_and_cli(self):
+        checkpoint, prepared = self._scoped_checkpoint()
+        protocol = {"schema_version": "crescendo.scoped_discovery.v1"}
+        prepared["cell_selection"]["discovery"] = protocol
+        for section in ("manifest", "spec"):
+            checkpoint[section]["cell_selection"]["discovery"] = copy.deepcopy(protocol)
+        checkpoint["payload_sha256"] = runner._checkpoint_checksum(checkpoint)
+        def launched(*_args, **kwargs):
+            kwargs["continuation_lease"].release()
+            return {"run_id": "manual-resumed"}
+        with mock.patch.object(self.service, "prepare", return_value=("scoped", prepared)) as prepare, \
+             mock.patch.object(self.service, "_cleanup_checkpoint_origin", return_value={"state": "skipped"}), \
+             mock.patch.object(self.service, "_launch", side_effect=launched):
+            self.service.resume(checkpoint)
+        self.assertTrue(prepare.call_args[1]["targeted"])
+        spec = copy.deepcopy(checkpoint["spec"])
+        spec["setup_path"] = self.path
+        with mock.patch("crescendo_engine.runner.prepare_setup", side_effect=RuntimeError("prepare sentinel")) as prepare:
+            with self.assertRaisesRegex(RuntimeError, "prepare sentinel"):
+                runner._run_optimization_unleased(spec, self.config, run_root=os.path.join(self.root, "manual-cli"))
+        self.assertTrue(prepare.call_args[1]["targeted"])
+        self.assertEqual(prepare.call_args[1]["selected_cell_paths"], prepared["cell_selection"]["scopes"])
+        runner.validate_checkpoint_integrity(checkpoint)
+        mismatch = copy.deepcopy(checkpoint)
+        mismatch["spec"]["cell_selection"].pop("discovery")
+        mismatch["payload_sha256"] = runner._checkpoint_checksum(mismatch)
+        with self.assertRaisesRegex(ValueError, "disagree"):
+            runner.validate_checkpoint_integrity(mismatch)
+        bad = copy.deepcopy(checkpoint)
+        bad["manifest"]["cell_selection"]["discovery"] = {"schema_version": "v99"}
+        bad["payload_sha256"] = runner._checkpoint_checksum(bad)
+        with self.assertRaisesRegex(ValueError, "discovery protocol"):
+            runner.validate_checkpoint_integrity(bad)
 
     def test_cli_without_prepared_replays_persisted_scopes(self):
         checkpoint, prepared = self._scoped_checkpoint()

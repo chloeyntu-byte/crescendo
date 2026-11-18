@@ -52,6 +52,24 @@ class PrivateSuiteGuiTests(unittest.TestCase):
             load.assert_called_once_with(suite_id='s1')
         self.assertEqual(self.service.inspect_calls, [])
 
+    def test_isolation_codes_and_evidence_policy_are_visible(self):
+        app = self._open()
+        self.service.list_private_suites = lambda: {'suites': [{'id': 's1', 'name': 'Isolated',
+            'status': 'quarantined', 'can_load': False, 'can_delete': True,
+            'delete_policy': 'preserve_evidence', 'blocked_reasons': [
+                {'code': 'oa_lock_held', 'message': 'OA lock requires release by its original holder.'}]}]}
+        app.open_private_suites()
+        window = self._suite_window()
+        tree = next(w for w in self._widgets(window) if isinstance(w, gui.ttk.Treeview))
+        self._wait(lambda: len(tree.get_children()) == 1)
+        tree.selection_set(tree.get_children()[0])
+        tree.event_generate('<<TreeviewSelect>>')
+        self.root.update()
+        details = next(w for w in self._widgets(window) if isinstance(w, gui.tk.Text)).get('1.0', 'end')
+        self.assertIn('oa_lock_held', details)
+        self.assertIn('original holder', details)
+        self.assertIn('preserves evidence', details)
+
     def test_update_passes_selected_sections(self):
         app = self._open()
         self.service.list_private_suites = lambda: {'suites': [{'id': 's1', 'name': 'A'}]}

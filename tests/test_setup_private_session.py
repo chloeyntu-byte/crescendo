@@ -37,7 +37,8 @@ class SetupPrivateSessionTests(unittest.TestCase):
                     atomic_write_json(os.path.join(row['path'], MARKER), {
                         'schema_version': 'crescendo.same_library_views.v1', 'token': row['token'], 'target': row['target']})
             controller.status = 'ready'
-            controller.binding_verification = {'ok': True, 'native_run_invoked': False}
+            controller.binding_verification = {'ok': True, 'native_run_invoked': False,
+                'default_lists': [{'view_list': 'spectre veriloga schematic', 'stop_list': 'spectre'}]}
             controller.view_fingerprints = controller.view_identity()
             controller.persist()
         self.native = native
@@ -606,6 +607,21 @@ class SetupPrivateSessionTests(unittest.TestCase):
     def test_headless_provider_has_no_session_or_new_ownership_requirement(self):
         with session.borrow_setup_private_session({}, {}, 'not-created') as workspace:
             self.assertIsNone(workspace)
+
+    def test_reopened_legacy_suite_rebinds_owned_configs_before_execution(self):
+        controller = session._controller(self.reference)
+        controller.binding_verification.pop('default_lists')
+        controller.persist()
+        old_views = copy.deepcopy(self.reference['views'])
+        self.assertTrue(session.close_setup_private_session(self.reference)['cleanup_proven'])
+        session.reopen_setup_private_session(self.reference, self.config)
+        with session.borrow_setup_private_session(self.prepared, self.config, 'not-created'):
+            self.assertEqual(self.count, 2)
+            info = session.private_session_info(self.reference)
+            self.assertEqual(info['views'], old_views)
+            self.assertTrue(info['binding_verification']['default_lists'])
+        with session.borrow_setup_private_session(self.prepared, self.config, 'not-created'):
+            self.assertEqual(self.count, 2)
 
     def test_changed_private_config_blocks_borrow_until_reapplied(self):
         path = os.path.join(self.reference['configs'][0]['path'], 'expand.cfg')

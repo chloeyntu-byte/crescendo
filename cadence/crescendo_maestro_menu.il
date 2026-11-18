@@ -23,21 +23,65 @@ unless(boundp('crescMaestroLaunchJobs)
   crescMaestroLaunchJobs = makeTable('crescMaestroLaunchJobs nil)
 )
 
-; IPC pre-expands variables and quotes. Keep every dynamic argument inside an
-; owned temporary script; only its generated ASCII path enters the IPC command.
-procedure(crescMaestroWriteLaunchScript(context)
-  let((script port outcome)
-    script = makeTempFileName("/tmp/crescendo_cmd_XXXXXX")
-    unless(rexMatchp("^/tmp/crescendo_cmd_[A-Za-z0-9_]+$" script)
-      when(isFile(script) deleteFile(script))
+; IPC pre-expands variables and quotes. Use the local sticky directory even
+; when Cadence uses a different temp directory. Only mktemp's ASCII path is
+; passed through IPC. The launcher's path belongs inside the script.
+procedure(crescMaestroTransportDirectoryP(directory)
+  stringp(directory) && strlen(directory) == strlen("/tmp/crescendo-ipc.") + 10
+    && rexMatchp("^/tmp/crescendo-ipc[.][A-Za-z0-9]+$" directory)
+    && system(sprintf(nil
+      "[ -d %s ] && [ ! -L %s ] && [ -O %s ] && [ \"$(/usr/bin/stat -c %%a -- %s)\" = 700 ]"
+      directory directory directory directory)) == 0
+)
+
+procedure(crescMaestroCreateTransport()
+  let((alloc output directory)
+    unless(system("[ -d /tmp ] && [ ! -L /tmp ] && [ -k /tmp ] && [ \"$(/usr/bin/stat -c %u -- /tmp)\" = 0 ]") == 0
+      error("Crescendo: /tmp is not a root-owned sticky directory.\n")
+    )
+    alloc = ipcBeginProcess("/usr/bin/mktemp -d /tmp/crescendo-ipc.XXXXXXXXXX")
+    unless(alloc error("Crescendo: cannot start the local IPC directory allocator.\n"))
+    ipcWait(alloc)
+    output = ipcReadProcess(alloc)
+    when(ipcGetExitStatus(alloc) == 0 && stringp(output) && strlen(output) > 1
+         && substring(output strlen(output) 1) == "\n"
+      directory = substring(output 1 strlen(output) - 1)
+    )
+    unless(crescMaestroTransportDirectoryP(directory)
       error("Crescendo: cannot create a safe local IPC transport path.\n")
     )
-    ; makeTempFileName creates the owned file with private permissions.
-    port = outfile(script)
-    unless(port
-      when(isFile(script) deleteFile(script))
-      error("Crescendo: cannot write the owner-only IPC launch script.\n")
+    directory
+  )
+)
+
+procedure(crescMaestroCreateTransportFile(directory name)
+  let((path)
+    unless(crescMaestroTransportDirectoryP(directory) && member(name '("context" "launch.sh"))
+      error("Crescendo: invalid local IPC transport directory or filename.\n")
     )
+    path = strcat(directory "/" name)
+    ; Noclobber opens a new regular file exclusively. Check both existing
+    ; entries and dangling symlinks, and roll back only our own creation.
+    unless(system(sprintf(nil
+      "umask 077; set -C; [ ! -e %s ] && [ ! -L %s ] && : > %s && { [ -f %s ] && [ ! -L %s ] && [ -O %s ] && [ \"$(/usr/bin/stat -c %%a:%%h -- %s)\" = 600:1 ] || { /bin/rm -f -- %s; exit 1; }; }"
+      path path path path path path path path)) == 0
+      error("Crescendo: cannot create an exclusive owner-only IPC file.\n")
+    )
+    path
+  )
+)
+
+procedure(crescMaestroCleanTransport(directory files)
+  when(crescMaestroTransportDirectoryP(directory)
+    foreach(path files when(path && isFile(path) deleteFile(path)))
+    system(strcat("/bin/rmdir -- " directory))
+  )
+)
+
+procedure(crescMaestroWriteLaunchScript(script context)
+  let((port outcome)
+    port = outfile(script "a")
+    unless(port error("Crescendo: cannot write the owner-only IPC launch script.\n"))
     outcome = errset(
       progn(
         fprintf(port "#!/bin/bash\n/bin/rm -f -- \"$0\"\nexec %s %s\n"
@@ -46,7 +90,6 @@ procedure(crescMaestroWriteLaunchScript(context)
       ) t)
     close(port)
     unless(outcome && car(outcome)
-      when(isFile(script) deleteFile(script))
       error("Crescendo: owner-only IPC launch script export failed.\n")
     )
     script
@@ -60,7 +103,7 @@ procedure(crescMaestroLaunchOutput(_process data)
 procedure(crescMaestroLaunchExit(process status)
   let((paths)
     paths = crescMaestroLaunchJobs[process]
-    foreach(path paths when(isFile(path) deleteFile(path)))
+    when(paths crescMaestroCleanTransport(car(paths) cdr(paths)))
     remove(process crescMaestroLaunchJobs)
   )
   unless(equal(status 0)
@@ -234,7 +277,7 @@ procedure(crescMaestroWriteContext(session context @optional sourceWindow)
       result = errset(maeIsSetupModified(?session session) t)
       when(result && member(car(result) list(t nil)) modified = car(result))
     )
-    port = outfile(context)
+    port = outfile(context "a")
     unless(port error("Crescendo: cannot write an owner-only launch context.\n"))
     outcome = errset(
       progn(
@@ -317,29 +360,29 @@ procedure(crescMaestroWriteContext(session context @optional sourceWindow)
 )
 
 procedure(crescMaestroOpenCurrent()
-  let((sourceWindow session context launchScript outcome process)
+  let((sourceWindow session directory context launchScript outcome process)
     sourceWindow = hiGetCurrentWindow()
     session = axlGetWindowSession(sourceWindow)
     unless(session error("Open Crescendo from the source ADE window.\n"))
     unless(isFile(crescPluginLauncher)
       error("Crescendo: launcher is unavailable: %s\n" crescPluginLauncher)
     )
-    ; Generate the name in the same directory where outfile creates it.
-    context = makeTempFileName(strcat(getTempDir() "/crescendo_ctx_XXXXXX"))
     outcome = errset(
       progn(
-        crescMaestroWriteContext(session context sourceWindow)
         ; Each click creates an independent UI bound to this window.
-        launchScript = crescMaestroWriteLaunchScript(context)
+        directory = crescMaestroCreateTransport()
+        context = crescMaestroCreateTransportFile(directory "context")
+        launchScript = crescMaestroCreateTransportFile(directory "launch.sh")
+        crescMaestroWriteContext(session context sourceWindow)
+        crescMaestroWriteLaunchScript(launchScript context)
         process = ipcBeginProcess(strcat("/bin/bash " launchScript)
           "" 'crescMaestroLaunchOutput 'crescMaestroLaunchOutput 'crescMaestroLaunchExit)
         unless(process error("Crescendo: cannot start the optimizer UI.\n"))
-        crescMaestroLaunchJobs[process] = list(launchScript context)
+        crescMaestroLaunchJobs[process] = list(directory launchScript context)
         t
       ) t)
     unless(outcome && car(outcome)
-      when(launchScript && isFile(launchScript) deleteFile(launchScript))
-      when(isFile(context) deleteFile(context))
+      crescMaestroCleanTransport(directory list(launchScript context))
       error("Crescendo: launch failed; see CIW diagnostics.\n")
     )
     printf("Crescendo launch requested for %s/%s/%s\n"

@@ -1207,7 +1207,7 @@ class OptimizerServiceTest(unittest.TestCase):
                     service, "_cleanup_checkpoint_origin", return_value={"state": "skipped"},
             ), mock.patch.object(service, "_launch", side_effect=launch):
                 payload = service.resume(checkpoint)
-            prepare_mock.assert_called_once_with("/saved/data.sdb", backend="adexl", initialize_validation=False)
+            prepare_mock.assert_called_once_with("/saved/data.sdb", backend="adexl", initialize_validation=False, legacy_catalog=True)
             self.assertEqual(payload["run_id"], "resumed-adexl")
 
     def test_cli_resume_terminates_orphan_before_launch_and_waits_for_terminal(self):
@@ -1280,7 +1280,8 @@ class OptimizerServiceTest(unittest.TestCase):
                     },
                 }
 
-            def prepare(path, initialize_validation=None):
+            def prepare(path, initialize_validation=None, legacy_catalog=False):
+                self.assertIs(legacy_catalog, True)
                 events.append("prepared")
                 self.assertEqual(path, "/override/maestro")
                 self.assertIs(initialize_validation, False)
@@ -1550,7 +1551,7 @@ class OptimizerServiceTest(unittest.TestCase):
                         second.resume(checkpoint)
                 finally:
                     held[0].release()
-            first_prepare.assert_called_once_with("/saved/maestro", initialize_validation=False)
+            first_prepare.assert_called_once_with("/saved/maestro", initialize_validation=False, legacy_catalog=True)
             second_prepare.assert_not_called()
 
     def test_resume_passes_both_held_leases_to_runner_without_self_conflict(self):

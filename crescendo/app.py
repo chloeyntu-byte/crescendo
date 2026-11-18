@@ -204,12 +204,126 @@ def _install_palette():
     core.PALETTE = T.CHART
 
 
+class _PlotRegion(object):
+    """Translate one plot into the page canvas; scrolling retains every item."""
+
+    def __init__(self, surface, index):
+        self.surface = surface
+        self.widget = surface.page.canvas
+        self.tag = "plot:{}".format(index)
+        self.y = 0
+
+    def winfo_width(self):
+        return max(420, self.widget.winfo_width() - 88)
+
+    def bind(self, *_args):
+        # The surface coalesces page width changes for all regions together.
+        pass
+
+    def delete(self, _tag):
+        self.widget.delete(self.tag)
+
+    def _create(self, kind, coordinates, options):
+        shifted = [value + (44 if index % 2 == 0 else self.y)
+                   for index, value in enumerate(coordinates)]
+        options["tags"] = tuple(options.get("tags", ())) + (self.tag,)
+        return getattr(self.widget, kind)(*shifted, **options)
+
+    def create_text(self, *coordinates, **options):
+        return self._create("create_text", coordinates, options)
+
+    def create_line(self, *coordinates, **options):
+        return self._create("create_line", coordinates, options)
+
+    def create_oval(self, *coordinates, **options):
+        return self._create("create_oval", coordinates, options)
+
+    def __getattr__(self, name):
+        return getattr(self.widget, name)
+
+
+class _ParetoSurface(object):
+    """Canvas-native cards share the page viewport instead of child windows."""
+
+    def __init__(self, page):
+        self.page = page
+        self.widget_parent = page.body
+        # Hosts cancel interpreter timers through the root before child teardown.
+        self._timer_owner = page.winfo_toplevel()
+        self.plots = []
+        self.job = None
+        self.size = None
+        page.body.bind("<Configure>", self._schedule, add="+")
+        page.canvas.bind("<Configure>", self._schedule, add="+")
+        page.canvas.bind("<Destroy>", self._destroyed, add="+")
+
+    def winfo_children(self):
+        return list(self.plots)
+
+    def _destroyed(self, event):
+        if event.widget is self.page.canvas and self.job is not None:
+            self._timer_owner.after_cancel(self.job)
+            self.job = None
+
+    def _schedule(self, event=None):
+        # Position-only Configure events caused by scrolling do no drawing work.
+        size = (self.page.canvas.winfo_width(), self.page.body.winfo_reqheight())
+        if size == self.size:
+            return
+        self.size = size
+        if self.job is not None:
+            self._timer_owner.after_cancel(self.job)
+        self.job = self._timer_owner.after(40, self._layout)
+
+    def _layout(self):
+        if self.job is not None:
+            self._timer_owner.after_cancel(self.job)
+            self.job = None
+        canvas = self.page.canvas
+        width = canvas.winfo_width()
+        top = self.page.body.winfo_reqheight() + 7
+        for index, plot in enumerate(self.plots):
+            y = top + index * 430
+            header_key = (width, y)
+            if getattr(plot, "_header_key", None) != header_key:
+                plot._header_key = header_key
+                tag = plot.canvas.tag + ":header"
+                canvas.delete(tag)
+                canvas.create_rectangle(28, y, max(448, width - 28), y + 416,
+                                        fill=T.PANEL, outline=T.BORDER, tags=(tag,))
+                canvas.create_text(44, y + 12, anchor="nw", fill=T.TEXT, font=T.FONTS["body"],
+                    text="{}  ×  {}".format(plot.left_definition.get("output_key") or "X",
+                                            plot.right_definition.get("output_key") or "Y"), tags=(tag,))
+                canvas.create_text(44, y + 38, anchor="nw", fill=T.MUTED, font=T.FONTS["small"],
+                    text="X: {}\nY: {}".format(metric_definition_label(plot.left_definition),
+                                                metric_definition_label(plot.right_definition)), tags=(tag,))
+                plot.canvas.y = y + 74
+                plot._drawn_key = None
+                if plot._points is not None:
+                    plot.render(plot._points)
+        canvas.configure(scrollregion=(0, 0, width, top + len(self.plots) * 430 + 18))
+
+
 class ParetoPlot(core.ParetoPlot):
     """Kernel Pareto plot with Crescendo styling and an explicit front line."""
 
     def __init__(self, parent, app, left_definition, right_definition):
-        ttk.Frame.__init__(self, parent, style="Card.TFrame", padding=(16, 12))
+        self._surface = parent if isinstance(parent, _ParetoSurface) else None
+        self._timer_owner = (parent.page if self._surface else parent).winfo_toplevel()
         self.app = app
+        if self._surface is not None:
+            # Retain normal Tk ownership/lifecycle; this frame stays unmapped.
+            ttk.Frame.__init__(self, parent.page.body)
+            self.left_definition = left_definition
+            self.right_definition = right_definition
+            self.canvas = _PlotRegion(parent, len(parent.plots))
+            self._points = None
+            self._drawn_key = None
+            self._resize_job = None
+            self._configured_size = None
+            parent.plots.append(self)
+            return
+        ttk.Frame.__init__(self, parent, style="Card.TFrame", padding=(16, 12))
         self.left_definition = left_definition
         self.right_definition = right_definition
         ttk.Label(self, text="{}  ×  {}".format(left_definition.get("output_key") or "X",
@@ -221,14 +335,55 @@ class ParetoPlot(core.ParetoPlot):
         self.canvas = tk.Canvas(self, width=780, height=330, background=T.PANEL, highlightthickness=0)
         self.canvas.pack(fill="x", expand=True)
         self._points = None
-        self.canvas.bind("<Configure>", lambda _e: self._points is not None and self.render(self._points))
+        self._drawn_key = None
+        self._resize_job = None
+        self._configured_size = None
+        self.canvas.bind("<Configure>", self._configure_plot)
+
+    def pack(self, *args, **kwargs):
+        if self._surface is not None:
+            self._surface._layout()
+        else:
+            ttk.Frame.pack(self, *args, **kwargs)
+
+    def _configure_plot(self, event):
+        size = (event.width, event.height)
+        if size == self._configured_size:
+            return
+        self._configured_size = size
+        if self._resize_job is not None:
+            self._timer_owner.after_cancel(self._resize_job)
+        self._resize_job = self._timer_owner.after(40, self._resize_plot)
+
+    def _resize_plot(self):
+        self._resize_job = None
+        if self._points is not None:
+            self.render(self._points)
+
+    def destroy(self):
+        if self._resize_job is not None:
+            self._timer_owner.after_cancel(self._resize_job)
+            self._resize_job = None
+        if self._surface is not None:
+            self.canvas.delete("all")
+            self.canvas.widget.delete(self.canvas.tag + ":header")
+            self._surface.plots.remove(self)
+            self._surface._layout()
+        ttk.Frame.destroy(self)
 
     def render(self, points):
-        self._points = points
+        # Snapshot values so an in-place candidate update also invalidates data.
+        self._points = [dict(point) for point in points]
         canvas = self.canvas
-        canvas.delete("all")
         width = max(420, canvas.winfo_width() or 780)
         height = 330
+        signature = tuple(tuple(point.get(key) for key in
+            ("candidate_id", "x", "y", "generation", "feasible", "pareto")) for point in points)
+        key = (signature, width, height)
+        if key == self._drawn_key:
+            return
+        self._drawn_key = key
+        canvas.delete("all")
         left, right, top, bottom = 70, width - 20, 16, height - 42
         if not points:
             canvas.create_text(width / 2.0, height / 2.0, text="Waiting for completed candidates…", fill=T.FAINT, font=T.FONTS["body"])
@@ -382,8 +537,8 @@ class CrescendoGui(_Base):
         self.pro_switch = W.ToggleSwitch(footer, self.pro_mode_var, text="Pro mode (all options)",
                                          command=self._apply_mode)
         self.pro_switch.pack(fill="x", padx=0)
-        tk.Label(footer, text="{} {} · kernel {}".format(PRODUCT, __version__, KERNEL_VERSION), background=T.INK,
-                 foreground="#4d535e", font=T.FONTS["tiny"], anchor="w").pack(fill="x", padx=18, pady=(6, 0))
+        tk.Label(footer, text="{} {}\nkernel {}".format(PRODUCT, __version__, KERNEL_VERSION), background=T.INK,
+                 foreground="#4d535e", font=T.FONTS["tiny"], anchor="w", justify="left").pack(fill="x", padx=18, pady=(6, 0))
 
         main = tk.Frame(self.root, background=T.BACKGROUND)
         main.pack(side="left", fill="both", expand=True)
@@ -605,6 +760,14 @@ class CrescendoGui(_Base):
                     if str(widget) in self._dynamic_hidden:
                         continue
                     widget.pack(**info)
+        tree = getattr(self, "parameter_tree", None)
+        if tree is not None:
+            if getattr(self, "prepared", None):
+                self.parameter_tree_dirty = True
+                self.render_parameter_tree()
+            columns = tuple(tree["columns"])
+            tree.configure(displaycolumns=columns if pro else tuple(name for name in columns if name != "link_group"),
+                           selectmode="extended" if pro else "browse")
         resources = getattr(self, "execution_resources_card", None)
         if resources is not None:
             if pro:
@@ -894,6 +1057,8 @@ class CrescendoGui(_Base):
         self.test_combo = ttk.Combobox(test_card, textvariable=self.test_choice_var, values=(), state="disabled")
         self.test_combo.pack(fill="x", pady=(10, 0))
         self.test_combo.bind("<<ComboboxSelected>>", self._test_selected)
+        self._build_instance_path_controls(test_card)
+        self._advanced(self.instance_path_controls)
 
         cell_card = self._card(parent)
         head = ttk.Frame(cell_card, style="Card.TFrame")
@@ -1020,13 +1185,15 @@ class CrescendoGui(_Base):
             side="left", padx=10, fill="x", expand=True)
         self._advanced(validation)
 
+        self._build_variable_selection_notice(parent)
+        self._build_parameter_link_controls(parent)
         tree_card = self._card(parent, padding=(10, 10))
-        columns = ("current", "minimum", "maximum", "unit", "scale", "validation")
+        columns = ("current", "minimum", "maximum", "unit", "scale", "validation", "link_group")
         self.parameter_tree = core.FastTreeview(tree_card, columns=columns, show="tree headings", selectmode="browse",
                                                 height=22)
         headings = {"#0": "Hierarchy / Parameter", "current": "Current", "minimum": "Minimum", "maximum": "Maximum",
-                    "unit": "Unit", "scale": "Scale", "validation": "PDK Validation"}
-        widths = {"#0": 440, "current": 120, "minimum": 110, "maximum": 110, "unit": 60, "scale": 72, "validation": 200}
+                    "unit": "Unit", "scale": "Scale", "validation": "PDK Validation", "link_group": "Link group"}
+        widths = {"#0": 440, "current": 120, "minimum": 110, "maximum": 110, "unit": 60, "scale": 72, "validation": 200, "link_group": 100}
         for column, heading in headings.items():
             self.parameter_tree.heading(column, text=heading)
             self.parameter_tree.column(column, width=widths[column], stretch=column in ("#0", "validation"))
@@ -1292,20 +1459,32 @@ class CrescendoGui(_Base):
         detail_header = ttk.Frame(detail, style="Card.TFrame")
         detail_header.pack(fill="x")
         ttk.Label(detail_header, text="Candidate Diagnostics & Variables", style="CardTitle.TLabel").pack(side="left")
-        self.optimized_schematic_button = ttk.Button(detail_header, text="Generate Optimized Schematic Cellviews",
-                                                     command=self.generate_optimized_schematic, state="disabled")
+        self.optimized_schematic_button = ttk.Button(
+            detail_header, text=tr("持久化为 schematic_<optname>"),
+            command=self.generate_optimized_schematic, state="disabled",
+        )
         self.optimized_schematic_button.pack(side="right")
-        self._advanced(self.optimized_schematic_button)
-        self.optimized_schematic_status_var = tk.StringVar(value="Select a completed real candidate after optimization stops.")
+        self.optimized_schematic_status_var = tk.StringVar(value=tr("请选择单个已完成的候选。"))
         status_label = ttk.Label(detail, textvariable=self.optimized_schematic_status_var, style="Help.TLabel",
                                  wraplength=980, justify="left")
         status_label.pack(fill="x", pady=(6, 0))
-        self._advanced(status_label)
         self.candidate_detail = tk.Text(detail, height=12, wrap="none", state="disabled", background=T.PANEL_ALT,
                                         foreground=T.TEXT, font=T.FONTS["mono"], relief="flat", padx=10, pady=8,
                                         highlightthickness=0, borderwidth=0)
         self.candidate_detail.pack(fill="x", pady=(8, 0))
         ttk.Frame(parent, style="Page.TFrame", height=18).pack(fill="x")
+
+    def _optimized_schematic_text(self, text):
+        return tr(text)
+
+    def show_optimized_schematic_result(self, result):
+        window = _Base.show_optimized_schematic_result(self, result)
+        window.configure(background=T.BACKGROUND)
+        self.optimized_schematic_result_text.configure(
+            background=T.PANEL_ALT, foreground=T.TEXT, font=T.FONTS["mono"],
+            relief="flat", highlightthickness=0, borderwidth=0, padx=12, pady=10,
+        )
+        return window
 
     def show_timing_details(self):
         _Base.show_timing_details(self)
@@ -1405,8 +1584,7 @@ class CrescendoGui(_Base):
         self.pareto_notice_var = tk.StringVar(value="Add at least two objectives to enable pairwise trade-offs.")
         ttk.Label(parent, textvariable=self.pareto_notice_var, style="Muted.TLabel", wraplength=980).pack(
             anchor="w", padx=30, pady=(4, 8))
-        self.pareto_container = ttk.Frame(parent, style="Page.TFrame")
-        self.pareto_container.pack(fill="both", expand=True, padx=28, pady=(0, 18))
+        self.pareto_container = _ParetoSurface(self.pages["Pareto Trade-offs"])
         self.pareto_plots = []
 
     # --------------------------------------------------------- live updates

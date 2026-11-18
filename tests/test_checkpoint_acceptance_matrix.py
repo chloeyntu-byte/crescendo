@@ -425,7 +425,7 @@ class CheckpointAcceptanceMatrixTest(unittest.TestCase):
                 )
                 terminal = destination_service.wait_for_terminal(launched["run_id"])
 
-            prepare_mock.assert_called_once_with(new_maestro_path, initialize_validation=False)
+            prepare_mock.assert_called_once_with(new_maestro_path, initialize_validation=False, legacy_catalog=True)
             self.assertEqual(terminal["status"]["state"], "completed")
             self.assertIsNone(terminal["server_error"])
             self.assertEqual(resume_calls, [(1, 0)])

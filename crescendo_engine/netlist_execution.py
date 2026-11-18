@@ -500,7 +500,9 @@ def validate_candidate_manifest(manifest):
 
 def render_task_wrapper(task, root, token, environment, timeout_seconds):
     """POSIX compute-side wrapper; no Python/Tk dependency on compute nodes."""
-    control = ensure_dir(os.path.join(os.path.dirname(task["psf_dir"]), "execution"))
+    base = os.path.join(os.path.dirname(task["psf_dir"]), "execution")
+    number = task.get("solver_attempt_number", 1)
+    control = ensure_dir(os.path.join(base, "attempt_%03d" % number) if number > 1 else base)
     files = dict((name, os.path.join(control, name)) for name in (
         "started.receipt", "terminal.receipt", "cancel", "timed_out", "owner_heartbeat", "simulator.stdout", "simulator.stderr"))
     wrapper = os.path.join(control, "execute.sh")
@@ -544,7 +546,7 @@ def render_task_wrapper(task, root, token, environment, timeout_seconds):
         _contract_text('command -v setsid >/dev/null 2>&1 || { cr_finish 127; exit 127; }'),
         _contract_text('printf "%s\\t%s\\tstarted\\t%s\\t%s\\t%s\\n" %s "$cr_token" "$$" "$cr_compute_hostname" "$cr_compute_uid" > "$cr_started.tmp"') % ("%s", "%s", "%s", "%s", "%s", q(RECEIPT)),
         _contract_text('mv "$cr_started.tmp" "$cr_started"'),
-        "setsid %s > %s 2> %s &" % (" ".join(q(arg) for arg in task["argv"]),
+        "setsid %s > %s 2> %s &" % (" ".join(q(arg) for arg in task.get("solver_execution_prefix", []) + task["argv"]),
                                    q(files["simulator.stdout"]), q(files["simulator.stderr"])),
         _contract_text("cr_child=$!"), _contract_text("cr_parent=$$"), _contract_text("cr_start=$(date +%s)"), "(", "  while :; do",
         _contract_text('    if [ -f "$cr_cancel" ]; then kill -TERM "$cr_parent"; exit; fi'),
@@ -653,7 +655,7 @@ def task_termination_evidence(row, terminal):
         stop = row.get("scheduler_stop") or {}
         expected_task = (row.get("task") or {}).get("task_id")
         observation, query = None, None
-        if (record.get("schema_version") == _contract_text("crescendo.scheduler_task_tracking.v1")
+        if (record.get("schema_version") in (_contract_text("crescendo.scheduler_task_tracking.v1"), _contract_text("crescendo.scheduler_task_tracking.v2"))
                 and record.get("job_id") == identifier and record.get("receipt_token") == token
                 and isinstance(expected_task, str) and expected_task and record.get("task_id") == expected_task):
             observation, query = record.get("terminal_observation"), record.get("terminal_query")
@@ -838,7 +840,7 @@ class NetlistExecutionContext(object):
     """One run's shared task capacity; reusable by candidate executor threads."""
     def __init__(self, config, prepared, spec, cancel_check=None, progress_callback=None,
                  command_runner=None, measurement_evaluator=None, ownership_root=None,
-                 owned_run_root=None, prior_ownership_roots=None, point_commit_callback=None):
+                 owned_run_root=None, prior_ownership_roots=None, point_commit_callback=None, run_data_version=1):
         self.config, self.spec = copy.deepcopy(config), copy.deepcopy(spec)
         from .test_selection import selection_plan
         setup = (prepared or {}).get("setup") or {}
@@ -854,6 +856,7 @@ class NetlistExecutionContext(object):
         self.cancel_check = cancel_check
         self.progress_callback = progress_callback
         self.point_commit_callback = point_commit_callback
+        self.run_data_version = run_data_version
         self.command_runner = command_runner or run_command
         self.measurement_evaluator = measurement_evaluator or evaluate_task_outputs
         self.batch_reader = measurement_evaluator is None and spec.get("reader_protocol") == _contract_text("crescendo.batch_reader.v2")
@@ -1035,7 +1038,7 @@ class NetlistExecutionContext(object):
         if not self._scheduler_submission(argv):
             return record
         if record is None:
-            record = dict(identity, schema_version=_contract_text("crescendo.scheduler_task_tracking.v1"), job_id=job_id,
+            record = dict(identity, schema_version=_contract_text("crescendo.scheduler_task_tracking.v2") if self.run_data_version == 2 else _contract_text("crescendo.scheduler_task_tracking.v1"), job_id=job_id,
                 samples=[], query_count=0, latest=None, native_completion_authority=False)
         else:
             record = copy.deepcopy(record)
@@ -1061,6 +1064,14 @@ class NetlistExecutionContext(object):
             changed = any(previous.get(key) != observation.get(key) for key in
                 ("state", "terminal", "not_found", "invalid", "job_exit_code", "metadata", "reason"))
             record["query_count"] += 1
+            if self.run_data_version == 2:
+                from .scheduler_audit import append_query
+                append_query(record, query, observation, task_root, final=final)
+            if self.spec.get("environment_test"):
+                # Full passive census; bounded samples below may omit repeats.
+                counts = record.setdefault("diagnostic_query_states", {})
+                state = observation.get("state") or "UNKNOWN"
+                counts[state] = counts.get(state, 0) + 1
             record["latest"] = observation
             if observation["terminal"]:
                 record["terminal_observation"] = observation
@@ -1077,6 +1088,8 @@ class NetlistExecutionContext(object):
                     scheduler_observation=observation,
                     message="Scheduler %s; simulator completion requires the owned receipt and result evidence" % (
                         observation.get("state") or ("NOT_FOUND" if observation.get("not_found") else "UNKNOWN"))))
+            if self.run_data_version == 2 and len(record["samples"]) > 2:
+                record["samples"] = record["samples"][:1] + record["samples"][-1:]
             record["final"] = bool(final)
         atomic_write_json(os.path.join(task_root, _contract_text("scheduler_observation.json")), record)
         return record
@@ -1109,6 +1122,7 @@ class NetlistExecutionContext(object):
         except Exception as error:
             cancel = {"returncode": None, "error": type(error).__name__}
         queries, observation, query_count = [], None, 0
+        audit_record = {"query_count": 0}
         # A request ACK is never stop proof. Poll only this exact owned ID;
         # disappearance, invalid/mixed records and command errors stop as unknown.
         while time.monotonic() < stop_deadline:
@@ -1132,6 +1146,14 @@ class NetlistExecutionContext(object):
             observation = parse_scheduler_observation(text, job_id)
             if not _scheduler_command_ok(query):
                 observation.update(terminal=False, reason="scheduler_query_failed")
+            if self.run_data_version == 2:
+                from .scheduler_audit import append_query
+                audit_record["query_count"] = query_count
+                append_query(audit_record, query, observation, task_root,
+                             prefix='cancel_', source_stem='scheduler_query' + suffix)
+                if len(queries) > 2:
+                    queries = queries[:1] + queries[-1:]
+            if not _scheduler_command_ok(query):
                 break
             if observation["terminal"] or observation["invalid"] or observation["not_found"]:
                 break
@@ -1143,7 +1165,8 @@ class NetlistExecutionContext(object):
                 "terminal_state": state, "cancel": cancel, "query": queries[-1] if queries else None, "queries": queries,
                 "query_count": query_count, "timeout_seconds": self.scheduler_stop_timeout,
                 "deadline_expired": state is None and time.monotonic() >= stop_deadline,
-                "query_observation": observation, "capability": capability}
+                "query_observation": observation, "capability": capability,
+                **({"query_audit": audit_record} if self.run_data_version == 2 else {})}
 
     def _execute_task(self, manifest, task, timeout_seconds, cancel_check, phases=None, enqueued=None):
         collect_timing = phases is not None
@@ -1171,6 +1194,126 @@ class NetlistExecutionContext(object):
                 semaphore.release()
 
     def _execute_task_owned(self, manifest, task, timeout_seconds, cancel_check, phases=None):
+        from .solver_transient import ATTEMPTS_SCHEMA, retry_settings, last_retry_prefix
+        settings = retry_settings(self.config, self.spec)
+        retries = settings["solver_transient_retries"]
+        local = self.policy["tests"].get(task["test"], self.policy["global"])["distribution"] == "local"
+        base = os.path.join(os.path.dirname(task["psf_dir"]), "execution")
+        attempts = []
+        observation = {"schema_version": ATTEMPTS_SCHEMA, "task_id": task["task_id"],
+            "test": task["test"], "corner": task["corner"], "point_id": task["point_id"],
+            "settings": settings, "attempts": attempts, "outcome": "pending",
+            "configuration": "frozen" if all(key in self.spec for key in settings) else "unconfigured_defaults_allowed"}
+        if phases is None:
+            phases = {}
+        phases["solver_transient"] = observation
+        original_argv = list(task["argv"])
+        total_started = time.monotonic()
+        for number in range(1, retries + 2):
+            if self._cancelled(cancel_check):
+                observation["outcome"] = "cancelled"
+                if attempts:
+                    atomic_write_json(os.path.join(base, "solver_attempts.json"), observation)
+                raise NetlistExecutionError("Candidate cancelled before solver attempt", {
+                    "cancelled": True, "solver_transient": observation})
+            current = dict(task, solver_attempt_number=number,
+                           prior_scheduler_job_ids=[row["scheduler_job_id"] for row in attempts if row.get("scheduler_job_id")])
+            prefix, single_reason = [], "disabled"
+            if settings["solver_transient_last_retry_single_core"]:
+                if not local:
+                    single_reason = "ignored_cluster_mode"
+                elif number > 1 and number == retries + 1:
+                    prefix, single_reason = last_retry_prefix(local)
+                else:
+                    single_reason = "not_last_retry"
+            # This prefix is execution policy, separate from the frozen solver plan.
+            current["solver_execution_prefix"] = prefix
+            started = time.monotonic()
+            attempt_phases = {}
+            record = {"attempt": number, "argv": prefix + original_argv,
+                "single_core_reason": single_reason, "phases": attempt_phases,
+                "control_path": os.path.join(base, "attempt_%03d" % number) if number > 1 else base}
+            attempts.append(record)
+            error, value = None, None
+            try:
+                for path, expected in [(task["netlist_path"], task["netlist_sha256"])] + list((task.get("artifact_sha256") or {}).items()):
+                    if sha256_file(_owned_file(path, manifest["root"], "Frozen solver input")) != expected:
+                        raise NetlistExecutionError("Frozen solver input changed before attempt")
+                value = self._execute_task_attempt(manifest, current, timeout_seconds, cancel_check, attempt_phases)
+                record.update(token=value["token"], receipt=value["receipt"],
+                    termination_evidence=value["termination_evidence"],
+                    scheduler_job_id=value.get("scheduler_job_id"), scheduler_observation=value.get("scheduler_observation"),
+                    retained_logs=value.get("retained_logs"), status="completed")
+                observation["outcome"] = "completed"
+            except NetlistExecutionError as caught:
+                error = caught
+                detail = caught.detail
+                record.update(token=detail.get("token"), receipt=detail.get("receipt"),
+                    termination_evidence=detail.get("termination_evidence"),
+                    scheduler_job_id=detail.get("scheduler_job_id"), scheduler_observation=detail.get("scheduler_observation"),
+                    retained_logs=detail.get("retained_logs"),
+                    first_error=(detail.get("transient_crash") or {}).get("first_error") or str(caught),
+                    failure_reason=str(caught),
+                    transient_crash=detail.get("transient_crash"), status="failed")
+                observation["outcome"] = "failed"
+            finally:
+                from .solver_transient import retain_attempt_evidence
+                record["evidence"] = retain_attempt_evidence(current, manifest, self.owned_run_root, record)
+                record["elapsed_seconds"] = time.monotonic() - started
+                atomic_write_json(os.path.join(record["evidence"]["path"], "attempt.json"), record)
+                observation["elapsed_seconds"] = time.monotonic() - total_started
+                # Sum separately measured attempts, preserving missing native timing.
+                for name in set(key for row in attempts for key in row["phases"]):
+                    samples = [row["phases"][name].get("elapsed_seconds") for row in attempts if name in row["phases"]]
+                    measured = [sample for sample in samples if sample is not None]
+                    latest = next(row["phases"][name] for row in reversed(attempts) if name in row["phases"])
+                    phases[name] = dict(latest, elapsed_seconds=sum(measured) if measured else None,
+                                        attempt_count=len(attempts))
+                atomic_write_json(os.path.join(base, "solver_attempts.json"), observation)
+            if error is None:
+                value["solver_transient"] = observation
+                value["elapsed_seconds"] = observation["elapsed_seconds"]
+                return value
+            detail = error.detail
+            clean = (record.get("termination_evidence") or {}).get("cleanup_proven") is True
+            remote_terminal = ((record.get("scheduler_observation") or {}).get("terminal_observation") or {}).get("terminal") is True
+            retryable = bool(record.get("transient_crash") and clean and (local or remote_terminal)
+                             and not detail.get("timed_out") and not detail.get("cancelled")
+                             and not detail.get("termination_failed"))
+            if self._cancelled(cancel_check):
+                detail["cancelled"] = True
+                observation["outcome"] = "cancelled"
+                retryable = False
+            if retryable and number > retries:
+                observation["outcome"] = "transient_crash_exhausted"
+                detail["failure_reason"] = "transient_crash_exhausted"
+                detail["first_cause"] = "transient_crash_exhausted"
+                error.args = ("transient_crash_exhausted",)
+                error.infrastructure = True
+            detail["solver_transient"] = observation
+            atomic_write_json(os.path.join(base, "solver_attempts.json"), observation)
+            if not retryable or number > retries:
+                raise error
+            # The preceding compute receipt AND (for Cluster) exact scheduler
+            # terminal observation are proven before touching outputs/resubmitting.
+            # Rename the PSF only after validating the complete owned tree.
+            from .retention import _reject_mounts_or_cross_device_tree, _reject_unsafe_regular_tree
+            psf = task["psf_dir"]
+            with native_log_cleanup_scope(paths=(os.path.dirname(psf),)):
+                device = os.stat(manifest["root"]).st_dev
+                _reject_mounts_or_cross_device_tree(psf, device, "transient solver attempt")
+                _reject_unsafe_regular_tree(psf, device, "transient solver attempt")
+                archive = ensure_dir(os.path.join(base, "attempt_%03d" % number))
+                destination = os.path.join(archive, "psf")
+                if os.path.lexists(destination):
+                    raise NetlistExecutionError("Solver attempt archive already exists")
+                os.rename(psf, destination)
+                os.mkdir(psf, 0o700)
+            self._emit({"stage": "solver_transient_retry", "candidate_id": manifest["candidate_id"],
+                "task_id": task["task_id"], "attempt": number, "next_attempt": number + 1,
+                "reason": "solver_transient_crash", "termination_evidence": record["termination_evidence"]})
+
+    def _execute_task_attempt(self, manifest, task, timeout_seconds, cancel_check, phases=None):
         if phases is None:
             phases = {}
         task_preparation_started = timestamp()
@@ -1184,6 +1327,8 @@ class NetlistExecutionContext(object):
             validate_execution_contract(contract)
         token = uuid.uuid4().hex
         launch_epoch = time.time()
+        from .solver_transient import solver_log_baseline
+        task = dict(task, solver_log_baseline=solver_log_baseline(task), solver_receipt_token=token)
         env = child_environment(self.config, home=ensure_dir(os.path.join(os.path.dirname(task["psf_dir"]), "home")))
         timeout_policy = copy.deepcopy(policy["timeouts"])
         if timeout_policy["fields"]["run_seconds"]["source"] == _contract_text("cr_runtime_fallback"):
@@ -1322,11 +1467,15 @@ class NetlistExecutionContext(object):
         scheduler_terminal_since, scheduler_receipt_missing = None, False
         scheduler_identity = dict(task_identity, receipt_token=token)
         awaiting_measurement = False
+        termination_evidence = None
+        retained_logs = None
         failure_stage = "submit"
         phases["execution_preparation"] = {"elapsed_seconds": elapsed(task_preparation_started, timestamp())}
         pending = PendingSamples() if remote else None
         submit_finished = None
         try:
+            if self._cancelled(cancel_check):
+                raise NetlistExecutionError("Candidate cancelled before submission", {"cancelled": True})
             with measure(phases, "submission" if remote else "local_command"):
                 submit_result = run_owned_command(
                     argv, cwd=task["cwd"], env=submit_env,
@@ -1337,7 +1486,8 @@ class NetlistExecutionContext(object):
             if remote:
                 submission_observation = parse_submit_streams(submit_result.get("stdout_tail"), submit_result.get("stderr_tail"))
                 scheduler_job_id = submission_observation["job_id"]
-                submission_identity_failed = bool(self._scheduler_submission(argv) and not submission_observation["accepted"])
+                submission_identity_failed = bool(self._scheduler_submission(argv) and not submission_observation["accepted"]
+                                                  or scheduler_job_id in task.get("prior_scheduler_job_ids", []))
                 active["scheduler_job_id"] = scheduler_job_id
                 active["submission_observation"] = submission_observation
                 timeout_clock.job_id = scheduler_job_id
@@ -1432,6 +1582,13 @@ class NetlistExecutionContext(object):
             scheduler_failed = bool(scheduler_terminal and (
                 scheduler_terminal["state"] not in ("SUCCEEDED", "SUCCESS", "DONE", "FINISHED")
                 or scheduler_terminal.get("job_exit_code") not in (None, 0)))
+            from .solver_transient import match_transient_crash
+            transient = (match_transient_crash(task, files, terminal, root, launch_epoch)
+                         if not timed_out and not cancelled else None)
+            if transient:
+                raise NetlistExecutionError("solver_transient_crash", {
+                    "failure_stage": "solve", "transient_crash": transient,
+                    "receipt": terminal, "command": submit_result})
             if scheduler_receipt_missing or scheduler_failed:
                 raise NetlistExecutionError("Scheduler job ended but owned compute receipt is missing or conflicts with scheduler state", {
                     "failure_stage": failure_stage, "scheduler_terminal_state": scheduler_terminal["state"],
@@ -1506,6 +1663,12 @@ class NetlistExecutionContext(object):
         except Exception as error:
             if isinstance(error, NetlistExecutionError):
                 error.detail.setdefault("failure_stage", failure_stage)
+                error.detail.setdefault("token", token)
+                error.detail.setdefault("receipt", terminal)
+                error.detail.setdefault("termination_evidence", termination_evidence)
+                retained_logs = retain_shared_cli_task_logs(dict(task, **task_identity),
+                    self.owned_run_root or root, manifest["candidate_id"], launch_epoch=launch_epoch)
+                error.detail.setdefault("retained_logs", retained_logs)
                 error.detail.setdefault("solver_command_plan", task.get("solver_command_plan"))
                 error.detail.setdefault("submission_command_plan", submission_plan)
                 if solver_artifacts is None:
@@ -1632,6 +1795,7 @@ class NetlistExecutionContext(object):
                            "solver_artifacts": result.get("solver_artifacts"),
                            "timeout_state": result.get("timeout_state"),
                            "retained_logs": result.get("retained_logs"),
+                           "solver_transient": result.get("solver_transient"),
                            "outputs": measurement.get("outputs") or [],
                            "effective_variables": measurement.get("effective_variables") or {},
                            "elapsed_seconds": result["elapsed_seconds"],
@@ -2075,6 +2239,7 @@ class NetlistExecutionContext(object):
                                 "scheduler_observation": row.get("scheduler_observation"),
                                 "submission_observation": row.get("submission_observation"),
                                 "solver_artifacts": row.get("solver_artifacts"),
+                                "solver_transient": row.get("solver_transient"),
                                 "submission_returncode": row["submission"].get("returncode"),
                                 "terminal_receipt": row["effective_terminal_receipt"],
                                 "raw_terminal_receipt": row["receipt"],

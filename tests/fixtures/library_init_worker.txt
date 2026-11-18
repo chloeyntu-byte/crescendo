@@ -1,0 +1,20 @@
+\o *Info*    Run start for Point ID (0 1) on testbench [ sample_test ].
+\o *Info*    Netlist Directory =
+\o           @NETLIST@
+\o Begin Incremental Netlisting Jan 1 00:00:00 2000
+\o ERROR (ADE-5066): Tool 'fooS' has not been registered.
+\o ERROR (ADE-5067): Unable to initialize tool 'fooS'; either tool class is not
+\o         defined or tool is not registered.
+\e *Error* The default SKILL generic function has not been defined for the function "asiEnvGetVar". Ensure that this function is called with the correct argument(s) (tool partition name).
+\e
+\o End netlisting Jan 1 00:00:01 2000
+\o Netlisting Statistics:
+\o Errors: 0	Warnings: 0
+\o *Info*    Running simulation on testbench [ sample_test ] for Point ID
+\o           (0 1).
+\o ERROR (ADE-3036): The simulator run log has not been generated.
+\o *Error*   Error ID  = 5031
+\o *Error*   Error Msg = Simulator failed to complete the simulation.
+\e *Error* Error occurred while simulating the design for the point ID (0 1).
+\# Memory report: on exit            100 MB, process size 200 MB
+\# Memory report: peak usage         100 MB, process size 200 MB

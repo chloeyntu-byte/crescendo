@@ -77,7 +77,8 @@ def retain_shared_cli_task_logs(task, run_root, candidate_id, launch_epoch=None)
             if text_clipped:
                 text = data[-MAX_LOG_BYTES:].decode("utf-8", "ignore")
                 data = text.encode("utf-8")
-            token = hashlib.sha256(source.encode("utf-8")).hexdigest()[:32]
+            identity = source + (":attempt_%03d:%s" % (task["solver_attempt_number"], task.get("solver_receipt_token", "")) if task.get("solver_attempt_number") else "")
+            token = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
             path = os.path.join(candidate_root, "retained_cli_" + token + ".log")
             meta_path = path[:-4] + ".meta"
             for destination in (path, meta_path):
@@ -87,7 +88,7 @@ def retain_shared_cli_task_logs(task, run_root, candidate_id, launch_epoch=None)
                         raise ValueError("retained destination is unsafe")
             entry = {"schema_version": RETAINED_SCHEMA, "candidate_id": candidate_id, "task_id": task_id,
                 "test": task.get("test"), "corner": task.get("corner"), "point_id": task.get("point_id"),
-                "execution_simulator": simulator, "kind": kind, "source_path": source,
+                "execution_simulator": simulator, "attempt": task.get("solver_attempt_number"), "kind": kind, "source_path": source,
                 "path": path, "file_name": os.path.basename(source), "original_bytes": info.st_size,
                 "retained_bytes": len(data), "truncated": info.st_size > len(raw) or text_clipped,
                 "snapshot": True, "retained_at": utc_timestamp(), "sha256": hashlib.sha256(data).hexdigest(),

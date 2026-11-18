@@ -80,7 +80,7 @@ def _inventory(workspace):
                 continue
             for name in sorted(os.listdir(current), reverse=True):
                 child = os.path.join(current, name)
-                if ".cdslck" in name:
+                if ".cdslck" in name or name == ".oa-lock":
                     # Presence alone is not proof of a safe read lock or a stale
                     # writer. Never inspect PID liveness to bypass/rewrite it.
                     locks.append({"path": child, "view_path": path, "lock_type": "unknown"})

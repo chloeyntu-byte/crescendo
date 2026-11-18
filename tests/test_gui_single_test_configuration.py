@@ -5,8 +5,13 @@ import os
 import unittest
 from unittest import mock
 from crescendo_engine import gui
+from crescendo_engine.server import OptimizerService
 from tests import test_gui_cell_selection as tk_fixtures
 from tests import test_setup_private_ui as service_fixtures
+
+
+class FixtureOptimizerService(OptimizerService):
+    """Caller-owned service: native probes are patched in this process only."""
 
 
 @unittest.skipUnless(os.environ.get('DISPLAY'), 'requires real Tk')
@@ -19,6 +24,7 @@ class GuiSingleTestConfigurationTests(unittest.TestCase):
         case = service_fixtures.SetupPrivateServiceIntegrationTests('test_inspect_creates_private_suite_before_apply_and_apply_reuses_identity')
         case.setUp(); self.addCleanup(case.doCleanups)
         self.case = case
+        case.service = FixtureOptimizerService(copy.deepcopy(case.fixture.config))
         self.service = case.service
         def prepare_selected(*args, **kwargs):
             from crescendo_engine.single_test import project_setup
@@ -33,6 +39,7 @@ class GuiSingleTestConfigurationTests(unittest.TestCase):
         ]:
             patch = mock.patch(target, **kwargs); patch.start(); self.addCleanup(patch.stop)
         self.app = gui.OptimizerGui(self.root, self.service)
+        self.assertNotIn('_gui_delegate', vars(self.service))
         self.root.report_callback_exception = lambda exc, value, trace: self.callback_errors.append((exc, value))
         self.app.setup_path_var.set(case.fixture.path)
 

@@ -58,6 +58,17 @@ class SharedCliStopResumeTests(unittest.TestCase):
     def tearDown(self):
         self.fixture.tearDown()
 
+    def test_v1_stop_resume_keeps_original_storage_version(self):
+        from crescendo_engine.run_data_store import RunDataStore
+        def legacy_store(*args, **kwargs):
+            if os.path.basename(os.path.dirname(args[0])).endswith('_resumed'):
+                self.assertEqual(kwargs.get('format_version'), 1)
+            else:
+                kwargs['format_version'] = 1
+            return RunDataStore(*args, **kwargs)
+        with mock.patch.object(runner, 'RunDataStore', side_effect=legacy_store):
+            self.test_stop_partial_candidate_preserves_plan_rng_and_resume_retries_only_unfinished()
+
     def test_stop_partial_candidate_preserves_plan_rng_and_resume_retries_only_unfinished(self):
         for backend in ("maestro_netlist", "private_netlist"):
             with self.subTest(backend=backend):
@@ -84,6 +95,7 @@ class SharedCliStopResumeTests(unittest.TestCase):
                 self.assertIsNone(adapter.fatal_error)
 
                 dataset = load_dataset(os.path.join(stopped_root, CORE_NAME))
+                stopped_schema = dataset['schema_version']
                 displayed = {row["candidate_id"]: row for row in dataset["candidates"]}
                 self.assertEqual(displayed["g000_c0000"]["status"], "completed")
                 cancelled = displayed["g000_c0001"]
@@ -124,6 +136,7 @@ class SharedCliStopResumeTests(unittest.TestCase):
                 self.assertEqual([row["values"] for row in resumed["candidates"]],
                                  [row["values"] for row in baseline["candidates"]])
                 final_checkpoint = load_json(os.path.join(resumed_root, "checkpoint.json"))
+                self.assertEqual(final_checkpoint['candidate_store']['schema_version'], stopped_schema)
                 self.assertEqual(final_checkpoint["state"]["generator"], baseline_checkpoint["state"]["generator"])
 
 

@@ -14,7 +14,7 @@ from .utils import atomic_write_json, utc_timestamp
 def reconcile_baseline_run(run_root, request_cancel=False, inspect_only=False):
     from .setup_private_session import (_load, _reconcile_owned_capture,
                                         preparation_session_reference, REFERENCE)
-    from .native_baseline import SCHEMA_VERSION, _read_protocol
+    from .native_baseline import SCHEMA_VERSION, _read_protocol, native_attempt_control, native_submission_absent
     from .legacy_guardian import inspect_legacy_guardian_attempt
     from .workspace import verify_sources_unchanged, compact_source_guard
 
@@ -98,14 +98,15 @@ def reconcile_baseline_run(run_root, request_cancel=False, inspect_only=False):
                     if native != expected:
                         raise ValueError('Native Run reconciliation differs from its durable native state')
                     local = native.get('local_cleanup') or {}
+                    control = native_attempt_control(path, native.get('startup_attempt', 1))
                     if not no_launch:
-                        local = inspect_legacy_guardian_attempt(os.path.join(path, 'native_baseline'),
+                        local = inspect_legacy_guardian_attempt(control,
                             expected_workspace_root=owner['workspace_root'],
                             expected_token_identity={'legacy': True, 'token': native.get('nonce')})
                     process = bool(no_launch or (local.get('state') == 'dead'
                                    and (local.get('termination_proof') or {}).get('ok') is True))
                     protocol = [] if no_launch else _read_protocol(
-                        os.path.join(path, 'native_baseline', 'native_baseline_protocol.tsv'), native.get('nonce'))
+                        os.path.join(control, 'native_baseline_protocol.tsv'), native.get('nonce'))
                     states = {item['state'] for item in protocol}
                     stop = native.get('native_stop') or {}
                     order = [item['state'] for item in protocol]
@@ -125,7 +126,10 @@ def reconcile_baseline_run(run_root, request_cancel=False, inspect_only=False):
                                  and order.index('STOP_BEGIN') < order.index('STOP_DONE')
                                  and 'CLOSED' not in states and 'STOP_ERROR' not in states
                                  and stop.get('requested') is True and stop.get('remote_stop_proven') is True)
-                    terminal = bool(native.get('cleanup_proven') is True and (no_launch or complete or cancelled))
+                    not_submitted = (native.get('native_not_submitted') is True and
+                                     native_submission_absent(native, protocol))
+                    terminal = bool(native.get('cleanup_proven') is True and
+                                    (no_launch or complete or cancelled or not_submitted))
                     workspace = _load(os.path.join(owner['workspace_root'], _contract_text('workspace.json')),
                                       max_bytes=128 * 1024 * 1024)
                     if workspace.get('setup_private_session') != owner:
@@ -142,7 +146,8 @@ def reconcile_baseline_run(run_root, request_cancel=False, inspect_only=False):
                     guard = compact_source_guard(verify_sources_unchanged(workspace))
                     row.update(process_termination_proven=process, remote_stop_proven=terminal,
                                native_terminal_state='not_launched' if no_launch else
-                                   'completed' if complete else 'cancelled' if cancelled else 'unknown',
+                                   'completed' if complete else 'cancelled' if cancelled else
+                                   'not_submitted' if not_submitted else 'unknown',
                                source_guard=guard, source_state='verified' if guard.get('ok') else 'changed_or_unverified',
                                suite_id=owner['session_id'], suite_root=owner['root'])
                     row['ok'] = bool(process and terminal and guard.get('ok') is True)

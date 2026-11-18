@@ -14,6 +14,7 @@ import time
 import traceback
 import threading
 import queue
+import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 from crescendo_engine.runtime import bind_text
@@ -31,10 +32,10 @@ from .continuation import (
     continuation_schema_sha256, new_continuation_id,
     persist_continuation_pending,
 )
-from .hierarchy import (cell_scope_records, numeric_candidate_expression,
+from .hierarchy import (cell_scope_records, instance_scope_records, numeric_candidate_expression,
                         numeric_parameter_semantic, parse_physical_number, probe_hierarchy)
 from .legacy_guardian import MANIFEST_SCHEMA_VERSION as LEGACY_GUARDIAN_PROTOCOL
-from .completion import validate_candidate_completion
+from .completion import NativeTemporaryDirectoryError, validate_candidate_completion
 from .engineering import merge_catalog_domain, normalize_choices, normalize_metric_definitions
 from .environment_identity import (
     check_external_eda_environment_metadata, collect_external_eda_environment,
@@ -42,6 +43,7 @@ from .environment_identity import (
 )
 from .ade_setup import build_setup_reference, inspect_setup, normalize_setup_reference
 from .adexl_runner import run_adexl
+from .output_status import output_statuses
 from .metrics import evaluate_metrics, nondominated_front, select_representative
 from .netlist_optimizer import PrivateNetlistOptimizer, PrivateNetlistRunError
 from .execution_commands import normalize_execution_commands
@@ -205,10 +207,13 @@ def parameter_catalog(setup, hierarchy):
         for parameter_index, parameter in enumerate(design.get("hierarchy", {}).get("parameters", [])):
             if parameter_index % 256 == 0:
                 check_command_cancellation()
+                if parameter_index:
+                    time.sleep(.001)
             key = parameter["parameter_id"]
             if key not in seen:
                 row = dict(parameter)
                 row["backend"] = "schematic"
+                row["source_kind"] = "device"
                 row["semantic"] = _semantic_parameter(row)
                 instance = instances.get(row.get("hierarchy_path"), {})
                 is_top_analog_source = bool(
@@ -261,28 +266,8 @@ def parameter_catalog(setup, hierarchy):
                 row["default_selected"] = bool(row.get("optimizable") and row.get("semantic") in ("width", "length"))
                 rows.append(row)
                 seen.add(key)
-    for test in setup.get("tests", []):
-        for variable in test.get("variables", []):
-            key = "design_variable:%s:%s:%s:%s:%s" % (
-                test.get("library"), test.get("cell"), test.get("view") or "schematic",
-                test["name"], variable["name"],
-            )
-            if key in seen:
-                continue
-            rows.append({
-                "parameter_id": key,
-                "backend": "design_variable",
-                "name": variable["name"],
-                "current_value": variable.get("value"),
-                "default_value": variable.get("value"),
-                "hierarchy_path": "$design_variables/%s" % test["name"],
-                "owner_library": test.get("library"),
-                "owner_cell": test.get("cell"),
-                "tunable": False,
-                "optimizable": False,
-                "value_kind": "expression",
-            })
-            seen.add(key)
+    from .design_variables import catalog as design_catalog
+    rows.extend(design_catalog(setup, hierarchy))
     rows.sort(key=lambda row: (row.get("hierarchy_path") or "", row.get("name") or ""))
     check_command_cancellation()
     return rows
@@ -304,12 +289,25 @@ def output_catalog(setup):
         if _optimization_output_name(output.get("name"))]
 
 
+def cell_selection_targeted(selection):
+    discovery = selection.get("discovery") if isinstance(selection, dict) else None
+    if discovery is None:
+        return False
+    # Early injected runtimes persisted the unbound schema. Its targeted
+    # meaning remains valid; new producers use the selected runtime identity.
+    if discovery not in ({"schema_version": _contract_text("crescendo.scoped_discovery.v1")},
+                         {"schema_version": "crescendo.scoped_discovery.v1"}):
+        raise ValueError("Unsupported cell selection discovery protocol")
+    return True
+
+
 def cell_selection_scopes(selection):
     """Validate persisted occurrence choices; an empty choice never means full scan."""
     if selection is None:
         return None
     if not isinstance(selection, dict) or not isinstance(selection.get("scopes"), list) or not selection["scopes"]:
         raise ValueError("cell_selection must contain a nonempty scopes array")
+    cell_selection_targeted(selection)
     scopes = copy.deepcopy(selection["scopes"])
     for scope in scopes:
         if not isinstance(scope, dict) or not isinstance(scope.get("design"), dict):
@@ -328,7 +326,25 @@ def cell_selection_scopes(selection):
     return scopes
 
 
-def prepare_setup(path, config, max_depth=32, backend="auto", selected_cell_paths=None, selected_test=None):
+def checkpoint_catalog_options(checkpoint):
+    """Select discovery from recorded evidence, never disguise a v2 catalogue as v1."""
+    manifest = (checkpoint or {}).get('manifest') or {}
+    version = manifest.get('prepared_catalog_version')
+    if version in (None, _contract_text('crescendo.prepared.v1')):
+        options = {'legacy_catalog': True}
+    elif version == _contract_text('crescendo.prepared.v2'):
+        options = {}
+    else:
+        raise ValueError('Unsupported checkpoint prepared catalogue version: %s' % version)
+    if cell_selection_targeted(manifest.get('cell_selection')):
+        options['targeted'] = True
+    return options
+
+
+def prepare_setup(path, config, max_depth=32, backend="auto", selected_cell_paths=None, selected_test=None,
+                  legacy_catalog=False, targeted=False):
+    if targeted and selected_cell_paths is None:
+        raise ValueError("Scoped discovery requires explicit selected instance paths")
     check_command_cancellation()
     from .setup_baseline import load_bound_setup
     setup = load_bound_setup(path, config, backend=backend)
@@ -341,16 +357,19 @@ def prepare_setup(path, config, max_depth=32, backend="auto", selected_cell_path
     setup = project_setup(setup, selected_test)
     check_command_cancellation()
     if selected_cell_paths is None:
-        hierarchy = probe_hierarchy(setup, config, max_depth=max_depth)
+        hierarchy = probe_hierarchy(setup, config, max_depth=max_depth,
+                                    **({"candidate_only": False} if legacy_catalog else {}))
     else:
         hierarchy = probe_hierarchy(
             setup, config, max_depth=max_depth, selected_cell_paths=selected_cell_paths,
+            **dict(({"candidate_only": False} if legacy_catalog else {}),
+                   **({"targeted": True} if targeted else {}))
         )
         cell_selection_scopes({"scopes": selected_cell_paths})
+        scope_rows = cell_scope_records(hierarchy, setup=setup, config=config)
+        scope_rows = instance_scope_records(hierarchy, setup=setup, config=config, cell_records=scope_rows)
         allowed = dict((tuple(row["design"].get(key) for key in ("library", "cell", "view"))
-                        + (row["hierarchy_path"],), row) for row in cell_scope_records(
-            hierarchy, setup=setup, config=config,
-        ) if row.get("selectable"))
+                        + (row["hierarchy_path"],), row) for row in scope_rows if row.get("selectable"))
         for selected in selected_cell_paths:
             key = tuple(selected["design"].get(name) for name in ("library", "cell", "view")) + (selected["hierarchy_path"],)
             actual = allowed.get(key)
@@ -407,8 +426,13 @@ def prepare_setup(path, config, max_depth=32, backend="auto", selected_cell_path
             "scope_ids": [row["scope_id"] for row in selected_cell_paths if row.get("scope_id")],
             "scopes": copy.deepcopy(selected_cell_paths),
         }
+        if targeted:
+            prepared["cell_selection"]["discovery"] = {"schema_version": _contract_text("crescendo.scoped_discovery.v1")}
     from .job_policy import capture_setup_job_policy
     prepared["job_policy"] = capture_setup_job_policy(setup, config)
+    from .prepared_store import compact_catalog
+    if not legacy_catalog:
+        compact_catalog(prepared)
     check_command_cancellation()
     return prepared
 
@@ -603,11 +627,76 @@ def _finish_candidate_timing(row, timing, started, path, elapsed_scope="candidat
     _write_candidate_timing(path, timing)
 
 
-def _evaluate_native_baseline_candidate(run_root, index, generation, values, spec, prepared, selected, config, cancel_check, owned_roots=None, _native_result=None, _native_error=None):
+def _recoverable_native_failure(row):
+    detail = row.get("native_failure_detail") or {}
+    if row.get("status") == "failed" and row.get("failure_class") == "measurement_evaluation":
+        return row.get("cleanup_pending") is False
+    return (row.get("status") == "infrastructure_failed" and
+            row.get("cleanup_pending") is False and
+            (row.get("failure_stage") in ("native_startup_crash", "native_operation_timeout") or
+             (row.get("completion_evidence_failure") is True
+              and detail.get("completion_evidence_unsafe") is not True)))
+
+
+def _freeze_native_directory_retries(spec, config, resuming):
+    from .config import DEFAULTS
+
+    key = "native_directory_retries"
+    defaults = DEFAULTS["runtime"]
+    runtime = defaults if resuming else (config.get("runtime") or {})
+    value = spec.get(key, runtime.get(key, defaults[key]))
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        number = float("nan")
+    if isinstance(value, bool) or not math.isfinite(number) or number < 0 or number != int(number):
+        raise ValueError(key + " must be a nonnegative integer")
+    if not resuming or key in spec:
+        spec[key] = int(number)
+
+
+def _native_directory_retry_allowed(error, remaining, cancel_check):
+    detail = getattr(error, "detail", None) or {}
+    proof = detail.get("native_baseline") or {}
+    return (remaining > 0 and isinstance(error, NativeTemporaryDirectoryError)
+            and detail.get("cleanup_pending") is False and proof.get("cleanup_proven") is True
+            and proof.get("native_session_closed") is True
+            and (detail.get("native_stop") or {}).get("requested") is False
+            and (detail.get("source_guard") or {}).get("ok") is True
+            and not cancel_check())
+
+
+def _native_candidate_result(candidate_id, values, selected, spec, prepared, config, root,
+                             cancel_check, owned_roots, initial_error, retries):
+    from .native_baseline import evaluate_native_baseline
+
+    attempt_root, error = root, initial_error
+    previous_request = ((getattr(initial_error, "batch_reference", None) or {}).get("root") or root)
+    while True:
+        if error is None:
+            try:
+                return evaluate_native_baseline(candidate_id, values, selected, spec, prepared, config,
+                                                attempt_root, cancel_check=cancel_check)
+            except NativeTemporaryDirectoryError as caught:
+                error = caught
+        if not _native_directory_retry_allowed(error, retries, cancel_check):
+            raise error
+        # A freshly allocated request retains the first attempt's protocol and
+        # lets final shutdown reconcile each guardian separately.
+        retry_root = os.path.join(os.path.dirname(root), "retry_" + uuid.uuid4().hex)
+        append_run_event(os.path.dirname(os.path.dirname(root)), "native_directory_retry", str(error),
+                         details={"candidate_id": candidate_id, "previous_request": previous_request,
+                                  "retry_request": retry_root, "retries_remaining": retries - 1}, level="WARN")
+        attempt_root, previous_request, error, retries = retry_root, retry_root, None, retries - 1
+        if owned_roots is not None:
+            owned_roots.add(attempt_root)
+
+
+def _evaluate_native_baseline_candidate(run_root, index, generation, values, spec, prepared, selected, config, cancel_check, owned_roots=None, _native_result=None, _native_error=None, _allow_directory_retry=True):
     """Run one owned Maestro candidate; preserve raw evidence on every outcome."""
     candidate_id = "g%03d_c%04d" % (generation, index)
     candidate_root = ensure_dir(os.path.join(run_root, "candidates", candidate_id))
-    if owned_roots is not None:
+    if owned_roots is not None and _native_error is None:
         owned_roots.add(os.path.abspath(candidate_root))
     started = time.time()
     timing_started = timing_tick()
@@ -617,16 +706,15 @@ def _evaluate_native_baseline_candidate(run_root, index, generation, values, spe
            "execution_backend": "maestro_baseline", "cleanup_pending": True}
     atomic_write_json(os.path.join(candidate_root, _contract_text("candidate.json")), row)
     try:
-        if _native_error is not None:
-            raise _native_error
         if _native_result is not None:
             result = _native_result
         else:
-            from .native_baseline import evaluate_native_baseline
-            result = evaluate_native_baseline(candidate_id, values, selected, spec, prepared, config,
-                                              candidate_root, cancel_check=cancel_check)
-        if result.get('batch_reference'):
-            row['batch_reference'] = copy.deepcopy(result['batch_reference'])
+            result = _native_candidate_result(candidate_id, values, selected, spec, prepared, config,
+                candidate_root, cancel_check, owned_roots, _native_error,
+                spec.get("native_directory_retries", 1) if _allow_directory_retry else 0)
+        batch_reference = result.get('batch_reference') or getattr(_native_error, 'batch_reference', None)
+        if batch_reference:
+            row['batch_reference'] = copy.deepcopy(batch_reference)
         phases.update((result.get("timing") or {}).get("phases") or {})
         command = result.get("command") or {}
         completion = result.get("completion_evidence") or {}
@@ -643,12 +731,25 @@ def _evaluate_native_baseline_candidate(run_root, index, generation, values, spe
         row["cleanup_pending"] = False
         metrics_started = timing_tick()
         try:
-            row["metrics"] = evaluate_metrics(result["parsed"], spec["objectives"], spec.get("constraints", []))
+            row['output_statuses'] = output_statuses(result['parsed'], prepared.get('outputs') or [])
+            failures = completion.get("measurement_failures") or []
+            if failures:
+                first = failures[0]
+                error = RuntimeError("Evaluation of output %s at corner %s (point %s) failed: %s" %
+                                     (first["output"], first["corner"], first["point_id"], first["first_error"]))
+                row.update(status="failed", failure_class="measurement_evaluation",
+                           failure_stage="native_measurement_evaluation", error=str(error),
+                           metrics=_failure_metrics(spec, error))
+            else:
+                row["metrics"] = evaluate_metrics(result["parsed"], spec["objectives"], spec.get("constraints", []), diagnostic=bool(spec.get("environment_test")))
+                row["status"] = "completed"
         finally:
             phases["metric_evaluation"] = phase_seconds(elapsed_seconds(metrics_started))
-        row["status"] = "completed"
         atomic_write_json(os.path.join(candidate_root, _contract_text("completion_evidence.json")), completion)
     except Exception as error:
+        from .completion import CompletionEvidenceError, UnsafeCompletionEvidence
+        if isinstance(error, CompletionEvidenceError) and not isinstance(error, UnsafeCompletionEvidence):
+            row["completion_evidence_failure"] = True
         if getattr(error, 'batch_reference', None):
             row['batch_reference'] = copy.deepcopy(error.batch_reference)
         row.update(status="infrastructure_failed", failure_class="native_baseline",
@@ -668,6 +769,7 @@ def _evaluate_native_baseline_candidate(run_root, index, generation, values, spe
                 row["cleanup_pending"] = False
             if (cancel_check() and row.get("cleanup_pending") is False and
                     ((detail.get("native_stop") or {}).get("remote_stop_proven") is True or
+                     (detail.get('native_baseline') or {}).get('native_not_submitted') is True or
                      ((detail.get('native_baseline') or {}).get('native_session_closed') is True and
                       (detail.get('native_stop') or {}).get('requested') is False))):
                 row.update(status="cancelled", failure_class="user_stop", cleanup_pending=False)
@@ -868,6 +970,7 @@ def _evaluate_candidate(run_root, index, generation, values, spec, prepared, sel
                 parsed = parse_latest_rdb(workspace_root)
             timing["phases"]["parse"] = {"elapsed_seconds": time.monotonic() - parse_started}
             _write_candidate_timing(timing_path, timing)
+            row['output_statuses'] = output_statuses(parsed, prepared.get('outputs') or [])
             row["rdb_path"] = parsed["path"]
             required_outputs = [
                 definition["output_key"]
@@ -877,7 +980,7 @@ def _evaluate_candidate(run_root, index, generation, values, spec, prepared, sel
                 workspace, candidate_root, command, parsed, setup=prepared.get("setup"),
                 required_output_keys=required_outputs, config=config,
             )
-        row["metrics"] = evaluate_metrics(parsed, spec["objectives"], spec.get("constraints", []))
+        row["metrics"] = evaluate_metrics(parsed, spec["objectives"], spec.get("constraints", []), diagnostic=bool(spec.get("environment_test")))
         row["status"] = "completed"
     except WorkspaceBuildFailure as error:
         row["status"] = "infrastructure_failed"
@@ -1218,7 +1321,7 @@ def _worker_diagnostic_tail(controller, byte_limit=4096):
 def _persist_worker_startup_failure(run_root, worker_index, controller, error):
     """Keep bounded native error evidence outside the epoch before cleanup."""
     diagnostic = _worker_diagnostic_tail(controller, byte_limit=16384)
-    native_error = _diagnostic_tail_reason(diagnostic)
+    native_error = _diagnostic_tail_reason(diagnostic, simulators=(selected_simulator(getattr(controller, "config", None)),))
     message = str(error)
     stage_match = re.search(r"bootstrap failed at ([A-Za-z0-9_]+)", message)
     stage = stage_match.group(1) if stage_match else "bootstrap"
@@ -1253,12 +1356,25 @@ def _persist_worker_startup_failure(run_root, worker_index, controller, error):
     return path, document
 
 
-def _diagnostic_tail_reason(diagnostic, limit=600):
+def _diagnostic_tail_reason(diagnostic, limit=600, simulators=()):
     if not isinstance(diagnostic, dict):
         return ""
+    from .native_diagnostics import ocean_tool_error, ocean_tool_continuation, library_init_console_warnings, ocean_warning_lines
     lines = []
     for name in ("ocean.stderr", "ocean.stdout"):
-        for raw_line in str(diagnostic.get(name) or "").splitlines():
+        warning = None
+        console = str(diagnostic.get(name) or "").splitlines()
+        skipped = ocean_warning_lines(library_init_console_warnings(console, name))
+        for index, raw_line in enumerate(console):
+            if index in skipped:
+                continue
+            if warning and ocean_tool_continuation(warning, raw_line):
+                warning = None
+                continue
+            warning = ocean_tool_error(raw_line, simulators)
+            if warning and warning["severity"] == "WARN":
+                continue
+            warning = None
             line = re.sub(r"\s+", " ", raw_line).strip()
             if line:
                 lines.append(line)
@@ -1869,7 +1985,7 @@ def _evaluate_persistent_candidate(worker, run_root, index, generation, values,
                     worker, spectre_summary,
                 )
                 diagnostic_tail = _worker_diagnostic_tail(worker.controller)
-                diagnostic_reason = _diagnostic_tail_reason(diagnostic_tail)
+                diagnostic_reason = _diagnostic_tail_reason(diagnostic_tail, simulators=(selected_simulator(worker.config),))
                 failure_stage, spectre_state = _persistent_protocol_failure_diagnostics(
                     states, spectre_summary, diagnostic_tail,
                 )
@@ -1965,6 +2081,7 @@ def _evaluate_persistent_candidate(worker, run_root, index, generation, values,
             if artifact.get("native_storage_paths") is not None:
                 row["native_storage_paths"] = copy.deepcopy(artifact["native_storage_paths"])
             row["maestro_attempts"] = [candidate_command]
+            row['output_statuses'] = output_statuses(parsed, prepared.get('outputs') or [])
             row["rdb_path"] = parsed["path"]
             required_outputs = [
                 definition["output_key"]
@@ -1980,7 +2097,7 @@ def _evaluate_persistent_candidate(worker, run_root, index, generation, values,
             worker.controller.require_candidate_time(artifact, "simulation completion validation")
             worker.controller.require_candidate_time(artifact, "objective and constraint evaluation")
             row["metrics"] = evaluate_metrics(
-                parsed, spec["objectives"], spec.get("constraints", []),
+                parsed, spec["objectives"], spec.get("constraints", []), diagnostic=bool(spec.get("environment_test")),
             )
             worker.controller.require_candidate_time(artifact, "objective and constraint evaluation")
             worker.controller.require_candidate_time(artifact, "source library integrity verification")
@@ -2436,6 +2553,7 @@ def _evaluate_run_persistent_batch(worker, run_root, planned, generation, spec,
             )
             _derived_parameter_cache(row["parameter_application"], worker.derived_parameter_cache)
             parsed = slice_candidate_rdb(parsed_batch, mapping)
+            row['output_statuses'] = output_statuses(parsed, prepared.get('outputs') or [])
             logical_workspace = dict(verification_workspace)
             logical_setup = copy.deepcopy(verification_workspace["setup"])
             for test in logical_setup.get("tests", []):
@@ -2447,7 +2565,7 @@ def _evaluate_run_persistent_batch(worker, run_root, planned, generation, spec,
             )
             if row.get("native_storage_paths") is not None:
                 row["completion_evidence"]["native_storage_paths"] = row["native_storage_paths"]
-            row["metrics"] = evaluate_metrics(parsed, spec["objectives"], spec.get("constraints", []))
+            row["metrics"] = evaluate_metrics(parsed, spec["objectives"], spec.get("constraints", []), diagnostic=bool(spec.get("environment_test")))
             row["status"] = "completed"
         except ParameterApplicationInfrastructureFailure as error:
             _persistent_failure(row, spec, error, infrastructure=True, failure_class="result_publication")
@@ -2993,13 +3111,14 @@ def _evaluate_persistent_batch(run_root, planned, generation, spec, prepared, se
                         "finished_epoch": command.get("finished_epoch"),
                     }
                     row["maestro_attempts"] = [candidate_command]
+                    row['output_statuses'] = output_statuses(parsed, prepared.get('outputs') or [])
                     row["rdb_path"] = parsed["path"]
                     row["completion_evidence"] = validate_candidate_completion(
                         workspace, item["root"], candidate_command, parsed,
                         setup=prepared.get("setup"), required_output_keys=required_outputs, config=config,
                     )
                     row["metrics"] = evaluate_metrics(
-                        parsed, spec["objectives"], spec.get("constraints", []),
+                        parsed, spec["objectives"], spec.get("constraints", []), diagnostic=bool(spec.get("environment_test")),
                     )
                     row["status"] = "completed"
                 except ParameterApplicationFailure as error:
@@ -3023,7 +3142,7 @@ def _evaluate_persistent_batch(run_root, planned, generation, spec, prepared, se
                         diagnostic, item["root"],
                     )
                 )
-                diagnostic_reason = _diagnostic_tail_reason(diagnostic)
+                diagnostic_reason = _diagnostic_tail_reason(diagnostic, simulators=(selected_simulator(config),))
                 error = RuntimeError(
                     "persistent Maestro candidate failed during %s%s" % (
                         failure_stage,
@@ -3606,8 +3725,8 @@ def _unpack_candidate(packed, variable_ids, spec):
 
 
 def checkpoint_candidates(checkpoint):
-    if not isinstance(checkpoint, dict) or checkpoint.get("schema_version") != _contract_text("crescendo.checkpoint.v1"):
-        raise ValueError(_contract_text("unsupported checkpoint; expected crescendo.checkpoint.v1"))
+    if not isinstance(checkpoint, dict) or checkpoint.get("schema_version") not in (_contract_text("crescendo.checkpoint.v1"), _contract_text("crescendo.checkpoint.v2")):
+        raise ValueError(_contract_text("unsupported checkpoint; expected crescendo.checkpoint.v1 or v2 (link_group requires Crescendo 1.2+)"))
     spec = checkpoint.get("spec", {})
     parameter_ids = checkpoint.get("parameter_ids", [])
     packed_candidates = checkpoint.get("candidates", [])
@@ -3657,7 +3776,7 @@ def checkpoint_candidates(checkpoint):
 
 def checkpoint_with_candidates(checkpoint, rows):
     if not isinstance(checkpoint, dict):
-        raise ValueError(_contract_text("unsupported checkpoint; expected crescendo.checkpoint.v1"))
+        raise ValueError(_contract_text("unsupported checkpoint; expected crescendo.checkpoint.v1 or v2 (link_group requires Crescendo 1.2+)"))
     if not isinstance(rows, (list, tuple)):
         raise ValueError("checkpoint candidate rows must be a list")
     if any(not isinstance(row, dict) for row in rows):
@@ -3734,6 +3853,30 @@ def _seed_checkpoint_candidates(run_root, rows):
         persist_lightweight_candidate(candidate_root, row)
 
 
+def _ask_native_run_candidates(generator, count):
+    from .generation_batch import native_run_values
+    from .optimizers import _candidate_key
+
+    previous_targets = {key: list(targets) for key, targets in generator._de_targets.items()}
+    proposals = generator.ask(count)
+    values = [native_run_values(proposal, generator.variables, quantize=True, allow_partial=True)
+              for proposal in proposals]
+    if generator._de_targets and values != proposals:
+        # Match only targets added by this ask. Distinct proposals can land
+        # on the same rounded key, so merge their targets in candidate order.
+        added_targets = {key: iter(targets[len(previous_targets.get(key, ())):])
+                         for key, targets in generator._de_targets.items()}
+        for proposal, rounded in zip(proposals, values):
+            original_key = _candidate_key(proposal, generator.variables)
+            if original_key in added_targets:
+                target = next(added_targets[original_key], None)
+                if target is not None:
+                    rounded_key = _candidate_key(rounded, generator.variables)
+                    previous_targets.setdefault(rounded_key, []).append(target)
+        generator._de_targets = previous_targets
+    return values
+
+
 def _generator_state(generator):
     return {
         "rng_state": generator.rng.getstate(),
@@ -3797,10 +3940,10 @@ def _prepared_schema_fingerprint_v1(prepared):
             "parameter_id": row.get("parameter_id"), "hierarchy_path": row.get("hierarchy_path"),
             "name": row.get("name"), "master_library": row.get("master_library"),
             "master_cell": row.get("master_cell"),
-        } for row in prepared.get("parameters", []) if row.get("optimizable")],
+        } for row in prepared.get("parameters", []) if row.get("optimizable") and row.get("source_kind") not in ("global", "top")],
     }
-    encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    from .catalog_json import digest
+    return digest(payload)
 
 
 def _sorted_semantic_rows(rows):
@@ -3845,8 +3988,8 @@ def configuration_binding_identity(hierarchy):
     if not designs:
         return None
     payload = _sorted_semantic_rows(designs)
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return {"schema_version": _contract_text("crescendo.configuration_bindings.v1"), "sha256": hashlib.sha256(encoded).hexdigest()}
+    from .catalog_json import digest
+    return {"schema_version": _contract_text("crescendo.configuration_bindings.v1"), "sha256": digest(payload)}
 
 
 def _prepared_schema_fingerprint_v2(prepared):
@@ -3905,7 +4048,7 @@ def _prepared_schema_fingerprint_v2(prepared):
     )
     parameters = _sorted_semantic_rows([
         dict((field, row.get(field)) for field in parameter_fields)
-        for row in prepared.get("parameters", []) if row.get("optimizable")
+        for row in prepared.get("parameters", []) if row.get("optimizable") and row.get("source_kind") not in ("global", "top")
     ])
     config_parameter_fields = (
         "owner_view", "owner_view_type", "resolved_top", "bound_library", "bound_cell", "bound_view",
@@ -3964,8 +4107,8 @@ def _prepared_schema_fingerprint_v2(prepared):
     if config_identity is not None:
         payload["configuration_bindings"] = config_identity
         payload["configuration_parameters"] = config_parameters
-    encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    from .catalog_json import digest
+    return digest(payload)
 
 
 def _prepared_schema_fingerprint(prepared):
@@ -4098,8 +4241,8 @@ def _checkpoint_checksum(document):
     # origin checksum/ancestry; checkpoint_candidates checks its full hash.
     if payload.get("candidate_store") is not None:
         payload.pop("candidate_store_embedded", None)
-    encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    from .catalog_json import digest
+    return digest(payload)
 
 
 def checkpoint_continuation_schema(document):
@@ -4169,15 +4312,23 @@ def _checkpoint_document(spec, prepared, generator, rows, selection_history, nex
         "algorithm_policy": spec.get("algorithm_policy"),
         "algorithm_parameters": spec.get("algorithm_parameters"),
         "prepared_schema_version": _contract_text("crescendo.prepared_fingerprint.v2"),
+        "prepared_catalog_version": prepared.get("schema_version"),
         "prepared_schema_sha256": _prepared_schema_fingerprint(prepared),
     }
+    if spec.get("design_variables_protocol") is not None:
+        manifest["design_variables_protocol"] = spec["design_variables_protocol"]
+        manifest["design_variable_identity"] = [
+            {key: row.get(key) for key in ("parameter_id", "source_kind", "source", "variable_test", "name", "current_value")}
+            for row in prepared.get("parameters") or []
+            if row["parameter_id"] in {r["parameter_id"] for r in spec.get("variables") or []}
+            and row.get("source_kind") in ("global", "top")]
     if spec.get("simulator_execution_identity") is not None:
         manifest["simulator_execution_identity"] = copy.deepcopy(spec["simulator_execution_identity"])
     if spec.get("execution_commands") is not None:
         manifest["execution_commands"] = copy.deepcopy(spec["execution_commands"])
     if spec.get("execution_protocol") is not None:
         manifest["execution_protocol"] = spec["execution_protocol"]
-    for field in ("native_candidate_batching", "native_batch_schema", "native_batching_protocol", "local_solver_max_jobs", "measurement_jobs", "progress_flush_interval_seconds", "reader_protocol",
+    for field in ("solver_transient_retries", "solver_transient_last_retry_single_core", "native_directory_retries", "native_candidate_batching", "native_batch_schema", "native_batching_protocol", "local_solver_max_jobs", "measurement_jobs", "progress_flush_interval_seconds", "reader_protocol",
                   "command_scheduler", "simulator_model_profile_identity", "netlist_generation_protocol",
                   "native_qualification_revision", "execution_selection"):
         if spec.get(field) is not None:
@@ -4197,7 +4348,8 @@ def _checkpoint_document(spec, prepared, generator, rows, selection_history, nex
             prepared["job_policy"], spec.get("maestro_job_overrides"),
         )
     document = {
-        "schema_version": _contract_text("crescendo.checkpoint.v1"),
+        "schema_version": (_contract_text("crescendo.checkpoint.v2") if any(
+            row.get("link_group") for row in spec["variables"]) else _contract_text("crescendo.checkpoint.v1")),
         "created_at": utc_timestamp(),
         "manifest": manifest,
         "spec": spec,
@@ -4256,8 +4408,8 @@ def _checkpoint_nonnegative_integer(value, description):
 
 
 def validate_checkpoint_integrity(checkpoint):
-    if not isinstance(checkpoint, dict) or checkpoint.get("schema_version") != _contract_text("crescendo.checkpoint.v1"):
-        raise ValueError(_contract_text("unsupported checkpoint; expected crescendo.checkpoint.v1"))
+    if not isinstance(checkpoint, dict) or checkpoint.get("schema_version") not in (_contract_text("crescendo.checkpoint.v1"), _contract_text("crescendo.checkpoint.v2")):
+        raise ValueError(_contract_text("unsupported checkpoint; expected crescendo.checkpoint.v1 or v2 (link_group requires Crescendo 1.2+)"))
     expected_checksum = checkpoint.get("payload_sha256")
     if expected_checksum is not None:
         try:
@@ -4284,17 +4436,21 @@ def validate_checkpoint_integrity(checkpoint):
     manifest_scopes = cell_selection_scopes((manifest or {}).get("cell_selection"))
     spec_scopes = cell_selection_scopes(spec.get("cell_selection"))
     if ((manifest_scopes is None) != (spec_scopes is None) or
-            (manifest_scopes is not None and manifest_scopes != spec_scopes)):
+            (manifest_scopes is not None and manifest_scopes != spec_scopes) or
+            cell_selection_targeted((manifest or {}).get("cell_selection")) !=
+            cell_selection_targeted(spec.get("cell_selection"))):
         raise ValueError("checkpoint manifest and spec cell selections disagree")
     if (manifest or {}).get("simulator_execution_identity") != spec.get("simulator_execution_identity"):
         raise ValueError("checkpoint simulator execution identities disagree")
-    for field in ("native_candidate_batching", "native_batch_schema", "native_batching_protocol", "local_solver_max_jobs", "measurement_jobs", "progress_flush_interval_seconds", "reader_protocol",
+    for field in ("solver_transient_retries", "solver_transient_last_retry_single_core", "native_directory_retries", "native_candidate_batching", "native_batch_schema", "native_batching_protocol", "local_solver_max_jobs", "measurement_jobs", "progress_flush_interval_seconds", "reader_protocol",
                   "execution_commands", "execution_protocol", "simulator_model_profile_identity", "netlist_generation_protocol",
                   "native_qualification_revision", "execution_selection"):
         if (manifest or {}).get(field) != spec.get(field):
             raise ValueError("checkpoint %s identities disagree" % field)
     if (manifest or {}).get("command_scheduler", "auto") != spec.get("command_scheduler", "auto"):
         raise ValueError("checkpoint command_scheduler identities disagree")
+    from .solver_transient import normalize_retry_settings
+    normalize_retry_settings(spec)
     from .generation_batch import validate_batching_protocol
     validate_batching_protocol(spec)
     if spec.get('native_candidate_batching', 'serial') not in ('serial', 'generation'):
@@ -4325,6 +4481,13 @@ def validate_checkpoint_integrity(checkpoint):
             not isinstance(row, dict) for row in definitions
         ):
             raise ValueError("checkpoint %s schema is malformed" % field)
+    if any(row.get("link_group") for row in variables):
+        if checkpoint["schema_version"] != _contract_text("crescendo.checkpoint.v2"):
+            raise ValueError(_contract_text("link_group checkpoint requires crescendo.checkpoint.v2 and Crescendo 1.2+"))
+        from .optimizers import validate_candidate_values
+        validate_variables(variables)
+        for row in rows:
+            validate_candidate_values(row["values"], variables)
     actual_ids = [row.get("parameter_id") for row in variables]
     if expected_ids != actual_ids:
         raise ValueError("checkpoint parameter schema is inconsistent")
@@ -4426,6 +4589,9 @@ def validate_checkpoint_integrity(checkpoint):
         if replacements != max(0, next_index - population):
             raise ValueError("checkpoint active plan replacement count is inconsistent")
         planned_values = dict(plan.get("planned", []))
+        if any(row.get("link_group") for row in variables):
+            for values in planned_values.values():
+                validate_candidate_values(values, variables)
         if any(set(values) != set(expected_ids) for values in planned_values.values()):
             raise ValueError("checkpoint active plan parameter values are incomplete")
         for row in rows:
@@ -4525,6 +4691,17 @@ def validate_checkpoint(checkpoint, prepared):
         actual_scopes = cell_selection_scopes(prepared.get("cell_selection"))
         if actual_scopes != expected_scopes:
             raise ValueError("checkpoint selected cell occurrences changed after reload")
+    from .design_variables import is_design, SCHEMA as DESIGN_SCHEMA
+    current_controls = [row for row in prepared.get("parameters") or [] if is_design(row)
+                        and row["parameter_id"] in set(checkpoint.get("parameter_ids") or [])]
+    if current_controls:
+        if (spec.get("design_variables_protocol") != DESIGN_SCHEMA or
+                manifest.get("design_variables_protocol") != DESIGN_SCHEMA):
+            raise ValueError("Design-variable checkpoint protocol missing or unsupported")
+        identity = [{key: row.get(key) for key in ("parameter_id", "source_kind", "source", "variable_test", "name", "current_value")}
+                    for row in current_controls]
+        if manifest.get("design_variable_identity") != identity:
+            raise ValueError("Checkpoint design-variable source or Test identity changed")
     real_eda = str(spec.get("evaluator", "real")).strip().lower() != "mock"
     expected_fingerprint = manifest.get("prepared_schema_sha256")
     fingerprint_version = manifest.get("prepared_schema_version")
@@ -4615,8 +4792,10 @@ def _reconcile_baseline_shutdown(run_root, owned_roots):
                          stop.get("requested") is False)
             stopped = (native.get("native_session_closed") is True and
                        stop.get("remote_stop_proven") is True)
-            terminal = bool(native.get("cleanup_proven") is True and (no_launch or completed or stopped))
-            kind = "not_launched" if no_launch else "cancelled" if stopped else "completed" if completed else "unknown"
+            not_submitted = native.get("native_not_submitted") is True and native.get("submission_intent") is False
+            terminal = bool(native.get("cleanup_proven") is True and (no_launch or completed or stopped or not_submitted))
+            kind = ("not_launched" if no_launch else "cancelled" if stopped else "completed" if completed else
+                    "not_submitted" if not_submitted else "unknown")
             ok = process_proven and terminal
             workspace = native.get("workspace_root")
             if workspace:
@@ -4712,9 +4891,9 @@ def _run_coordinated_resume(spec, config, prepared, run_root, resume_checkpoint,
                             continuation_lease, runtime_optimization_lease=None):
     if (
         not isinstance(resume_checkpoint, dict) or
-        resume_checkpoint.get("schema_version") != _contract_text("crescendo.checkpoint.v1")
+        resume_checkpoint.get("schema_version") not in (_contract_text("crescendo.checkpoint.v1"), _contract_text("crescendo.checkpoint.v2"))
     ):
-        raise ValueError(_contract_text("unsupported checkpoint; expected crescendo.checkpoint.v1"))
+        raise ValueError(_contract_text("unsupported checkpoint; expected crescendo.checkpoint.v1 or v2 (link_group requires Crescendo 1.2+)"))
     if continuation_lease is None or not continuation_lease.held:
         raise RuntimeError("coordinated checkpoint resume requires a held continuation lease")
     return _run_optimization_with_leases(
@@ -4798,8 +4977,8 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                                resume_checkpoint=None, continuation_id=None,
                                checkpoint_anchor_root=None):
     if resume_checkpoint is not None:
-        if not isinstance(resume_checkpoint, dict) or resume_checkpoint.get("schema_version") != _contract_text("crescendo.checkpoint.v1"):
-            raise ValueError(_contract_text("unsupported checkpoint; expected crescendo.checkpoint.v1"))
+        if not isinstance(resume_checkpoint, dict) or resume_checkpoint.get("schema_version") not in (_contract_text("crescendo.checkpoint.v1"), _contract_text("crescendo.checkpoint.v2")):
+            raise ValueError(_contract_text("unsupported checkpoint; expected crescendo.checkpoint.v1 or v2 (link_group requires Crescendo 1.2+)"))
         spec = dict(resume_checkpoint.get("spec") or {})
     else:
         spec = dict(spec)
@@ -4883,8 +5062,12 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
             selection = spec.get("cell_selection")
         scopes = cell_selection_scopes(selection)
         options = {"backend": setup_reference["backend"], "selected_test": spec.get("selected_test")}
+        if resume_checkpoint is not None:
+            options.update(checkpoint_catalog_options(resume_checkpoint))
         if scopes is not None:
             options["selected_cell_paths"] = scopes
+            if cell_selection_targeted(selection):
+                options["targeted"] = True
         prepared = prepare_setup(setup_reference["path"], config, spec.get("max_depth", 32), **options)
     setup = prepared.get("setup") or {}
     rows = setup.get("tests") or []
@@ -4939,10 +5122,12 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
     if baseline_backend or netlist_backend:
         from .generation_batch import freeze_batching, generation_batching_enabled
         freeze_batching(spec, config, resuming=resume_checkpoint is not None)
+    from .design_variables import native_parameter
     if baseline_backend:
-        if setup_backend != "maestro" or not selected or any(row.get("backend", "schematic") != "schematic" for row in selected):
+        if setup_backend != "maestro" or not selected or any(not native_parameter(row) for row in selected):
             raise ValueError("Native Run requires a Maestro setup and selected schematic device parameters")
         spec["execution_protocol"] = _contract_text("crescendo.maestro_baseline.v1")
+        _freeze_native_directory_retries(spec, config, resuming=resume_checkpoint is not None)
     if netlist_backend:
         from .native_maestro_parameters import GENERATION_PROTOCOL
         from .native_qualification import NATIVE_QUALIFICATION_REVISION
@@ -4968,7 +5153,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
         spec["execution_protocol"] = _contract_text("crescendo.unified_execution.v1")
         if setup_backend != "maestro":
             raise ValueError("Shared CLI netlist generation requires a Maestro setup; ADE XL remains readable in historical runs")
-        if not selected or any(row.get("backend", "schematic") != "schematic" for row in selected):
+        if not selected or any(not native_parameter(row) for row in selected):
             raise ValueError("Shared CLI netlist generation supports schematic device parameters; design variables are not qualified")
     if not persistent_backend and not netlist_backend and not baseline_backend:
         spec["legacy_guardian_protocol"] = LEGACY_GUARDIAN_PROTOCOL
@@ -5009,8 +5194,48 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
     batch_enabled = bool(persistent_backend and execution_plan["enabled"])
     config.setdefault("runtime", {})["run_root"] = run_root
     config["runtime"]["_run_display_name"] = display_name or os.path.basename(run_root)
+    config["_native_warning_run_root"] = run_root
     stop_path = os.path.join(run_root, "STOP")
     status_path = os.path.join(run_root, _contract_text("status.json"))
+    from .design_variables import is_design, qualify_priority, require_no_corner_conflicts, SCHEMA as DESIGN_SCHEMA
+    if any(is_design(row) for row in selected):
+        require_no_corner_conflicts(prepared["setup"], selected)
+        if resume_checkpoint is None and evaluator == "real":
+            priority = qualify_priority(prepared, selected, config, os.path.join(run_root, "design_variable_priority"), spec)
+            atomic_write_json(os.path.join(run_root, "design_variable_priority.json"), priority)
+            spec["design_variable_priority"] = priority
+            for warning in priority["warnings"]:
+                append_run_event(run_root, "design_variable_priority", warning, details=priority, level="WARNING")
+            locked = set(priority["locked_parameter_ids"])
+            selected = [row for row in selected if row["parameter_id"] not in locked]
+            variables = validate_variables([row for row in variables if row["parameter_id"] not in locked])
+            if locked and _environment_test_run(spec):
+                from .diagnostic_plan import project_frozen_inputs
+                spec["environment_test"] = project_frozen_inputs(spec, variables)
+                frozen_diagnostic_candidate = _frozen_environment_candidate(spec, variables)
+                frozen_diagnostic_plan = _frozen_environment_plan(spec, variables)
+        spec["design_variables_protocol"] = DESIGN_SCHEMA
+        by_id = {row["parameter_id"]: row for row in selected}
+        for variable in variables:
+            parameter = by_id[variable["parameter_id"]]
+            variable["source_kind"] = parameter.get("source_kind", "device")
+            if is_design(parameter):
+                variable["variable_source"] = parameter["source"]
+                variable["variable_test"] = parameter["variable_test"]
+    if resume_checkpoint is None:
+        by_id = {row["parameter_id"]: row for row in selected}
+        for variable in variables:
+            variable["source_kind"] = by_id[variable["parameter_id"]].get("source_kind", "device")
+    from .variable_selection_notice import (
+        VARIABLE_NOTICE_STAGE, VARIABLE_NOTICE_THRESHOLD, variable_selection_notice,
+    )
+    selection_notice = variable_selection_notice(spec["execution_backend"], len(selected))
+    if selection_notice:
+        append_run_event(run_root, VARIABLE_NOTICE_STAGE,
+                         "{} (Advisory threshold: {} variables.)".format(
+                             selection_notice, VARIABLE_NOTICE_THRESHOLD),
+                         details={"selected_variables": len(selected),
+                                  "threshold": VARIABLE_NOTICE_THRESHOLD}, level="WARN")
     spec["variables"] = variables
     spec["variable_labels"] = dict(
         (parameter["parameter_id"], "%s/%s" % (
@@ -5083,8 +5308,13 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
         "execution_backend": spec["execution_backend"],
         "simulator": spec["simulator"],
         "continuation_id": continuation_id,
-    })
+    }, format_version=(1 if resume_checkpoint is not None and
+        (resume_checkpoint.get("candidate_store") or {}).get("schema_version") !=
+        _contract_text("crescendo.optimization_dataset.v2") else 2))
     if all_rows:
+        if resume_checkpoint is not None and data_store.schema_version == _contract_text("crescendo.optimization_dataset.v2"):
+            data_store.import_point_history(resume_checkpoint["candidate_store"],
+                resume_checkpoint.get("candidate_store_embedded"), [row["candidate_id"] for row in all_rows])
         data_store.commit_candidates(all_rows)
     planned_core_ids = set(row["candidate_id"] for row in all_rows)
     point_commit_queue = queue.Queue()
@@ -6012,6 +6242,13 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
             if phase is not None:
                 generation_timing.transition(phase)
 
+    native_run_generation = baseline_backend and spec.get('native_candidate_batching') == 'generation'
+
+    def ask_candidates(count):
+        if native_run_generation:
+            return _ask_native_run_candidates(generator, count)
+        return generator.ask(count)
+
     def finish_generation(outcome):
         if generation_timing is None or generation_timing.active_phase is None:
             return
@@ -6026,11 +6263,14 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                 atomic_write_json(sidecar, capacity)
                 summary["capacity"] = {key: value for key, value in capacity.items() if key != "events"}
                 summary["capacity_sidecar"] = os.path.relpath(sidecar, run_root)
-                from .run_log import append_run_event
                 append_run_event(run_root, "generation_capacity", "Generation %d capacity and observed concurrency" % (generation + 1),
                                  details=summary["capacity"])
             if baseline_backend:
                 summary['native_batches'] = [b for b in status.get('native_batches', []) if b['generation'] == generation]
+                summary['native_batches_effective'] = bool(summary['native_batches'])
+                append_run_event(run_root, 'native_generation_batching', 'Generation %d Native batching summary' % (generation + 1),
+                    details={'generation': generation, 'native_batches_effective': summary['native_batches_effective'],
+                             'native_batches': len(summary['native_batches'])})
             generation_timings.append(summary)
             # Keep frequent status writes bounded. The final result retains all summaries.
             status["generation_timings"] = generation_timings[-20:]
@@ -6121,6 +6361,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
 
     if netlist_optimizer is not None:
         netlist_optimizer.point_commit_callback = request_point_commit
+        netlist_optimizer.run_data_version = 2 if data_store.schema_version == _contract_text("crescendo.optimization_dataset.v2") else 1
 
     pending_shared_compactions = {}
 
@@ -6224,7 +6465,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                     generator.population_size = 1
                     initial_values = [copy.deepcopy(frozen_diagnostic_candidate)]
                 else:
-                    initial_values = generator.ask(population)
+                    initial_values = ask_candidates(population)
                 active_plan = {
                     "generation": generation,
                     "next_index": len(initial_values),
@@ -7160,24 +7401,49 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                             except StopIteration:
                                 continue
                             submit_controller_request(worker, item)
-                elif pending and baseline_backend and spec.get('native_candidate_batching') == 'generation':
-                    from .generation_batch import build_generation_plan, BatchUnsupported
+                elif pending and native_run_generation:
+                    from .generation_batch import (
+                        BatchUnsupported, NativeRunValueUnsupported, build_generation_plan, native_run_values,
+                    )
                     from .native_baseline import evaluate_native_baseline_generation
-                    batch_plan = build_generation_plan(generation, pending, selected,
-                        {'prepared': _prepared_schema_fingerprint(prepared), 'spec': spec})
-                    batch_root = os.path.join(run_root, 'candidates', 'batch_' + batch_plan['batch_epoch'])
+                    batch_plan = batch_root = None
+                    value_issues = []
                     committed = set()
-                    def consume_batch_candidate(candidate, native_result):
+                    def settle_batch_candidate(candidate, native_result, retry=False):
                         nonlocal persistent_startup_streak
                         row = _evaluate_native_baseline_candidate(run_root, candidate['index'], generation,
                             candidate['values'], spec, prepared, selected, config,
-                            lambda: os.path.exists(stop_path), _native_result=native_result)
+                            lambda: os.path.exists(stop_path),
+                            owned_roots=baseline_candidate_roots if retry else None,
+                            _native_error=native_result if isinstance(native_result, Exception) else None,
+                            _native_result=None if isinstance(native_result, Exception) else native_result,
+                            _allow_directory_retry=retry)
                         persistent_startup_streak = record_future_rows(row, None, persistent_startup_streak)
-                        if row['status'] != 'completed':
+                        if (row['status'] != 'completed' and not _recoverable_native_failure(row)
+                                and not os.path.exists(stop_path)):
                             raise RuntimeError('Native Run candidate failed; evidence retained: ' + str(row.get('error')))
                         committed.add(candidate['candidate_id'])
-                    baseline_candidate_roots.add(os.path.abspath(batch_root))
+
+                    def consume_batch_candidate(candidate, native_result):
+                        if _native_directory_retry_allowed(native_result, spec.get("native_directory_retries", 1),
+                                                           lambda: os.path.exists(stop_path)):
+                            return lambda: settle_batch_candidate(candidate, native_result, retry=True)
+                        settle_batch_candidate(candidate, native_result)
                     try:
+                        # Check the entire frozen generation, including rows
+                        # already evaluated before a retry or resume.
+                        for index, values in active_plan["planned"]:
+                            try:
+                                native_run_values(values, variables)
+                            except NativeRunValueUnsupported as error:
+                                value_issues.append(dict(error.details, candidate_id='g%03d_c%04d' % (generation, index)))
+                        if value_issues:
+                            raise BatchUnsupported(value_issues[0]['reason'])
+                        batch_plan = build_generation_plan(generation, pending, selected,
+                            {'prepared': _prepared_schema_fingerprint(prepared), 'spec': spec})
+                        batch_root = os.path.join(run_root, 'candidates', 'batch_' + batch_plan['batch_epoch'])
+                        baseline_candidate_roots.add(os.path.abspath(batch_root))
+                        batch_plan['native_run_exact_values'] = True
                         evaluate_native_baseline_generation(batch_plan, selected, spec, prepared, config, batch_root,
                             cancel_check=lambda: os.path.exists(stop_path), consume=consume_batch_candidate)
                         status.setdefault('native_batches', []).append({'generation': generation,
@@ -7187,17 +7453,25 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                                 'observed_solver_peak': None, 'solver_peak_reason': 'native start/terminal events unavailable'},
                             'manifest': os.path.relpath(os.path.join(batch_root, _contract_text('batch_manifest.json')), run_root),
                             'timing': os.path.relpath(os.path.join(batch_root, _contract_text('batch_timing.json')), run_root)})
+                        status['native_candidate_batching_effective'] = 'generation'
                     except BatchUnsupported as error:
-                        if batch_plan.get('submitted'):
+                        if batch_plan and batch_plan.get('submitted'):
                             raise RuntimeError('Submitted native batch cannot replay serially')
                         # An unsupported plan can fail before creating a driver.
-                        if not os.path.isfile(os.path.join(batch_root, 'native_baseline', _contract_text('native_baseline_state.json'))):
+                        if batch_root and not os.path.isfile(os.path.join(batch_root, 'native_baseline', _contract_text('native_baseline_state.json'))):
                             baseline_candidate_roots.discard(os.path.abspath(batch_root))
-                        status['native_batch_fallback'] = {'generation': generation, 'reason': str(error),
-                            'batch_epoch': batch_plan['batch_epoch'], 'submitted': False}
+                        epoch = batch_plan['batch_epoch'] if batch_plan else uuid.uuid4().hex
+                        fallback = {'generation': generation, 'reason': str(error), 'batch_epoch': epoch,
+                                    'submitted': False, 'native_batches_effective': False}
+                        if value_issues:
+                            fallback['value_issues'] = value_issues
+                        status['native_batch_fallback'] = fallback
                         status['native_candidate_batching_effective'] = 'serial'
-                        atomic_write_json(os.path.join(run_root, 'batch_fallback_' + batch_plan['batch_epoch'] + '.json'), status['native_batch_fallback'])
-                        status['message'] = 'Native generation declined before submission; serial: ' + str(error)
+                        atomic_write_json(os.path.join(run_root, 'batch_fallback_' + epoch + '.json'), fallback)
+                        for issue in value_issues:
+                            append_run_event(run_root, 'native_batch_value_fallback', issue['reason'],
+                                details=dict(issue, generation=generation, batch_epoch=epoch), level='WARN')
+                        status['message'] = 'Native generation declined before submission. Running serially: ' + str(error)
                         atomic_write_json(status_path, status)
                         for index, values in pending:
                             if os.path.exists(stop_path):
@@ -7206,9 +7480,12 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                                 spec, prepared, selected, config, lambda: os.path.exists(stop_path),
                                 owned_roots=baseline_candidate_roots)
                             persistent_startup_streak = record_future_rows(row, None, persistent_startup_streak)
-                            if row['status'] != 'completed' and not os.path.exists(stop_path):
+                            if (row['status'] != 'completed' and not _recoverable_native_failure(row)
+                                    and not os.path.exists(stop_path)):
                                 raise RuntimeError('Native Run candidate failed; evidence retained: ' + str(row.get('error')))
                     except Exception as error:
+                        if batch_plan is None:
+                            raise
                         for candidate in batch_plan['candidates']:
                             if candidate['candidate_id'] in committed:
                                 continue
@@ -7235,6 +7512,8 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                             finish_generation('stopped')
                             break
                         finally:
+                            generation_timing.netlist_preparation = copy.deepcopy(
+                                getattr(netlist_optimizer, "generation_preparation_timings", {}).get(generation) or {})
                             generation_timing.transition("evaluate")
                     with ThreadPoolExecutor(max_workers=jobs) as executor:
                         pending_iter = iter(pending)
@@ -7294,6 +7573,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                                         persistent_startup_streak,
                                     )
                                     if (baseline_backend and result.get("status") != "completed" and
+                                            not _recoverable_native_failure(result) and
                                             not (result.get("status") == "cancelled" and os.path.exists(stop_path))):
                                         raise RuntimeError("Native Run candidate failed; evidence retained: " + str(result.get("error")))
                                     completed_count += 1
@@ -7332,7 +7612,7 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                 if missing > 0 and allowance > 0 and not os.path.exists(stop_path):
                     count = min(missing, allowance)
                     generation_timing.transition("ask")
-                    replacement_values = generator.ask(count)
+                    replacement_values = ask_candidates(count)
                     first_index = active_plan["next_index"]
                     active_plan["planned"].extend(
                         (first_index + offset, values) for offset, values in enumerate(replacement_values)
@@ -7351,7 +7631,8 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
             if stopped_reason == "user_stop":
                 finish_generation("stopped")
                 break
-            if not generation_rows and infrastructure_rows:
+            if (not generation_rows and infrastructure_rows and
+                    not (baseline_backend and all(_recoverable_native_failure(row) for row in infrastructure_rows))):
                 raise RuntimeError(
                     "systemic infrastructure failure in generation %d; optimization stopped instead of "
                     "replacing candidates indefinitely: %s" % (
@@ -7478,6 +7759,9 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
             status["shared_preparation_failure"] = copy.deepcopy(shared_failure)
             primary_failure["failure_stage"] = shared_failure.get("failure_stage") or "native_template_preparation"
             primary_failure["diagnostic_path"] = shared_failure.get("diagnostic_path")
+            if shared_failure.get("advisory"):
+                primary_failure["message"] = shared_failure["message"]
+                primary_failure["advisory"] = shared_failure["advisory"]
         status.setdefault("primary_failure", primary_failure)
         status.update({"state": "failed", "message": message, "finished_at": utc_timestamp()})
         try:
@@ -7532,7 +7816,11 @@ def _run_optimization_unleased(spec, config, prepared=None, run_root=None,
                 for row in all_rows:
                     root = os.path.join(run_root, "candidates", row["candidate_id"])
                     reference = row.get('batch_reference') or {}
-                    proof = baseline_shutdown["candidate_proofs"].get(reference.get('root') or root)
+                    command = row.get("native_command") or {}
+                    failure = (row.get("native_failure_detail") or {}).get("native_baseline") or {}
+                    request_root = ((command.get("native_baseline") or {}).get("request_root")
+                                    or failure.get("request_root") or reference.get("root") or root)
+                    proof = baseline_shutdown["candidate_proofs"].get(request_root)
                     if proof is not None:
                         row["raw_cleanup_proof"] = proof
                         persist_lightweight_candidate(root, row)

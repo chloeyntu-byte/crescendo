@@ -285,11 +285,12 @@ def prepare_snapshot_batch(worker, candidates, batch_root, identity):
         candidate_workspace = dict((key, copy.deepcopy(source_workspace[key]))
                                    for key in ("root", "simulation_root", "setup_dir", "primary_library",
                                                "setup_cell", "setup_view", "setup_backend", "copied_libraries",
-                                               "private_library_names", "copy_policy")
+                                               "private_library_names", "copy_policy", "setup")
                                    if key in source_workspace)
         candidate_workspace["config_designs"] = candidate_configs
         clone_records = os.path.join(root, "batch_clone.records")
         lines.extend(_clone_lines(batch_clones, clone_records, candidate_workspace))
+        config_plan = private_config_plan(candidate_workspace, batch_clones)
         # _candidate_rows expects source design keys; retain them in the lookup.
         rows = _candidate_rows(source_workspace, worker.parameters, requested["values"], current_clone_map)
         for row in rows:
@@ -323,7 +324,7 @@ def prepare_snapshot_batch(worker, candidates, batch_root, identity):
                     "mode": MODE, "shared_history": True, "source_test_map": source_test_map,
                     "verification_workspace": candidate_workspace,
                     "clone_plan": batch_clones, "clone_records": clone_records,
-                    "config_binding_plan": private_config_plan(candidate_workspace, batch_clones),
+                    "config_binding_plan": config_plan,
                     "config_verification_path": clone_records + ".config", "snapshot_roots": roots}
         manifest["candidates"].append(artifact)
     manifest["snapshot_lines"] = lines
@@ -386,6 +387,9 @@ def _prepare_same_library_snapshot_batch(worker, candidates, batch_root, identit
             updated = copy.deepcopy(config)
             updated.update(dict(zip(("library", "cell", "view"), target)))
             updated["generated_config"] = bool(source_workspace.get("same_library_objects"))
+            updated["source_test_design"] = design
+            if updated.get("config_dependencies") and not updated.get("source_config"):
+                updated["source_config"] = design
             candidate_configs.append(updated)
             lines.extend([
                 _contract_text('unless(ddGetObj(%s) == nil error("Crescendo owned batch config exists\\n"))') % " ".join('"%s"' % _skill_quote(v) for v in (target if owned_config else target[:2])),
@@ -416,6 +420,7 @@ def _prepare_same_library_snapshot_batch(worker, candidates, batch_root, identit
         candidate_workspace["private_design_identities"] = []
         clone_records = os.path.join(root, "batch_clone.records")
         lines.extend(_clone_lines(clones, clone_records, candidate_workspace))
+        config_plan = private_config_plan(candidate_workspace, clones)
         rows = _candidate_rows(source_workspace, worker.parameters, requested["values"], lookup)
         plans = _candidate_plans(rows, root, not worker._adapter_path())
         lines.extend(_snapshot_lines(rows, plans["baseline"]["verification_path"], "BASELINE"))
@@ -438,7 +443,7 @@ def _prepare_same_library_snapshot_batch(worker, candidates, batch_root, identit
                     "worker_index": worker.worker_index, "batch_id": identity["candidate_id"], "mode": MODE,
                     "shared_history": True, "source_test_map": source_test_map,
                     "verification_workspace": candidate_workspace, "clone_plan": clones,
-                    "clone_records": clone_records, "config_binding_plan": private_config_plan(candidate_workspace, clones),
+                    "clone_records": clone_records, "config_binding_plan": config_plan,
                     "config_verification_path": clone_records + ".config", "snapshot_roots": []}
         manifest["candidates"].append(artifact)
     manifest["snapshot_lines"] = lines

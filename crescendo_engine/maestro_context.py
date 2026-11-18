@@ -33,6 +33,7 @@ MAX_CONTEXT_BYTES = 1024 * 1024
 MAX_FIELD_CHARS = 16384
 # makeTempFileName keeps only a short basename prefix on Cadence 6.1.8.
 NATIVE_TEMP_PREFIXES = (_contract_text("cr_ctx_"), _contract_text("cr_maestro_"), _contract_text("cr_maes"))
+_NATIVE_TRANSPORT = re.compile(r"/tmp/crescendo-ipc[.][A-Za-z0-9]{10}/context")
 RUNTIME_ENV_NAMES = frozenset(NATIVE_ENV_NAMES)
 _TOKEN = re.compile(r'\s*("(?:[^"\\\r\n]|\\.)*"|nil|t|-?[0-9]+)(?=\s|$)')
 
@@ -232,12 +233,20 @@ def _publish_mapping(design_root, contents):
 def load_launch_context(path, consume=True, storage_base_root=None):
     """Persist an independent private snapshot before consuming native temp input."""
     path = os.path.abspath(path)
+    native_transport = _NATIVE_TRANSPORT.fullmatch(path) is not None
+    if native_transport:
+        directory = os.lstat(os.path.dirname(path))
+        if (not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.getuid()
+                or stat.S_IMODE(directory.st_mode) != 0o700):
+            raise ValueError("Launch transport directory must be owned by this user and have mode 0700")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, flags)
     with os.fdopen(descriptor, "rb") as stream:
         identity = os.fstat(stream.fileno())
         if not stat.S_ISREG(identity.st_mode) or identity.st_uid != os.getuid():
             raise ValueError("Launch context must be a regular file owned by this user")
+        if native_transport and (stat.S_IMODE(identity.st_mode) != 0o600 or identity.st_nlink != 1):
+            raise ValueError("Launch context must be exclusively linked and have mode 0600")
         native_temp = (os.path.basename(path).startswith(NATIVE_TEMP_PREFIXES) and
                        os.path.realpath(os.path.dirname(path)) == os.path.realpath(tempfile.gettempdir()))
         if native_temp:
@@ -277,7 +286,7 @@ def load_launch_context(path, consume=True, storage_base_root=None):
     context["effective_cds_lib"] = _publish_mapping(design_dir, contents)
     atomic_write_json(context["context_path"], context)
     # Never unlink a source setup/RDB or a user-supplied arbitrary file.
-    if consume and os.path.basename(path).startswith(NATIVE_TEMP_PREFIXES) and os.path.realpath(os.path.dirname(path)) == os.path.realpath(tempfile.gettempdir()):
+    if consume and (native_transport or native_temp):
         current = os.lstat(path)
         if (current.st_ino, current.st_dev) == (identity.st_ino, identity.st_dev) and stat.S_ISREG(current.st_mode):
             os.unlink(path)

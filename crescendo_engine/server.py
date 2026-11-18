@@ -872,7 +872,7 @@ def _checkpoint_origin_path(checkpoint, runtime_root):
         raise RuntimeError("checkpoint origin is not a directory")
     if os.path.dirname(absolute_origin) != runtime_absolute:
         raise RuntimeError("checkpoint origin must be a direct child of the configured runtime root")
-    if checkpoint.get("schema_version") == _contract_text("crescendo.checkpoint.v1"):
+    if checkpoint.get("schema_version") in (_contract_text("crescendo.checkpoint.v1"), _contract_text("crescendo.checkpoint.v2")):
         status_path = os.path.join(absolute_origin, _contract_text("status.json"))
         if os.path.islink(status_path) or not os.path.isfile(status_path):
             raise RuntimeError("checkpoint origin status.json is missing or unsafe")
@@ -1919,9 +1919,28 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
 
 from .private_suite_service import PrivateSuiteServiceMixin
+from .gui_service import gui_service_class
 
 
+@gui_service_class
 class OptimizerService(PrivateSuiteServiceMixin):
+    def enable_gui_process(self):
+        """Attach a fresh native GUI without transferring live native ownership.
+
+        Explicitly preloaded/custom services retain their caller-owned lifecycle.
+        Headless users never enable this transport and retain the original API.
+        """
+        if self.__dict__.get('_gui_delegate') is not None:
+            return True
+        if (self.prepared or self.inspections or self.test_inspections or self.setup_private_sessions or
+                self.threads or self.lifecycle_operations or self.resident_validation is not None or
+                self.environment_tests is not None or self.closing or
+                any(not name.startswith('_') and callable(value) for name, value in vars(self).items())):
+            return False
+        from .gui_service import GuiServiceDelegate
+        self._gui_delegate = GuiServiceDelegate(self)
+        return True
+
     def __init__(self, config):
         self.config = config
         # A manual saved-setup choice must not discard the menu caller or
@@ -1971,6 +1990,13 @@ class OptimizerService(PrivateSuiteServiceMixin):
         self._scratch_receipts = {}
         self._remember_scratch(config)
         self._load_run_index()
+        # Reconcile retained isolation without launching native tools or Stop.
+        from .setup_private_session import list_setup_private_sessions
+        try:
+            self.startup_suite_checks = list_setup_private_sessions(config)
+        except (OSError, ValueError) as error:
+            self.startup_suite_checks = [{"blocked_reasons": [
+                {"code": "suite_storage_unavailable", "message": str(error)}]}]
 
     def _set_activity(self, stage, message, state="running", level=None):
         """Small in-memory UI timeline; diagnostic evidence remains separate."""
@@ -2794,7 +2820,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
         finally:
             self._end_lifecycle_operation(exclusive=True)
 
-    def _inspect_test_cells_registered(self, test_inspection_id, test_name, max_depth=32):
+    def _inspect_test_cells_registered(self, test_inspection_id, test_name, max_depth=32, instance_paths=None):
         with self.lock:
             record = self.test_inspections.get(test_inspection_id)
             if record is None or record["epoch"] != self.inspection_epoch:
@@ -2831,13 +2857,24 @@ class OptimizerService(PrivateSuiteServiceMixin):
             self.inspections.clear()
         reference = record["preview"]["setup_locator"]
         result = self._inspect_cells_registered(reference["path"], max_depth=max_depth,
-                                                backend=reference["backend"], selected_test=test_name)
+                                                backend=reference["backend"], selected_test=test_name,
+                                                **({"instance_paths": instance_paths} if instance_paths is not None else {}))
         if record["identity"] != self._inspection_setup_identity(record["preview"]["setup"]):
             with self.lock:
                 self.inspections.pop(result[0], None)
                 self.prepared.clear()
             raise ValueError("ADE setup changed during Test cell discovery; Load and Inspect again.")
         return result
+
+    def inspect_instance_paths(self, test_inspection_id, test_name, text, max_depth=32):
+        """Validate lines using only requested OA branches in the selected Test."""
+        self._begin_lifecycle_operation("inspect instance paths", exclusive=True)
+        try:
+            with command_cancellation_scope(self.prepare_cancel_event):
+                return self._inspect_test_cells_registered(test_inspection_id, test_name, max_depth,
+                                                          instance_paths=text)
+        finally:
+            self._end_lifecycle_operation(exclusive=True)
 
     def inspect_cells(self, path, max_depth=32, backend=None, selected_test=None):
         """Compatibility entry: discover Tests before any single-Test scan."""
@@ -2849,7 +2886,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
             selected_test = names[0]
         return self.inspect_test_cells(token, selected_test, max_depth=max_depth)
 
-    def _inspect_cells_registered(self, path, max_depth=32, backend=None, selected_test=None):
+    def _inspect_cells_registered(self, path, max_depth=32, backend=None, selected_test=None, instance_paths=None):
         """Inspect inside an already-owned Setup lifecycle operation."""
         from .hierarchy import cell_scope_records, probe_hierarchy
         from .runner import configuration_binding_identity
@@ -2869,7 +2906,20 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 job_policy = capture_setup_job_policy(setup, self.config)
                 identity = self._inspection_setup_identity(setup)
                 self._set_activity("hierarchy", "Discovering design cells")
-                hierarchy = probe_hierarchy(setup, self.config, max_depth=max_depth, cells_only=True)
+                path_result = None
+                if instance_paths is not None:
+                    from .hierarchy import resolve_instance_paths
+                    path_result = resolve_instance_paths(setup, self.config, instance_paths, max_depth=max_depth)
+                    hierarchy = path_result.pop("hierarchy")
+                    if not path_result["scopes"]:
+                        return None, {"instance_path_validation": path_result, "cell_scopes": []}
+                    # Missing paths can have opened ancestors outside valid scopes.
+                    # Seal the same branch set that Apply will inspect.
+                    if any(not row.get("valid") and "design" in row for row in path_result["lines"]):
+                        hierarchy = probe_hierarchy(setup, self.config, max_depth=max_depth,
+                            cells_only=True, selected_cell_paths=path_result["scopes"], targeted=True)
+                else:
+                    hierarchy = probe_hierarchy(setup, self.config, max_depth=max_depth, cells_only=True)
                 config_identity = config_dependency_identity(setup, hierarchy, config=self.config)
                 binding_identity = configuration_binding_identity(hierarchy)
                 config_dependencies = {"designs": [
@@ -2881,6 +2931,8 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 scopes = [row for row in cell_scope_records(
                     hierarchy, setup=setup, config=self.config,
                 ) if row.get("selectable")]
+                if path_result is not None:
+                    scopes = path_result["scopes"]
                 check_command_cancellation()
                 if identity != self._inspection_setup_identity(setup):
                     raise ValueError("ADE setup changed during cell discovery; Load Cells again.")
@@ -2892,6 +2944,8 @@ class OptimizerService(PrivateSuiteServiceMixin):
                     "job_policy": job_policy,
                     "eda_context": {"cadence": self.eda_setup(setup)},
                 }
+                if path_result is not None:
+                    preview["instance_path_validation"] = path_result
                 self._set_activity("private_copy", "Creating Maestro and config working copies")
                 self._prepare_setup_private_session(preview)
                 token = uuid.uuid4().hex
@@ -2907,7 +2961,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                             "setup_private_session": preview.get("setup_private_session"),
                         }), "identity": identity,
                         "max_depth": max_depth, "epoch": self.inspection_epoch,
-                        "prepared_ids": [],
+                        "prepared_ids": [], "targeted": instance_paths is not None,
                         "config_identity": config_identity,
                         "binding_identity": binding_identity,
                         "config_dependencies": config_dependencies,
@@ -2933,7 +2987,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
 
     def _prepare_cells_registered(self, inspection_id, scope_ids):
         """Apply inside an already-owned Setup lifecycle operation."""
-        from .hierarchy import cell_scope_records
+        from .hierarchy import instance_scope_records as cell_scope_records
         from .runner import configuration_binding_identity
         from .workspace import config_dependency_identity, source_design_identity
         prepared_id = None
@@ -2972,6 +3026,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
                     reference["path"], max_depth=record["max_depth"], backend=reference["backend"],
                     initialize_validation=False, selected_cell_paths=selected,
                     defer_finalize=True, selected_test=preview["setup"].get("selected_test"),
+                    **({"targeted": True} if record.get("targeted") else {})
                 )
                 scanned_source_identity = copy.deepcopy(prepared.get("source_identity"))
                 observed = dict((row["scope_id"], row) for row in cell_scope_records(
@@ -3058,7 +3113,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
             raise
 
     def prepare(self, path, max_depth=32, backend=None, initialize_validation=True,
-                selected_cell_paths=None, selected_test=None):
+                selected_cell_paths=None, selected_test=None, legacy_catalog=False, targeted=False):
         self._begin_lifecycle_operation("prepare an ADE setup")
         try:
             with command_cancellation_scope(self.prepare_cancel_event):
@@ -3070,6 +3125,10 @@ class OptimizerService(PrivateSuiteServiceMixin):
                     selected_test = rows[0].get("name")
                 options = {"max_depth": max_depth, "backend": backend,
                            "initialize_validation": initialize_validation, "selected_test": selected_test}
+                if legacy_catalog:
+                    options["legacy_catalog"] = True
+                if targeted:
+                    options["targeted"] = True
                 if selected_cell_paths is not None:
                     options["selected_cell_paths"] = selected_cell_paths
                 return self._prepare_registered(path, **options)
@@ -3082,16 +3141,18 @@ class OptimizerService(PrivateSuiteServiceMixin):
             self._end_lifecycle_operation()
 
     def _prepare_registered(self, path, max_depth=32, backend=None, initialize_validation=True,
-                            selected_cell_paths=None, defer_finalize=False, selected_test=None):
+                            selected_cell_paths=None, defer_finalize=False, selected_test=None, legacy_catalog=False, targeted=False):
         self._validate_launch_binding(path)
         self._require_idle_setup_resources(
             "initialize PDK callback validation" if initialize_validation else "load an ADE setup",
         )
         requested_backend = "auto" if backend is None else backend
-        if selected_cell_paths is not None or selected_test is not None:
+        if legacy_catalog or selected_cell_paths is not None or selected_test is not None:
             prepared = prepare_setup(
                 path, self.config, max_depth=max_depth, backend=requested_backend,
                 selected_cell_paths=selected_cell_paths, selected_test=selected_test,
+                **dict(({"legacy_catalog": True} if legacy_catalog else {}),
+                       **({"targeted": True} if targeted else {}))
             )
         elif requested_backend == "maestro":
             prepared = prepare_maestro(path, self.config, max_depth=max_depth)
@@ -3117,7 +3178,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
         })
         prepared["eda_context"] = eda_context
         if selected_cell_paths is not None:
-            from .hierarchy import cell_scope_records
+            from .hierarchy import instance_scope_records as cell_scope_records
             cell_selection_scopes({"scopes": selected_cell_paths})
             allowed = dict((tuple(row["design"].get(key) for key in ("library", "cell", "view"))
                             + (row["hierarchy_path"],), row) for row in cell_scope_records(
@@ -3135,6 +3196,8 @@ class OptimizerService(PrivateSuiteServiceMixin):
                 "scope_ids": [row["scope_id"] for row in selected_cell_paths if row.get("scope_id")],
                 "scopes": copy.deepcopy(selected_cell_paths),
             }
+            if targeted:
+                prepared["cell_selection"]["discovery"] = {"schema_version": _contract_text("crescendo.scoped_discovery.v1")}
         baseline = freeze_setup_baseline(prepared, self.config)
         if baseline:
             from .workspace import source_design_identity
@@ -4855,7 +4918,15 @@ class OptimizerService(PrivateSuiteServiceMixin):
                     warnings.append("Configuration does not identify exactly one available Test; select a Test manually.")
                     return result
                 stage = "cell_inspection"
-                inspection_id, inspection = self._inspect_test_cells_registered(test_id, requested[0], max_depth)
+                path_selection = normalized["document"].get("instance_path_selection")
+                path_options = {}
+                if path_selection is not None:
+                    text = "\n".join("{}/{}/{} {}".format(
+                        row["design"]["library"], row["design"]["cell"], row["design"]["view"], row["hierarchy_path"])
+                        for row in path_selection["scopes"])
+                    path_options["instance_paths"] = text
+                inspection_id, inspection = self._inspect_test_cells_registered(test_id, requested[0], max_depth,
+                                                                               **path_options)
                 result.update(inspection_id=inspection_id, inspection=inspection, selected_test=requested[0])
                 check_command_cancellation()
                 self._set_activity("configuration_matching", "Matching saved settings to current Maestro")
@@ -5033,6 +5104,8 @@ class OptimizerService(PrivateSuiteServiceMixin):
             anchor_after_origin = _reconcile_continuation_anchor(
                 checkpoint, runtime_root, persist_absent=False,
             )
+            from .runner import checkpoint_catalog_options
+            catalog_options = checkpoint_catalog_options(checkpoint)
             baseline_snapshot = manifest.get("setup_baseline_snapshot")
             if baseline_snapshot is not None:
                 prepared = load_prepared_baseline(baseline_snapshot)
@@ -5050,12 +5123,12 @@ class OptimizerService(PrivateSuiteServiceMixin):
             elif persisted_scopes is not None:
                 prepared_id, prepared = self.prepare(
                     reference["path"], backend=reference["backend"],
-                    initialize_validation=False, selected_cell_paths=persisted_scopes,
+                    initialize_validation=False, selected_cell_paths=persisted_scopes, **catalog_options
                 )
             elif reference["backend"] == "adexl":
-                prepared_id, prepared = self.prepare(reference["path"], backend="adexl", initialize_validation=False)
+                prepared_id, prepared = self.prepare(reference["path"], backend="adexl", initialize_validation=False, **catalog_options)
             else:
-                prepared_id, prepared = self.prepare(reference["path"], initialize_validation=False)
+                prepared_id, prepared = self.prepare(reference["path"], initialize_validation=False, **catalog_options)
             self._attach_live_setup_private_session(prepared)
             validate_checkpoint(checkpoint, prepared)
             self._require_prelaunch_safety(
@@ -5145,7 +5218,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
             _guard_origin_checkpoint_revision(
                 checkpoint, origin_root, run_config["runtime"]["run_root"],
             )
-            if checkpoint.get("schema_version") == _contract_text("crescendo.checkpoint.v1") else
+            if checkpoint.get("schema_version") in (_contract_text("crescendo.checkpoint.v1"), _contract_text("crescendo.checkpoint.v2")) else
             {"state": "legacy_checkpoint_without_integrity_schema"}
         )
         if (checkpoint.get("spec") or {}).get("execution_backend") == "maestro_baseline":
@@ -5372,7 +5445,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
 
         checkpoint_rows = []
         planned_candidates = []
-        if checkpoint.get("schema_version") == _contract_text("crescendo.checkpoint.v1"):
+        if checkpoint.get("schema_version") in (_contract_text("crescendo.checkpoint.v1"), _contract_text("crescendo.checkpoint.v2")):
             checkpoint_rows = checkpoint_candidates(checkpoint)
             planned_candidates = _checkpoint_planned_candidates(checkpoint)
         existing_ids = set(row.get("candidate_id") for row in checkpoint_rows)
@@ -7940,6 +8013,36 @@ class OptimizerService(PrivateSuiteServiceMixin):
                     "Retry Exit to recover its owned process: %s" % error
                 ) from error
 
+    def _optimized_schematic_candidate_evidence(self, run_name, candidate):
+        """Recover full Native Run proof from its own retained candidate sidecars."""
+        if candidate.get("execution_backend") != "maestro_baseline":
+            return candidate
+        application = candidate.get("parameter_application") or {}
+        completion = candidate.get("completion_evidence") or {}
+        if application.get("solver_completion_proven") and completion.get("execution_pipeline"):
+            return candidate
+        relative = os.path.join("candidates", candidate["candidate_id"])
+        native = self._read_run_json_snapshot(
+            run_name, os.path.join(relative, _contract_text("native_baseline_evidence.json")),
+            "Native Run parameter proof for schematic export", 64 * 1024 * 1024,
+        )
+        completion = self._read_run_json_snapshot(
+            run_name, os.path.join(relative, _contract_text("completion_evidence.json")),
+            "Native Run completion proof for schematic export", 64 * 1024 * 1024,
+        )
+        if native is None or completion is None:
+            raise ValueError("Native Run retained parameter application or completed-point evidence is missing")
+        command = native.get("command") or {}
+        pipeline = completion.get("execution_pipeline") or {}
+        if (native.get("candidate_id") != candidate["candidate_id"] or native.get("status") != "completed"
+                or native.get("cleanup_pending") is not False or (native.get("source_guard") or {}).get("ok") is not True
+                or not command.get("history_name") or command.get("history_name") != completion.get("history_name")
+                or not command.get("rdb_path") or command.get("rdb_path") != pipeline.get("rdb_path")
+                or command.get("run_id") != pipeline.get("run_id")):
+            raise ValueError("Native Run point evidence does not match the selected candidate's completed history")
+        return dict(candidate, parameter_application=native.get("parameter_application"),
+                    completion_evidence=completion)
+
     def generate_optimized_schematic(self, run_name, candidate_id):
         from .optimized_schematic import export_optimized_schematic
         from .runner import _reverify_prepared_source_identity
@@ -8006,9 +8109,17 @@ class OptimizerService(PrivateSuiteServiceMixin):
                     raise ValueError("Original candidate evidence does not match this resumed solution")
                 context, candidate, evidence_run = origin_context, origin_candidate, origin
             prepared, config = context["prepared"], context["config"]
+            if candidate.get("cleanup_pending") is True:
+                raise RuntimeError("Selected candidate worker cleanup is unproven")
+            candidate = self._optimized_schematic_candidate_evidence(evidence_run, candidate)
             template = None
             if candidate.get("execution_backend") == "private_netlist":
-                template = self._read_run_json_snapshot(evidence_run, "private_netlist/templates/private_netlist.json", "schematic export template", 64 * 1024 * 1024)
+                template = self._read_run_json_snapshot(
+                    evidence_run, os.path.join("private_netlist", "templates", _contract_text("private_netlist.json")),
+                    "schematic export template", 64 * 1024 * 1024,
+                )
+            if not spec.get("display_name") and status.get("display_name"):
+                spec = dict(spec, display_name=status["display_name"])
             root = os.path.join(run_root, "optimized_schematics", "export_" + uuid.uuid4().hex)
             return export_optimized_schematic(
                 prepared, spec, candidate, config, root, template_manifest=template,
@@ -8020,7 +8131,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
             if root is not None and command is None:
                 relative = os.path.relpath(root, run_root)
                 result = self._read_run_json_snapshot(
-                    run_name, relative + "/export_result.json", "schematic export result", 16 * 1024 * 1024,
+                    run_name, os.path.join(relative, _contract_text("export_result.json")), "schematic export result", 16 * 1024 * 1024,
                 ) or {}
                 command = next((row for row in reversed(result.get("commands") or []) if
                                 row.get("termination_failed") or (row.get("guardian_cleanup") or {}).get("state") != "dead"), None)
@@ -8055,7 +8166,7 @@ class OptimizerService(PrivateSuiteServiceMixin):
         if snapshot is None:
             return None
         checkpoint = snapshot["checkpoint"]
-        if checkpoint.get("schema_version") != _contract_text("crescendo.checkpoint.v1"):
+        if checkpoint.get("schema_version") not in (_contract_text("crescendo.checkpoint.v1"), _contract_text("crescendo.checkpoint.v2")):
             raise ValueError("legacy checkpoint export is not supported")
         validate_checkpoint_integrity(checkpoint)
         from .runner import self_contained_checkpoint
@@ -8064,7 +8175,8 @@ class OptimizerService(PrivateSuiteServiceMixin):
     def candidates_csv(self, run_name):
         progress = self.progress(run_name)
         labels = (progress.get("spec") or {}).get("variable_labels") or {}
-        return candidates_csv_text(progress["candidates"], variable_labels=labels)
+        return candidates_csv_text(progress["candidates"], variable_labels=labels,
+                                   variables=(progress.get("spec") or {}).get("variables"))
 
 
 def make_handler(service):

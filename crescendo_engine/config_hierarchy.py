@@ -8,6 +8,17 @@ _contract_text = bind_text()
 
 
 
+def plain_switch_views(test):
+    """Supported native implementations in saved View List order, then defaults."""
+    views = ['spectre', 'schematic', 'veriloga']
+    if (test.get('simulator') or 'spectre').lower() == 'alps':
+        views.insert(0, 'alps')
+    if 'ahdl' in (test.get('switch_views') or []) + (test.get('stop_views') or []):
+        views.append('ahdl')
+    ordered = [view for view in test.get('switch_views') or [] if view in views]
+    return list(dict.fromkeys(ordered + views))
+
+
 def is_schematic_implementation(view_name, view_type):
     """Only source schematic views expose an editable device hierarchy.
 

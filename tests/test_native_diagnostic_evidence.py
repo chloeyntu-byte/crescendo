@@ -182,6 +182,150 @@ class NativeEvidenceTest(unittest.TestCase):
         self.assertFalse(any(x['kind'] == 'text_log' for x in r['records']))
         self.assertIn('different_device_or_owner', [x['reason'] for x in r['omissions']])
 
+    def test_spent_byte_budget_is_not_reported_as_an_unsafe_file(self):
+        # Small, regular metadata can exceed the remaining shared allowance.
+        result = self.collect(size=100)
+        reason = str(result['omissions'])
+        self.assertIn('identity read byte budget exhausted', reason)
+        self.assertIn('native_storage_evidence.json', reason)
+        self.assertNotIn('regular file', reason)
+        self.assertEqual(result['read_bytes'], 0)
+
+    def test_atomic_replace_between_open_and_stat_is_retried(self):
+        from crescendo_engine.utils import atomic_write_json
+        path = os.path.join(self.control, 'native_baseline_state.json')
+        real_open = os.open
+        unlinked = []
+        def replacing(name, *args, **kwargs):
+            fd = real_open(name, *args, **kwargs)
+            if name == path and not unlinked:
+                atomic_write_json(path, self.state)
+                unlinked.append(os.fstat(fd).st_nlink)
+            return fd
+        with mock.patch('crescendo_engine.native_diagnostic_evidence.os.open', side_effect=replacing):
+            result = self.collect()
+        self.assertEqual(unlinked, [0])
+        self.assertEqual(result['status'], 'partial')
+        self.assertIn('identity file replaced after open', str(result['omissions']))
+        self.assertNotIn('retries exhausted', str(result['omissions']))
+        self.assertEqual(result['files_read'], 6)
+
+    def test_repeated_replacement_is_bounded_and_never_reads_logs(self):
+        from crescendo_engine.utils import atomic_write_json
+        path = os.path.join(self.control, 'native_baseline_state.json')
+        real_open = os.open
+        replacements = []
+        def replacing(name, *args, **kwargs):
+            fd = real_open(name, *args, **kwargs)
+            if name == path:
+                atomic_write_json(path, self.state)
+                replacements.append(fd)
+            return fd
+        with mock.patch('crescendo_engine.native_diagnostic_evidence.os.open', side_effect=replacing):
+            result = self.collect()
+        self.assertEqual(len(replacements), 3)
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertIn('replacement retries exhausted', str(result['omissions']))
+        self.assertEqual(result['records'], [])
+
+    def test_replace_after_read_charges_discarded_bytes(self):
+        from crescendo_engine.utils import atomic_write_json
+        path = os.path.join(self.control, 'native_baseline_state.json')
+        baseline = self.collect()
+        real_open, real_read = os.open, os.read
+        tracked, replaced = [], []
+        def track(name, *args, **kwargs):
+            fd = real_open(name, *args, **kwargs)
+            if name == path:
+                tracked.append(fd)
+            return fd
+        def replacing(fd, amount):
+            data = real_read(fd, amount)
+            if fd in tracked and not replaced:
+                atomic_write_json(path, self.state)
+                replaced.append(len(data))
+            return data
+        with mock.patch('crescendo_engine.native_diagnostic_evidence.os.open', side_effect=track), \
+             mock.patch('crescendo_engine.native_diagnostic_evidence.os.read', side_effect=replacing):
+            result = self.collect()
+        # The producer serializes more compactly on replacement.
+        self.assertEqual(result['files_read'], 6)
+        self.assertEqual(result['read_bytes'], baseline['read_bytes'] + os.path.getsize(path))
+        self.assertIn('identity file changed during read', str(result['omissions']))
+
+    def test_unsafe_identity_types_and_limits_are_never_retried(self):
+        path = os.path.join(self.control, 'native_storage_evidence.json')
+        for kind, message in (('fifo', 'not a regular file'), ('link', 'symbolic link'),
+                              ('hardlink', 'not singly linked'), ('oversize', 'metadata limit')):
+            with self.subTest(kind=kind):
+                os.unlink(path)
+                extra = path + '.extra'
+                if kind == 'fifo':
+                    os.mkfifo(path)
+                elif kind == 'link':
+                    os.symlink(os.path.join(self.control, 'native_baseline_state.json'), path)
+                else:
+                    with open(path, 'w') as stream:
+                        stream.write('x' * (65537 if kind == 'oversize' else 10))
+                    if kind == 'hardlink':
+                        os.link(path, extra)
+                result = self.collect()
+                self.assertEqual(result['status'], 'unavailable')
+                self.assertIn(message, str(result['omissions']))
+                self.assertNotIn('identity_changed_retry', str(result['omissions']))
+                self.assertEqual(result['files_read'], 1)
+                if os.path.exists(extra):
+                    os.unlink(extra)
+
+    def test_identity_retry_obeys_file_and_byte_budgets(self):
+        from crescendo_engine.utils import atomic_write_json
+        path = os.path.join(self.control, 'native_storage_evidence.json')
+        real_read = os.read
+        for resource in ('files', 'bytes'):
+            with self.subTest(resource=resource):
+                replaced = []
+                def replacing(fd, amount):
+                    data = real_read(fd, amount)
+                    if not replaced:
+                        atomic_write_json(path, self.manifest)
+                        replaced.append(len(data))
+                    return data
+                allowance = os.path.getsize(path)
+                with mock.patch('crescendo_engine.native_diagnostic_evidence.os.read', side_effect=replacing):
+                    result = self.collect(size=allowance if resource == 'bytes' else 100000,
+                                          files=1 if resource == 'files' else 64)
+                self.assertEqual(result['status'], 'unavailable')
+                self.assertEqual(result['read_bytes'], replaced[0])
+                self.assertIn('budget exhausted', str(result['omissions']))
+                self.assertLessEqual(result['files_read'], 2)
+
+    def test_missing_or_truncated_identity_never_qualifies(self):
+        path = os.path.join(self.control, 'native_baseline_state.json')
+        os.unlink(path)
+        missing = self.collect()
+        self.assertIn('identity path missing during open', str(missing['omissions']))
+        self.assertIn('replacement retries exhausted', str(missing['omissions']))
+        with open(path, 'w') as stream:
+            stream.write('{')
+        truncated = self.collect()
+        self.assertIn('invalid or incomplete identity JSON', str(truncated['omissions']))
+        self.assertIn('native_baseline_state.json', str(truncated['omissions']))
+        self.assertNotIn('identity_changed_retry', str(truncated['omissions']))
+        self.assertEqual(truncated['status'], 'unavailable')
+
+    def test_large_ocean_log_does_not_precede_native_identity_reads(self):
+        from crescendo_engine.environment_diagnostics import collect_run_diagnostics
+        with open(os.path.join(self.control, 'ocean.stdout'), 'w') as stream:
+            stream.write('x' * 52000)
+        with open(os.path.join(self.storage, 'run.log'), 'w') as stream:
+            stream.write('owned native log')
+        observations = collect_run_diagnostics(self.tmp.name, 'maestro_baseline')
+        collection = next(row['payload'] for row in observations
+                          if row['observation'] == 'diagnostic.native_storage_collection')
+        self.assertEqual(collection['status'], 'ok')
+        self.assertTrue(any(row['observation'] == 'diagnostic.native_storage_evidence'
+                            for row in observations))
+
     def test_storage_symlink_rejected(self):
         os.rmdir(self.storage)
         os.symlink(self.tmp.name, self.storage)

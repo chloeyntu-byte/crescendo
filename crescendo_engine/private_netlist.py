@@ -21,10 +21,13 @@ import stat
 import time
 import uuid
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 
 from crescendo_engine.runtime import bind_text
 _contract_text = bind_text()
 
+from .preparation_timing import stage, preparation_stage, observe_capture_command, capture_observed
+from .design_variables import native_parameter
 from .cadence import child_environment, run_command
 from .hierarchy import parse_physical_number
 from .spectre_values import parse_spectre_number
@@ -1800,6 +1803,10 @@ def _capture_setup_identity(workspace, root, owned_symbols=None, config=None):
             original, private_comparison, workspace.get("_native_execution_selection_applied"))
         if execution_proof:
             detail["owned_execution_selection_normalization"] = execution_proof
+        from .design_variables import normalize_owned_globals
+        private_comparison, global_proofs = normalize_owned_globals(original, private_comparison,
+            workspace.get("native_design_variable_last_values"))
+        detail["owned_design_variable_normalizations"] = global_proofs
         private_comparison["corners"], owned_proofs = _normalize_owned_corner_parameters(private_comparison["corners"], workspace)
         detail["owned_native_parameter_normalizations"] = owned_proofs
         private_comparison, default_slot_proof = _normalize_projected_default_slot(
@@ -2425,6 +2432,12 @@ def _capture_request_config(prepared, config, spec):
     result["_capture_execution_selection"] = execution_selection
     result["_capture_corner_selection"] = plan
     result["_capture_job_overrides"] = normalize_job_overrides((spec or {}).get("maestro_job_overrides"))
+    from .simulators import selected_simulator
+    result["_capture_execution_simulator"] = selected_simulator(config, spec)
+    source_simulators = {(row.get("simulator") or "spectre") for row in
+                         selected_setup.get("tests") or [] if row.get("enabled", True)}
+    if len(source_simulators) == 1:
+        result["_capture_source_simulator"] = next(iter(source_simulators))
     result["_capture_source_job_policy"] = copy.deepcopy((prepared or {}).get("job_policy") or {})
     runtime = result.setdefault("runtime", {})
     if "candidate_timeout_seconds" in (spec or {}):
@@ -2453,18 +2466,199 @@ def _capture_request_config(prepared, config, spec):
     return result
 
 
-def _capture_worker_logs(workspace, before=None):
+def _worker_capture_invocations(captures, invocation_prefix, owned):
+    """Index current wrapper evidence by the exact owned netlist directory."""
+    result = {}
+    try:
+        for filename in sorted(os.listdir(captures)):
+            if not re.fullmatch(re.escape(invocation_prefix) + r"[0-9]+", filename):
+                continue
+            path = _regular(os.path.join(captures, filename), captures, maximum=256 * 1024)
+            with open(path, "rb") as stream:
+                raw = stream.read(256 * 1024 + 1)
+            if len(raw) > 256 * 1024 or not raw.endswith(b"\0"):
+                continue
+            fields = raw.split(b"\0", 2)
+            if len(fields) != 3:
+                continue
+            cwd, netlist = (field.decode("utf-8") for field in fields[:2])
+            if (os.path.isabs(cwd) and os.path.realpath(cwd) == cwd and is_under(cwd, owned)
+                    and netlist.endswith(".scs")
+                    and os.path.dirname(os.path.abspath(os.path.join(cwd, netlist))) == cwd):
+                result[cwd] = path
+    except (OSError, ValueError, PrivateNetlistError):
+        return {}
+    return result
+
+
+_WORKER_POINT = re.compile(r"^\*Info\*\s+Run start for Point ID \([0-9]+ ([0-9]+)\)"
+                           r" on testbench \[\s*([^\]]+?)\s*\]\.$")
+_WORKER_POINT_COMPLETE = re.compile(_WORKER_POINT.pattern.replace("Run start", "Run complete"))
+_WORKER_EVALUATION = re.compile(
+    r"^ERROR \(ADE-27(08|09)\): Evaluation of output '([^']+)' "
+    r"(?:failed|returned 'nil') for (?:point:'([0-9]+)' )?test:'([^']+)'$")
+_WORKER_ERROR = re.compile(r"\*Error\*|\bERROR\s*\(")
+
+
+def _worker_evaluation_blocks(lines, first_new):
+    """Bind Calculator diagnostics to the named ADE output block."""
+    blocks = {}
+    for index in range(first_new, len(lines)):
+        header = _WORKER_EVALUATION.fullmatch(lines[index])
+        if not header or not lines[index + 1:index + 2] or not lines[index + 1].startswith("Expression:'"):
+            continue
+        kind, output, point_id, test = header.groups()
+        end = index + (4 if kind == "08" else 2)
+        if end >= len(lines) or lines[end] != "Ensure that the definition of output is correct.":
+            continue
+        block = {"evaluation_output": output, "evaluation_test": test,
+                 "evaluation_point_id": int(point_id) if point_id else None}
+        blocks[index] = block
+        previous = index - 1
+        while previous >= max(first_new, index - 3) and not lines[previous]:
+            previous -= 1
+        if kind == "08" and lines[index + 2] == "because of the following error(s)":
+            reason = lines[index + 3].rstrip(".")
+            if reason.startswith("*Error* "):
+                blocks[index + 3] = block
+                if previous >= max(first_new, index - 3) and lines[previous].startswith("*Error* ") and reason in lines[previous]:
+                    blocks[previous] = block
+        elif previous >= max(first_new, index - 3) and lines[previous] == "*Error* xval: can't handle xval(nil)":
+            blocks[previous] = block
+    return blocks
+
+
+_WORKER_STATS = re.compile(r"^Errors:[ \t]+([0-9]+)[ \t]+Warnings:[ \t]+[0-9]+$")
+_WORKER_EXIT = re.compile(r"^\\# Memory report: on exit[ \t]+[\d,]+ MB, process size [\d,]+ MB"
+                          r"(?: at UTC [\d.: ]+)?[ \t]*$")
+_WORKER_PEAK = re.compile(r"^\\# Memory report: peak usage[ \t]+[\d,]+ MB, process size [\d,]+ MB[ \t]*$")
+_WORKER_NETLIST_DIR = re.compile(r"^\*Info\*\s+Netlist Directory\s*=$")
+
+
+def _worker_point_artifact(directory, invocations, owned, capture_started_ns):
+    if directory in invocations:
+        return {"capture_invocation": invocations[directory]}
+    if capture_started_ns is None:
+        return None
+    try:
+        path = _regular(os.path.join(directory, _contract_text("input.scs")), owned)
+        info = os.stat(path)
+        if info.st_size and min(info.st_mtime_ns, info.st_ctime_ns) >= capture_started_ns:
+            return {"netlist_path": path}
+    except (OSError, PrivateNetlistError):
+        pass
+    return None
+
+
+def _worker_console_library_init(console, script_path):
+    from .native_diagnostics import library_init_console_proofs
+
+    return library_init_console_proofs(console)
+
+
+def _worker_library_init_warnings(lines, path, first_new, matches, invocations, script_path,
+                                  owned, capture_started_ns):
+    from .native_diagnostics import library_init_error_text
+
+    if not matches or (not invocations and capture_started_ns is None):
+        return {}
+    exit_line = len(lines) - 1
+    while exit_line >= first_new and not lines[exit_line].strip():
+        exit_line -= 1
+    if exit_line >= first_new and _WORKER_PEAK.match(lines[exit_line]):
+        exit_line -= 1
+    if exit_line < first_new or not _WORKER_EXIT.match(lines[exit_line]):
+        return {}
+
+    warnings = {}
+    point = point_artifact = evidence = begin = end = stats = None
+    reading_directory = False
+    pending = []
+    for index, line in enumerate(lines):
+        text = line[3:].strip() if line.startswith("\\o ") else ""
+        if ("Run start for Point ID" in text or text.startswith("Begin Incremental Netlisting")
+                or "Running simulation on testbench" in text or index == exit_line):
+            if end is not None and stats is not None and evidence:
+                for error_index, warning in pending:
+                    warnings[error_index] = {
+                        "severity": "WARN", "category": "library_init", "source": "worker",
+                        "message": lines[error_index], "console_source": path,
+                        "console_line": error_index + 1, "stage_begin_line": begin + 1,
+                        "completion_line": end + 1, "completion_marker": lines[end],
+                        "netlisting_stats_line": stats + 1, "worker_exit_line": exit_line + 1,
+                        "library_init_path": warning["library_init_path"],
+                        "related_console_source": warning["console_source"],
+                        "related_console_line": warning["console_line"],
+                        **evidence,
+                    }
+            evidence = begin = end = stats = None
+            pending = []
+            if text.startswith("Begin Incremental Netlisting"):
+                begin, evidence = index, point_artifact
+                point_artifact = None
+            else:
+                point, point_artifact = _WORKER_POINT.match(text), None
+        elif point and _WORKER_NETLIST_DIR.match(text):
+            point_artifact = None
+            reading_directory = True
+            continue
+        elif reading_directory:
+            if (os.path.isabs(text) and os.path.basename(text) == "netlist"
+                    and os.path.dirname(text).endswith("/%s/%s" % point.groups())):
+                point_artifact = _worker_point_artifact(text, invocations, owned, capture_started_ns)
+        elif begin is not None and text.startswith("End netlisting"):
+            if end is not None:
+                pending = []
+            end = index
+        elif end is not None and text.startswith("Errors:"):
+            counts = _WORKER_STATS.fullmatch(text)
+            if stats is not None or not counts or counts.group(1) != "0":
+                pending = []
+            else:
+                stats = index
+        elif begin is not None and end is None and index >= first_new and line.startswith("\\e "):
+            warning = matches.get(library_init_error_text(line, script_path))
+            if warning:
+                following = (lines[i].strip() for i in range(index + 1, len(lines)))
+                following = (item[2:].strip() if item.startswith(("\\e", "\\o")) else item
+                             for item in following)
+                if next((item for item in following if item), None) != "<<< Stack Trace >>>":
+                    pending.append((index, warning))
+        reading_directory = False
+    return warnings
+
+
+def _worker_log_started_in_capture(first_line, capture_started_ns, modified_ns):
+    prefix = r"\# Program start time:"
+    if capture_started_ns is None or not first_line.startswith(prefix):
+        return False
+    try:
+        stamp = datetime.strptime(first_line[len(prefix):].strip(), "UTC %Y.%m.%d %H:%M:%S.%f")
+    except ValueError:
+        return False
+    started_ns = int(stamp.replace(tzinfo=timezone.utc).timestamp() * 1000000000)
+    return capture_started_ns <= started_ns <= modified_ns
+
+
+def _worker_log_identity(info):
+    return [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
+
+
+def _capture_worker_logs(workspace, before=None, simulators=(), console=None,
+                         invocations=None, script_path=None, capture_started_ns=None, completion=False):
     """Read only bounded owned Job logs and distinguish wrapper aftermath.
 
     The simulator capture wrapper exits 1 deliberately.  ADE errors after the
-    native 'Running simulation' boundary cannot prove a CDF/netlisting error.
-    Existing unchanged bytes from a shared suite are never reported again.
+    native 'Running simulation' boundary can be wrapper aftermath. Read the
+    prefix for phase context and report only errors from newly written lines.
     """
+    from .native_diagnostics import (native_error_context, ocean_tool_error, ocean_tool_continuation,
+                                     ocean_tool_error_code, library_init_console_warnings, library_init_error_text, ocean_warning_lines)
     owned = os.path.realpath(workspace["root"])
     logs_root = os.path.join(owned, "logs_root")
     result = {"schema_version": _contract_text("crescendo.native_worker_diagnostics.v1"), "owned_workspace": owned,
               "logs_root": logs_root, "logs": [], "ok": True,
-              "expected_post_generation_wrapper_failure": True,
+              "expected_post_generation_wrapper_failure": not completion,
               "expected_wrapper_aftermath_samples": [], "parent_capture_failed": False}
     snapshot = {}
     # ADE names this directory after the executing user.  The local fixture
@@ -2497,14 +2691,18 @@ def _capture_worker_logs(workspace, before=None):
     if len(paths) > 4096:
         result.update(ok=False, qualification_error="Owned native worker log inventory exceeds 4096 files")
         return result, snapshot
+    if completion:
+        from .native_diagnostics import library_init_console_proofs
+        related_errors = library_init_console_proofs(console or {}, exact=True)
+    else:
+        related_errors = _worker_console_library_init(console or {}, script_path)
     changed_count = 0
     for path in paths:
         prior = (before or {}).get(path) or {}
         info, identity = None, None
         try:
             info = os.lstat(path)
-            identity = [info.st_dev, info.st_ino, info.st_size,
-                        getattr(info, "st_mtime_ns", info.st_mtime), getattr(info, "st_ctime_ns", info.st_ctime)]
+            identity = _worker_log_identity(info)
             if prior.get("identity") == identity:
                 snapshot[path] = prior
                 continue
@@ -2515,6 +2713,10 @@ def _capture_worker_logs(workspace, before=None):
             _regular(path, owned, maximum=MAX_METADATA_BYTES)
             with open(path, "rb") as stream:
                 raw = stream.read(MAX_METADATA_BYTES + 1)
+                after, current = os.fstat(stream.fileno()), os.lstat(path)
+                if (len(raw) != info.st_size or _worker_log_identity(after) != identity
+                        or _worker_log_identity(current) != identity):
+                    raise PrivateNetlistUnsupported("Native worker log changed while reading")
             if len(raw) > MAX_METADATA_BYTES:
                 raise PrivateNetlistUnsupported("Native worker log grew beyond its byte bound")
         except (OSError, PrivateNetlistError) as error:
@@ -2531,32 +2733,71 @@ def _capture_worker_logs(workspace, before=None):
         snapshot[path] = {"identity": identity, "bytes": len(raw), "sha256": digest, "lines": raw.count(b"\n")}
         if before is None:
             continue
-        offset, start_line = 0, 1
-        if prior.get("sha256") and len(raw) >= prior["bytes"] and hashlib.sha256(raw[:prior["bytes"]]).hexdigest() == prior["sha256"]:
-            offset, start_line = prior["bytes"], prior["lines"] + 1
-        fresh = len(raw) > offset
-        if not fresh:
+        offset, first_new = 0, 0
+        continuous = not prior
+        if (prior.get("sha256") and len(raw) >= prior["bytes"]
+                and hashlib.sha256(raw[:prior["bytes"]]).hexdigest() == prior["sha256"]):
+            offset, first_new = prior["bytes"], prior["lines"]
+            continuous = True
+        if len(raw) <= offset:
             continue
-        lines = raw[offset:].decode("utf-8", "replace").splitlines()
+        complete = raw.endswith(b"\n") and b"\0" not in raw
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text, complete = raw.decode("utf-8", "replace"), False
+        lines = text.rstrip("\n").split("\n")
+        lines = [line.rstrip("\r") for line in lines]
+        # ADE may restart a worker under the same Job filename. Its first
+        # record must prove a fresh program start before prior bytes can be
+        # treated as a different log instead of a damaged prefix.
+        continuous = continuous or _worker_log_started_in_capture(
+            lines[0], capture_started_ns, info.st_mtime_ns)
+        complete = (complete and continuous
+                    and not any("[diagnostic byte gap:" in line for line in lines))
+        if completion:
+            log = _completion_worker_log(lines, path, first_new, complete,
+                                         related_errors, script_path, simulators)
+            result["logs"].append(log)
+            result["ok"] = result["ok"] and log["scan_complete"]
+            continue
         pre_generation, errors, generation_errors = True, [], []
+        warnings, library_warnings, library_lines = [], {}, set()
+        if complete:
+            library_warnings = {index: dict(warning, source="worker") for index, warning in
+                library_init_console_warnings(lines, path, script_path=script_path).items() if index >= first_new}
+            library_warnings.update(_worker_library_init_warnings(
+                lines, path, first_new, related_errors, invocations or {}, script_path, owned, capture_started_ns))
+            library_lines = ocean_warning_lines(library_warnings)
         for index, line in enumerate(lines):
-            if "Run start for Point ID" in line:
+            if "Run start for Point ID" in line or "Begin Incremental Netlisting" in line:
                 pre_generation = True
             if "Running simulation on testbench" in line:
                 pre_generation = False
+            if index < first_new or index in library_lines:
+                continue
+            tool_error = ocean_tool_error(line, simulators)
+            if tool_error and tool_error["severity"] == "WARN":
+                if len(warnings) < 12:
+                    if index + 1 < len(lines):
+                        ocean_tool_continuation(tool_error, lines[index + 1])
+                    warnings.append(dict(tool_error, source="worker", console_source=path, console_line=index + 1))
+                continue
             if re.search(r"\*Error\*|\bERROR\s*\(", line):
-                from .native_diagnostics import native_error_context
-                evidence = {"line": start_line + index, "text": line[:1024],
-                    "stage": "native_generation" if pre_generation else "capture_wrapper_aftermath",
+                active_tool_error = ocean_tool_error_code(line)
+                related_skill_error = library_init_error_text(line, script_path) in related_errors
+                generation_error = pre_generation or active_tool_error or related_skill_error
+                evidence = {"line": index + 1, "text": line[:1024],
+                    "stage": "native_generation" if generation_error else "capture_wrapper_aftermath",
                     "context": lines[max(0, index-2):min(len(lines), index+3)],
-                    "trace_context": native_error_context(lines, index, start_line=start_line)}
+                    "trace_context": native_error_context(lines, index)}
                 errors.append(evidence)
-                if pre_generation:
+                if generation_error:
                     generation_errors.append(evidence)
                 elif len(result["expected_wrapper_aftermath_samples"]) < 2:
                     code = re.search(r"\bERROR\s*\(([A-Za-z0-9_-]+)\)", line)
                     result["expected_wrapper_aftermath_samples"].append({
-                        "console_source": path, "line": start_line + index,
+                        "console_source": path, "line": index + 1,
                         "code": code.group(1) if code else None,
                         "message": line[:1024], "stage": "capture_wrapper_aftermath",
                         "primary_failure": False})
@@ -2564,8 +2805,67 @@ def _capture_worker_logs(workspace, before=None):
             "new_bytes_from": offset, "error_lines": generation_errors[:32],
             "expected_wrapper_aftermath_error_count": len(errors)-len(generation_errors),
             "generation_error_count": len(generation_errors)})
+        if warnings:
+            result["logs"][-1]["ocean_tool_warnings"] = warnings
+        if library_warnings:
+            result["logs"][-1]["library_init_warnings"] = [library_warnings[index] for index in sorted(library_warnings)]
         result["ok"] = result["ok"] and not generation_errors
     return result, snapshot
+
+
+def _completion_worker_log(lines, path, first_new, complete, proofs, script_path, simulators):
+    from .native_diagnostics import (library_init_console_warnings, ocean_console_warnings,
+        ocean_warning_lines, related_library_init, stackless_skill_errors, MAX_COMPLETION_ERROR_SCOPES)
+
+    library = {}
+    if complete:
+        library = {i: warning for i, warning in
+                   library_init_console_warnings(lines, path, script_path=script_path).items()
+                   if i >= first_new}
+        for index, line in stackless_skill_errors(lines):
+            if index >= first_new:
+                warning = related_library_init(line, path, index + 1, proofs, script_path)
+                if warning is not None:
+                    library[index] = warning
+    tools = ocean_console_warnings(lines[first_new:], simulators, path, start_line=first_new + 1)
+    skipped = ocean_warning_lines(library) | set(tools)
+    warnings, errors = [], {}
+    point = {}
+    point_completed = teardown = False
+    scan_complete = True
+    normalized = [line[3:].strip() if line.startswith(("\\o ", "\\e ")) else line.strip()
+                  for line in lines]
+    # Cadence also writes empty \\o/\\e records without a trailing space.
+    normalized = ["" if line in ("\\o", "\\e") else line for line in normalized]
+    evaluations = _worker_evaluation_blocks(normalized, first_new) if complete else {}
+    for index in range(first_new, len(lines)):
+        text = normalized[index]
+        marker = _WORKER_POINT.fullmatch(text)
+        if marker:
+            point = {"point_id": int(marker.group(1)), "test": marker.group(2)}
+            point_completed = teardown = False
+        terminal = _WORKER_POINT_COMPLETE.fullmatch(text)
+        if terminal and point == {"point_id": int(terminal.group(1)), "test": terminal.group(2)}:
+            point_completed = True
+        if text == "*Info*    Received signal SIGTERM." and point_completed:
+            teardown = True
+        warning = library.get(index) or tools.get(index)
+        if warning is not None:
+            warnings.append(dict(warning, source="worker", **point))
+        elif index not in skipped and _WORKER_ERROR.search(text):
+            evaluation = evaluations.get(index)
+            scope = (point.get("test"), point.get("point_id"), text,
+                     evaluation.get("evaluation_output") if evaluation else None, teardown)
+            if scope not in errors:
+                if len(errors) == MAX_COMPLETION_ERROR_SCOPES:
+                    scan_complete = False
+                    continue
+                row = dict(message=lines[index], console_source=path, console_line=index + 1, **point)
+                if evaluation is not None:
+                    row.update(evaluation, after_point_teardown=teardown)
+                errors[scope] = row
+    return {"path": path, "errors": list(errors.values()), "warnings": warnings,
+            "scan_complete": scan_complete}
 
 
 def _capture_child_environment(config, workspace_root, local_bin):
@@ -2607,6 +2907,7 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
                    emit_clones=False, symbolic=False, cancel_check=None, progress_callback=None,
                    verify_numeric_application=False, private_config_initialized=False,
                    baseline_only=False, allow_effective_adjustment=False, batch_plan=None):
+    capture_observed()
     require_unique_run_variables(workspace.get("setup") or {},
                                  action="capture working SCS", multiplicity_only=True)
     if baseline_only and (values or symbols or seeds or symbolic or verify_numeric_application):
@@ -2699,11 +3000,17 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
     body.extend(alias_lines)
     for field in ("interactiveA", "interactiveE"):
         body.append(_contract_text('crescCaptureRecord("ENV" "child" "%s" "envGetVal" t envGetVal("maestro.simulation" "%s"))') % (field, field))
+    opened_marker = os.path.join(root, 'session_opened.timing')
+    closing_marker = os.path.join(root, 'session_closing.timing')
+    def timing_marker(path):
+        return (_contract_text('errset(let((cr_timingPort) cr_timingPort=outfile("%s") '
+                'when(cr_timingPort fprintf(cr_timingPort "observed\\n") close(cr_timingPort))) nil)')) % _skill_quote(path)
     body.extend([
                   _contract_text('unless(errset(load("%s") t) error("Crescendo Template Netlist parameterization failed\\n"))') % _skill_quote(patch),
                   _contract_text('unless(crescSchematicPatchResult error("Crescendo Template Netlist parameter patch did not complete\\n"))'),
                   'session=maeOpenSetup("%s" "%s" "%s" ?mode "a")' % tuple(_skill_quote(workspace[key]) for key in ("primary_library", "setup_cell", "setup_view")),
                   _contract_text('unless(session error("Crescendo Maestro working copy could not open\\n"))'),
+                  timing_marker(opened_marker),
                   'mainSDB=axlGetMainSetupDB(session)'])
     if config.get("_diagnostic_native_run_trace") is True:
         body.extend(_capture_environment_observation_skill(tests))
@@ -2767,8 +3074,9 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
                      _contract_text('cr_captureRunOut=outfile(%s)') % ('"' + _skill_quote(os.path.join(root, 'native_batch_run.tsv')) + '"'),
                      _contract_text('fprintf(cr_captureRunOut "%L\\t%s\\n" runId historyName) close(cr_captureRunOut)')])
         body.extend(native_point_export_lines(os.path.join(root, "native_batch_points.tsv")))
-    body.extend(['maeCloseSession(?session session ?forceClose t)',
+    body.extend([timing_marker(closing_marker), 'maeCloseSession(?session session ?forceClose t)',
                  _contract_text('printf("CRESCENDO_PRIVATE_NETLIST_CAPTURE_DONE\\n")')])
+    body.insert(0, _contract_text('printf("CRESCENDO_PRIVATE_NETLIST_CAPTURE_BEGIN\\n")'))
     bounded, generation = bounded_skill_body_lines(body, result_name=_contract_text("crescNetlistCaptureBodyResult"))
     generation["native_run_trace"] = {
         "requested": run_trace_requested,
@@ -2788,19 +3096,37 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
     timeout = float(config.get("runtime", {}).get("private_netlist_prepare_timeout_seconds", 300))
     from .netlist_measurement import run_owned_command
     def guarded_runner(argv, **kwargs):
-        return run_command(argv, startup_lock=CADENCE_STARTUP_LOCK, ready_path=ready_path, **kwargs)
+        command_started = time.time()
+        result = {}
+        try:
+            result = run_command(argv, startup_lock=CADENCE_STARTUP_LOCK, ready_path=ready_path, **kwargs)
+            return result
+        finally:
+            observe_capture_command(command_started, time.time(), result, opened_marker, closing_marker)
     native_argv = [config["cadence"]["ocean_bin"], "-nograph", "-restore", script]
     if progress_callback:
         progress_callback({"stage": "native_netlist_capture_command", "argv": native_argv, "cwd": workspace["root"]})
     _worker_unused, worker_before = _capture_worker_logs(workspace)
+    capture_started_ns = int(time.time() * 1000000000)
     command = run_owned_command(native_argv,
                                 cwd=workspace["root"], env=env, timeout_seconds=timeout, control_root=root,
                                 token="netlist-capture-" + uuid.uuid4().hex,
                                 cancel_check=cancel_check, command_runner=guarded_runner)
     atomic_write_json(os.path.join(root, _contract_text("command.json")), command)
-    from .native_diagnostics import skill_command_diagnostics
-    native_diagnostics = skill_command_diagnostics(command, script, required_marker=_contract_text("CRESCENDO_PRIVATE_NETLIST_CAPTURE_DONE"), owned_root=root)
-    worker_diagnostics, _worker_after = _capture_worker_logs(workspace, worker_before)
+    from .native_diagnostics import skill_command_diagnostics, log_ocean_tool_warnings, recorded_ocean_warnings
+    simulators = tuple(sorted({capture_simulator, config.get("_capture_execution_simulator", capture_simulator)}
+                              | {(row.get("simulator") or "spectre") for row in
+                                 run_setup.get("tests") or [] if row.get("enabled", True)}))
+    native_diagnostics = skill_command_diagnostics(command, script,
+        required_marker=_contract_text("CRESCENDO_PRIVATE_NETLIST_CAPTURE_DONE"), owned_root=root,
+        simulators=simulators)
+    worker_diagnostics, _worker_after = _capture_worker_logs(workspace, worker_before,
+        simulators=simulators, console=native_diagnostics, script_path=script, capture_started_ns=capture_started_ns,
+        invocations=_worker_capture_invocations(captures, invocation_prefix, workspace["root"]))
+    warnings = recorded_ocean_warnings(native_diagnostics)
+    for report in worker_diagnostics.get("logs") or []:
+        warnings.extend(recorded_ocean_warnings(report))
+    log_ocean_tool_warnings(config, root, warnings)
     atomic_write_json(os.path.join(root, _contract_text("native_worker_diagnostics.json")), worker_diagnostics)
     capture_setup_readback = _capture_setup_readback(capture_policy_plan, tests)
     capture_diagnostics = {"schema_version": _contract_text("crescendo.native_capture_diagnostics.v1"),
@@ -2907,20 +3233,21 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
         point = points[int(point_name)]
         task_id = "p%s_%s" % (point_name, hashlib.sha256(test_name.encode("utf-8")).hexdigest()[:16])
         snapshot = ensure_dir(os.path.join(root, "tasks", task_id, "netlist"))
-        # Freeze only netlist text and small native name-map metadata. OA,
-        # layout, PSF, CMI binaries and histories never enter candidate copies.
-        files = []
-        for current, directories, names in os.walk(cwd):
-            directories[:] = [name for name in directories if name == "amap"] if current == cwd else directories
-            for name in names:
-                if current == cwd and name not in (_contract_text("input.scs"), "netlist", "runObjFile", "designInfo"):
-                    continue
-                source = _regular(os.path.join(current, name), workspace["root"], maximum=MAX_METADATA_BYTES)
-                relative = os.path.relpath(source, cwd)
-                destination = os.path.join(snapshot, relative)
-                ensure_dir(os.path.dirname(destination)); shutil.copyfile(source, destination)
-                files.append({"path": destination, "relative_path": relative, "sha256": _digest(destination),
-                              "metadata": relative != _contract_text("input.scs")})
+        with preparation_stage('model_dependency_freeze'):
+            # Freeze only netlist text and small native name-map metadata. OA,
+            # layout, PSF, CMI binaries and histories never enter candidate copies.
+            files = []
+            for current, directories, names in os.walk(cwd):
+                directories[:] = [name for name in directories if name == "amap"] if current == cwd else directories
+                for name in names:
+                    if current == cwd and name not in (_contract_text("input.scs"), "netlist", "runObjFile", "designInfo"):
+                        continue
+                    source = _regular(os.path.join(current, name), workspace["root"], maximum=MAX_METADATA_BYTES)
+                    relative = os.path.relpath(source, cwd)
+                    destination = os.path.join(snapshot, relative)
+                    ensure_dir(os.path.dirname(destination)); shutil.copyfile(source, destination)
+                    files.append({"path": destination, "relative_path": relative, "sha256": _digest(destination),
+                                  "metadata": relative != _contract_text("input.scs")})
         outputs = [dict(key="%s::%s" % (test_name, row["name"]), name=row["name"],
                         expression=row.get("expression"), output_type=row.get("output_type"))
                    for row in parsed["outputs"] if row["test"] == test_name and row.get("name") and not row["name"].startswith("/")]
@@ -2933,13 +3260,16 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
                       "native_parameters": top_level_native_parameters(_text(os.path.join(snapshot, _contract_text("input.scs"))))})
         tasks[-1].update(native_netlist_identity(_text(os.path.join(snapshot, _contract_text("input.scs")))))
         from .native_identity import resolve_task_model_identity
-        tasks[-1]["native_model_resolution"] = resolve_task_model_identity(
-            tasks[-1], config, capture_simulator, run_setup, setup_identity, model_resolution_cache)
+        with preparation_stage('model_dependency_freeze'):
+            tasks[-1]["native_model_resolution"] = resolve_task_model_identity(
+                tasks[-1], config, capture_simulator, run_setup, setup_identity, model_resolution_cache)
     schedule = parse_native_corner_schedule(schedule_path)
     setup_identity["native_schedule"] = schedule
     partitions = None
     if batch_plan is None:
-        corner_coverage = validate_capture_corners(run_setup, tasks, parsed, setup_identity, schedule)
+        from .design_variables import candidate_setup
+        expected_setup = candidate_setup(run_setup, parameters, values) if not baseline_only else run_setup
+        corner_coverage = validate_capture_corners(expected_setup, tasks, parsed, setup_identity, schedule)
     else:
         from .generation_batch import map_native_points, parse_native_rows
         from .rdb import slice_candidate_rdb
@@ -2950,7 +3280,8 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
             ids = {point['point_id'] for point in mapped[row['row_id']]}
             row_tasks = [task for task in tasks if task['point_id'] in ids]
             part = slice_candidate_rdb(parsed, {test: test for test in tests}, ids)
-            coverage = validate_capture_corners(run_setup, row_tasks, part, setup_identity, schedule)
+            from .design_variables import candidate_setup
+            coverage = validate_capture_corners(candidate_setup(run_setup, parameters, row["values"]), row_tasks, part, setup_identity, schedule)
             partitions[row['row_id']] = {'tasks': row_tasks, 'parsed': part}
             coverage_rows.append(dict(coverage, row_id=row['row_id']))
         corner_coverage = {'ok': all(row['ok'] for row in coverage_rows),
@@ -3023,8 +3354,11 @@ def _capture_phase(workspace, parameters, values, symbols, seeds, config, root,
             failure.detail.setdefault("reason", "binding_unresolved")
             raise failure
         applied_values = dict((row["parameter_id"], row["effective"]) for row in application["parameters"])
-        workspace["native_parameter_paths"] = [row["path"] for row in native_plan["selected"]]
+        workspace["native_parameter_paths"] = [row["path"] for row in native_plan["selected"] if "/" in row["path"]]
         workspace["native_parameter_last_values"] = dict((row["path"], row["value"]) for row in native_plan["selected"])
+        workspace["native_design_variable_last_values"] = [
+            dict(name=row["path"], value=row["value"], source_kind=row["source_kind"], variable_test=row["variable_test"])
+            for row in native_plan["selected"] if row.get("source_kind") in ("global", "top")]
     result = {"tasks": sorted(tasks, key=lambda row: row["task_id"]), "patch_plan": plan, "command": command,
               "capture_timeout_profiles": capture_timeout_profiles,
               "capture_outer_budget": generation["capture_outer_budget"],
@@ -3097,6 +3431,7 @@ def prepare_private_netlist(prepared, parameters, config, root, cancel_check=Non
             progress_callback, spec, session_workspace=session_workspace)
 
 
+@stage('template_qualification')
 def _prepare_private_netlist(prepared, parameters, config, root, cancel_check=None, progress_callback=None,
                              spec=None, session_workspace=None):
     """Create one isolated, native-qualified immutable template for a run."""
@@ -3110,7 +3445,7 @@ def _prepare_private_netlist(prepared, parameters, config, root, cancel_check=No
     if session_workspace is not None:
         from .setup_private_session import write_session_reference
         write_session_reference(root, prepared["setup_private_session"])
-    if any(row.get("backend", "schematic") != "schematic" for row in parameters or []):
+    if any(not native_parameter(row) for row in parameters or []):
         raise PrivateNetlistUnsupported("selected design variables require the original Maestro execution mode")
     symbols = parameter_symbols(parameters)
     if not symbols: raise PrivateNetlistUnsupported("no selected parameters")
@@ -3194,7 +3529,7 @@ def _prepare_private_netlist(prepared, parameters, config, root, cancel_check=No
         raise error
     symbolic = _symbolize_native_dpar_phase(baseline, symbols, os.path.join(root, "symbolic"))
     targets = dict((row["parameter_id"], (row["library"], row["cell"], row.get("view") or "schematic", row["instance"]))
-                   for row in symbolic.get("native_parameter_rows") or [])
+                   for row in symbolic.get("native_parameter_rows") or [] if not row.get("source_kind") in ("global", "top"))
     task_maps = [dict((row["task_id"], row) for row in phase["tasks"]) for _name, _values, phase in references]
     qualification = []
     for task in symbolic["tasks"]:
@@ -3234,59 +3569,61 @@ def _prepare_private_netlist(prepared, parameters, config, root, cancel_check=No
                 raise PrivateNetlistUnsupported("unselected test changes during native parameterization")
             proof = {"ok": True, "symbols": {}, "references": [], "unchanged_test": True}
         qualification.append(dict(task_id=task["task_id"], **proof))
-        template_text = _without_symbol_declarations(text, symbols)
-        from .native_includes import NativeIncludeError, freeze_native_includes
-        try:
-            template_text, task["argv"], task["include_resolution"] = freeze_native_includes(
-                template_text, task, config, capture_simulator, allow_candidate_parameters=True)
-            from .netlist_providers import _freeze_generated_dependencies
-            template_text, generated = _freeze_generated_dependencies(
-                template_text, task, config, [workspace["root"]] if session_workspace is not None else [],
-                cancel_check, allow_candidate_parameters=True)
-            task["template_files"].extend(generated)
-            task["generated_input_snapshots"] = generated
-        except NativeIncludeError as error:
-            failure = PrivateNetlistUnsupported(str(error))
-            failure.detail = {"failure_stage": "model_include_resolution", "execution_started": False,
-                              "capture_source_simulator": capture_simulator}
-            raise failure
-        from .simulators import execution_contract, rewrite_model_references
-        properties = ((effective_policy.get("global") or {}).get("properties") or {})
-        for policy_row in effective_policy.get("tests") or []:
-            if policy_row.get("name") == task["test"]:
-                properties = dict(properties, **(policy_row.get("properties") or {}))
-                break
-        task_policy = common_policy["tests"].get(task["test"], common_policy["global"])
-        resource_cpu = submission_cpu_hint(commands, task_policy)
-        if resource_cpu is None and not commands.get("submission_template"):
-            resource_cpu = submission_cpu(properties.get("jobsubmitcommand")) if str(properties.get("distributionmethod") or "").lower() == "command" else None
-        contract = execution_contract(config, capture_simulator,
-                                      native_netlist_identity(template_text)["native_models"],
-                                      default_executable=task["argv"][0], template_argv=task["argv"],
-                                      resource_cpu=resource_cpu, spec=spec)
-        task["capture_native_identity"] = native_netlist_identity(template_text)
-        template_text = rewrite_model_references(template_text, contract)
-        task["execution_native_identity"] = native_netlist_identity(template_text)
-        task["models"] = copy.deepcopy(task["execution_native_identity"]["native_models"])
-        task["simulator_contract"] = contract
-        task["capture_source_simulator"] = capture_simulator
-        task["execution_simulator"] = contract["execution_simulator"]
-        task["simulator_log"] = task["spectre_log"]
-        task["execution_model_identity"] = copy.deepcopy(contract["models"])
-        atomic_write_text(task["netlist_path"], template_text)
-        for row in task["template_files"]:
-            row["sha256"] = _digest(row["path"])
-        task["netlist_sha256"] = _digest(task["netlist_path"])
-        task["artifact_sha256"] = dict((row["path"], row["sha256"]) for row in task["template_files"])
-        task["metadata_files"] = [row["path"] for row in task["template_files"] if row.get("metadata")]
-        from .execution_commands import build_solver_command_plan
-        task["native_solver_argv"] = list(task["argv"])
-        task["execution_commands"] = copy.deepcopy(commands)
-        task["ahdl_dir"] = os.path.join(os.path.dirname(task["psf_dir"]), "ahdl")
-        task["solver_command_plan"] = build_solver_command_plan(
-            contract, task["native_solver_argv"], task["netlist_path"], task["psf_dir"], task["spectre_log"],
-            task["ahdl_dir"], commands=commands)
-        task["argv"] = list(task["solver_command_plan"]["argv"])
+        with preparation_stage('model_dependency_freeze'):
+            template_text = _without_symbol_declarations(text, symbols)
+            from .native_includes import NativeIncludeError, freeze_native_includes
+            try:
+                template_text, task["argv"], task["include_resolution"] = freeze_native_includes(
+                    template_text, task, config, capture_simulator, allow_candidate_parameters=True)
+                from .netlist_providers import _freeze_generated_dependencies
+                template_text, generated = _freeze_generated_dependencies(
+                    template_text, task, config, [workspace["root"]] if session_workspace is not None else [],
+                    cancel_check, allow_candidate_parameters=True)
+                task["template_files"].extend(generated)
+                task["generated_input_snapshots"] = generated
+            except NativeIncludeError as error:
+                failure = PrivateNetlistUnsupported(str(error))
+                failure.detail = {"failure_stage": "model_include_resolution", "execution_started": False,
+                                  "capture_source_simulator": capture_simulator}
+                raise failure
+            from .simulators import execution_contract, rewrite_model_references
+            properties = ((effective_policy.get("global") or {}).get("properties") or {})
+            for policy_row in effective_policy.get("tests") or []:
+                if policy_row.get("name") == task["test"]:
+                    properties = dict(properties, **(policy_row.get("properties") or {}))
+                    break
+            task_policy = common_policy["tests"].get(task["test"], common_policy["global"])
+            resource_cpu = submission_cpu_hint(commands, task_policy)
+            if resource_cpu is None and not commands.get("submission_template"):
+                resource_cpu = submission_cpu(properties.get("jobsubmitcommand")) if str(properties.get("distributionmethod") or "").lower() == "command" else None
+            contract = execution_contract(config, capture_simulator,
+                                          native_netlist_identity(template_text)["native_models"],
+                                          default_executable=task["argv"][0], template_argv=task["argv"],
+                                          resource_cpu=resource_cpu, spec=spec)
+            task["capture_native_identity"] = native_netlist_identity(template_text)
+            template_text = rewrite_model_references(template_text, contract)
+            task["execution_native_identity"] = native_netlist_identity(template_text)
+            task["models"] = copy.deepcopy(task["execution_native_identity"]["native_models"])
+            task["simulator_contract"] = contract
+            task["capture_source_simulator"] = capture_simulator
+            task["execution_simulator"] = contract["execution_simulator"]
+            task["simulator_log"] = task["spectre_log"]
+            task["execution_model_identity"] = copy.deepcopy(contract["models"])
+            atomic_write_text(task["netlist_path"], template_text)
+            for row in task["template_files"]:
+                row["sha256"] = _digest(row["path"])
+            task["artifact_sha256"] = dict((row["path"], row["sha256"]) for row in task["template_files"])
+            task["netlist_sha256"] = (task["artifact_sha256"][task["netlist_path"]]
+                if task["netlist_path"] in task["artifact_sha256"] else _digest(task["netlist_path"]))
+            task["metadata_files"] = [row["path"] for row in task["template_files"] if row.get("metadata")]
+            from .execution_commands import build_solver_command_plan
+            task["native_solver_argv"] = list(task["argv"])
+            task["execution_commands"] = copy.deepcopy(commands)
+            task["ahdl_dir"] = os.path.join(os.path.dirname(task["psf_dir"]), "ahdl")
+            task["solver_command_plan"] = build_solver_command_plan(
+                contract, task["native_solver_argv"], task["netlist_path"], task["psf_dir"], task["spectre_log"],
+                task["ahdl_dir"], commands=commands)
+            task["argv"] = list(task["solver_command_plan"]["argv"])
     guard = verify_sources_unchanged(workspace)
     if not guard.get("ok"):
         error = PrivateNetlistError("source changed during Template Netlist preparation: " +

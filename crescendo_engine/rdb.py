@@ -113,7 +113,32 @@ def parse_rdb_summary(path, cancel_event=None):
         connection.close()
 
 
+def _test_statuses(connection):
+    if not _table_exists(connection, "testStatus"):
+        return []
+    return [dict(row) for row in connection.execute('''
+        SELECT ts.pointID, t.name AS test_name, ts.statusCode,
+               ts.startTime, ts.stopTime, e.message AS status_message
+        FROM testStatus ts
+        JOIN test t ON t.testID = ts.testID
+        LEFT JOIN error e ON e.errorID = ts.errorID
+        ORDER BY ts.pointID, t.name
+    ''')]
+
+
+def read_rdb_test_statuses(path):
+    """Read the small status table without blocking on a live history writer."""
+    connection = sqlite3.connect("file:%s?mode=ro" % quote(os.path.abspath(path), safe="/"),
+                                 uri=True, timeout=0)
+    connection.row_factory = sqlite3.Row
+    try:
+        return _test_statuses(connection)
+    finally:
+        connection.close()
+
+
 def parse_rdb(path):
+    from .output_status import scalar_status
     path = os.path.abspath(path)
     # Native history names may contain URI delimiters or literal percent signs.
     # Encode only the path so SQLite opens exactly that file in read-only mode.
@@ -153,6 +178,8 @@ def parse_rdb(path):
                     "numeric": numeric,
                     "scalar": numeric is not None,
                     "error": row["error_message"],
+                    "output_status": scalar_status(row['value'], row['error_message']),
+                    "first_error": row['error_message'],
                 })
         for output in outputs.values():
             values = [row["numeric"] for row in output["values"] if row["numeric"] is not None]
@@ -181,17 +208,7 @@ def parse_rdb(path):
                 value = dict(row)
                 value["corner_name"] = normalize_corner_name(value.get("corner_name"))
                 parameters.append(value)
-        statuses = []
-        if _table_exists(connection, "testStatus"):
-            status_query = '''
-                SELECT ts.pointID, t.name AS test_name, ts.statusCode,
-                       ts.startTime, ts.stopTime, e.message AS status_message
-                FROM testStatus ts
-                JOIN test t ON t.testID = ts.testID
-                LEFT JOIN error e ON e.errorID = ts.errorID
-                ORDER BY ts.pointID, t.name
-            '''
-            statuses = [dict(row) for row in connection.execute(status_query)]
+        statuses = _test_statuses(connection)
         points = []
         if _table_exists(connection, "point"):
             if _table_exists(connection, "corner"):

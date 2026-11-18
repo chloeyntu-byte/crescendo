@@ -6,6 +6,24 @@ Crescendo 是运行在 Cadence Maestro 里的引导式电路优化器。勾选�
 
 ![Crescendo 运行仪表盘（合成演示数据）](docs/screenshots/dashboard.png)
 
+## 动图演示
+
+以下画面都是 Crescendo 真实窗口，由自带演示服务驱动（合成数据，不调用 Cadence）。
+
+**双目标：Pareto 前沿一代代往前推。** 每一代整批仿真；橙色线是当前可行解的前沿，点任意一点就跳到对应候选。
+
+![双目标 Pareto 前沿逐代推进（合成演示数据）](docs/screenshots/pareto-2d-generations.gif)
+
+**三目标：可以旋转的 3D 前沿。** 恰好三个目标的运行会显示交互式 3D 视图：拖拽旋转、滚轮缩放，可叠加半透明前沿曲面；颜色从早期代到后期代渐变，能看到种群逐渐收拢到前沿。两两投影图仍保留在下方。详见 [3D Pareto 视图](docs/PARETO_3D.md)。
+
+![三目标前沿逐代成形（合成演示数据）](docs/screenshots/pareto-3d-generations.gif)
+
+![旋转查看三目标前沿（合成演示数据）](docs/screenshots/pareto-3d-rotate.gif)
+
+**把选中的设计留下来。** 在 Results 页点 **Persist as schematic_<optname>**，把一个已完成的候选写进所改 cell 的新视图 `schematic_<优化名>`。不会覆盖已有视图；每个值写入后都会读回核对；弹出的报告可复制，逐项列出 cell、实例、参数、原值、新值和单位。
+
+![持久化报告：列出写入新原理图视图的参数（合成演示数据）](docs/screenshots/persist-report.png)
+
 ## 能做什么
 
 - **六步流程**：Design → Parameters → Goals → Run → Results → Trade-offs，就是左侧导航，完成一步打一个勾。
@@ -13,6 +31,9 @@ Crescendo 是运行在 Cadence Maestro 里的引导式电路优化器。勾选�
 - **搜索算法**：NSGA-II（两个及以上目标时自动使用）、差分进化、贝叶斯优化；目标和约束可按角点选择，支持 `max` / `mean` 聚合。
 - **执行**：Spectre 或 ALPS，本地或批处理集群；每轮使用 Maestro 工作副本，每个候选完成后写断点，可停止后续跑。
 - **实时结果**：指标卡、每个目标的历代最优收敛曲线、候选表、点击即跳转的 Pareto 图，可导出 CSV 和完整数据集。**Timing details...** 展示每代与选中候选的分阶段耗时；求解器证据、覆盖率和并行边界见[执行计时指南](docs/EXECUTION_TIMING.md)。
+- **整代批量**：一代候选在一次原生运行里整批评估，不再一个候选跑一次。本机匹配样本（3 代 × 6 候选 × 2 角点）从 433 s 降到 101 s（4.3×），目标值一致；实际提速取决于你的设计、仿真器和集群。
+- **持久化结果**：把选中的候选写进新的 `schematic_<优化名>` 视图，并给出写入参数清单；原理图原视图不改动。
+- **三目标 3D 视图**：三目标运行可旋转、缩放、查看前沿。
 - **大工程**：在 4000 个模块、50,726 个参数的合成工程上，参数树渲染期间界面最长无响应 74 ms。
 
 ## 环境要求
@@ -41,7 +62,7 @@ python3 -m crescendo.demo_main --scale small --autoload
    ```
 
    如需指定模型根目录，可在这行之前加 `setShellEnvVar("PDK=/path/to/model_root")`。
-3. 重启 Virtuoso，在 **Maestro → Plug-in → Open Crescendo Optimizer** 打开（没有 Plug-in 菜单时用顶部 **Crescendo** 菜单）。
+3. 重启 Virtuoso 并打开 Maestro 窗口。若安装环境将 Crescendo 集成到了 **Plug-in** 菜单，选择 **Plug-in → Open Crescendo Optimizer**。其他环境下，在 Maestro 窗口顶部菜单栏选择 **Crescendo → Open Crescendo Optimizer**。
 
 Crescendo 读取打开它的那个 Maestro 窗口。工具、模型目录和仿真器从该窗口的环境自动识别，也可以在 **Settings → EDA**（Pro mode）中覆盖。
 
@@ -57,7 +78,7 @@ Pro 执行设置还提供以下资源控制；新运行会冻结这些值：
 
 | 设置 | 默认值 | 含义 |
 | --- | --- | --- |
-| `native_candidate_batching` | 新配置为 `generation` | 每代一次原生分组运行；`serial` 逐候选运行。缺少此键的已有配置和旧 checkpoint 保持串行。模板网表模式仍直接实例化模板。 |
+| `native_candidate_batching` | 新运行默认为 `generation` | 每代一次原生分组运行，可选 `serial` 逐候选运行。续跑按 checkpoint 冻结的设置执行，缺少此键的 checkpoint 保持串行。通过资格检查的模板网表仍直接实例化模板。 |
 | `local_solver_max_jobs` | `1` | 显式设置 Local 求解槽位，实际并发同时受 Global 和 Test 限制。 |
 | `measurement_jobs` | `null`，自动取 `min(2, G)` | 本机 reader worker 数；显式值受 Global 容量 `G` 限制。 |
 | `progress_flush_interval_seconds` | `0.5` | 显示快照的最短写入间隔；终态、ownership 和 checkpoint ACK 仍立即持久化。 |

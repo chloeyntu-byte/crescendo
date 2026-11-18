@@ -143,5 +143,55 @@ class HeadlessOptimizerContractTests(unittest.TestCase):
             PopulationGenerator([{"parameter_id": "x", "minimum": 0, "maximum": 1}], "random").ask(0)
 
 
+class HeadlessLinkGroupContractTests(unittest.TestCase):
+    def test_unlinked_trace_matches_v1_1_4_byte_for_byte(self):
+        with open(os.path.join(ROOT, 'tests', 'fixtures', 'optimizer_v1_1_4.json')) as stream:
+            golden = json.load(stream)
+        result = run_probe(golden['seed'])
+        self.assertEqual(result['digest'], golden['digest'])
+        self.assertEqual(json.dumps(result['trace'], sort_keys=True).encode(),
+                         json.dumps(golden['trace'], sort_keys=True).encode())
+
+    def test_linked_ask_expands_every_parameter_id_in_headless_process(self):
+        code = r"""
+import json, math, os, sys
+sys.path.insert(0, ROOT_PLACEHOLDER)
+before = dict(os.environ)
+from crescendo_engine.optimizers import PopulationGenerator, ALGORITHMS
+variables = [
+    {'parameter_id': 'a', 'minimum': 1, 'maximum': 100, 'scale': 'log', 'link_group': 'pair'},
+    {'parameter_id': 'b', 'minimum': 10, 'maximum': 100000, 'scale': 'log', 'link_group': 'pair'},
+    {'parameter_id': 'n', 'minimum': 1, 'maximum': 5, 'value_type': 'integer', 'link_group': 'grid'},
+    {'parameter_id': 'w', 'minimum': 10, 'maximum': 50, 'step': 10, 'link_group': 'grid'},
+]
+trace = {}
+for algorithm in ALGORITHMS:
+    generator = PopulationGenerator(variables, algorithm, seed=31)
+    trace[algorithm] = []
+    for generation in range(4):
+        candidates = generator.ask(6)
+        rows = []
+        for index, values in enumerate(candidates):
+            assert set(values) == {'a', 'b', 'n', 'w'}, values
+            assert abs(math.log(values['a']) / math.log(100) - math.log(values['b'] / 10) / math.log(10000)) < 1e-12
+            assert values['w'] == values['n'] * 10
+            score = values['a'] + values['n']
+            rows.append({'candidate_id': '%s-%s' % (generation, index), 'status': 'completed',
+                         'values': values, 'metrics': {'merit': score, 'total_violation': 0,
+                                                     'objectives': [{'score': score}]}})
+        generator.tell(rows)
+        trace[algorithm].append(candidates)
+assert before == dict(os.environ)
+assert not any(name in sys.modules for name in ('tkinter', '_tkinter', 'crescendo_engine.gui', 'crescendo_engine.server', 'crescendo_engine.cadence'))
+print(json.dumps(trace, sort_keys=True))
+""".replace('ROOT_PLACEHOLDER', repr(ROOT))
+        env = dict(os.environ)
+        env.pop('DISPLAY', None)
+        first = subprocess.check_output([sys.executable, '-I', '-c', code], env=env)
+        second = subprocess.check_output([sys.executable, '-I', '-c', code], env=env)
+        self.assertEqual(first, second)
+        self.assertEqual(set(json.loads(first)), set(ALGORITHMS))
+
+
 if __name__ == "__main__":
     unittest.main()

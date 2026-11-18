@@ -29,6 +29,9 @@ except ImportError:  # pragma: no cover - supported deployment is Linux
 CORE_NAME = _contract_text("optimization.crescendo")
 SCHEMA_VERSION = _contract_text("crescendo.optimization_dataset.v1")
 RECORD_SCHEMA = _contract_text("crescendo.optimization_record.v1")
+SCHEMA_V2 = _contract_text("crescendo.optimization_dataset.v2")
+RECORD_V2 = _contract_text("crescendo.optimization_record.v2")
+from .run_data_v2 import Decoder, Encoder, digest, PROTECTED
 MAX_RECORD_BYTES = 64 * 1024 * 1024
 TERMINAL_STATES = ("completed", "failed", "infrastructure_failed")
 _ACTIVE_WRITERS = {}
@@ -111,6 +114,8 @@ class RunDataReader(object):
         self.head = None
         self.hasher = hashlib.sha256()
         self.metadata = None
+        self.schema_version = None
+        self.codec = Decoder()
         self.rows = {}
         self.changed_at = {}
         self.change_revisions = []
@@ -123,7 +128,12 @@ class RunDataReader(object):
         required = {"schema_version", "revision", "previous_sha256", "kind", "payload", "sha256"}
         if not isinstance(document, dict) or set(document) != required:
             raise RunDataError("optimization record schema is invalid")
-        if (document["schema_version"] != RECORD_SCHEMA
+        if self.revision == 0:
+            if document["schema_version"] not in (RECORD_SCHEMA, RECORD_V2):
+                raise RunDataError("unsupported optimization record schema")
+            self.schema_version = SCHEMA_V2 if document["schema_version"] == RECORD_V2 else SCHEMA_VERSION
+        expected_schema = RECORD_V2 if self.schema_version == SCHEMA_V2 else RECORD_SCHEMA
+        if (document["schema_version"] != expected_schema
                 or type(document["revision"]) is not int
                 or document["revision"] != self.revision + 1
                 or document["previous_sha256"] != self.head):
@@ -135,7 +145,23 @@ class RunDataReader(object):
         kind, value = document["kind"], document["payload"]
         if self.revision == 0 and kind != "metadata":
             raise RunDataError("optimization dataset has no metadata header")
-        if kind == "metadata":
+        if self.schema_version == SCHEMA_V2:
+            if kind == "evidence":
+                self.codec.add_blob(value, document["revision"])
+            elif kind == "candidates":
+                if not isinstance(value, list):
+                    raise RunDataError("invalid v2 candidate list")
+                value = [self.codec.candidate(row) for row in value]
+            elif kind == "candidate_patch":
+                if not isinstance(value, list):
+                    raise RunDataError("invalid v2 candidate delta list")
+                value = [self.codec.patch(patch, self.rows) for patch in value]
+                kind = "candidates"
+            else:
+                value = self.codec.resolve(value)
+        if kind == "evidence" and self.schema_version == SCHEMA_V2:
+            pass
+        elif kind == "metadata":
             if self.metadata is not None or not isinstance(value, dict):
                 raise RunDataError("optimization metadata is invalid or repeated")
             if not isinstance(value.get("spec"), dict):
@@ -152,6 +178,9 @@ class RunDataReader(object):
                     raise RunDataError("optimization record has duplicate candidates")
                 seen.add(identity)
                 previous = self.rows.get(identity)
+                if (self.schema_version == SCHEMA_V2 and previous and previous.get("status") in TERMINAL_STATES
+                        and document["kind"] != "candidate_patch"):
+                    raise RunDataError("terminal v2 candidate update requires a delta")
                 if previous and previous.get("values") != row.get("values"):
                     raise RunDataError("optimization candidate parameters changed")
                 if (previous and previous.get("status") in TERMINAL_STATES
@@ -161,6 +190,8 @@ class RunDataReader(object):
                 identity = row["candidate_id"]
                 self.rows[identity] = row
                 self.changed_at[identity] = document["revision"]
+                if self.schema_version == SCHEMA_V2:
+                    self.codec.versions[identity] = (document["revision"], digest(row))
             self.change_revisions.append(document["revision"])
             self.change_ids.append(tuple(seen))
         elif kind in ("result", "status", "generation", "point"):
@@ -170,6 +201,12 @@ class RunDataReader(object):
                 self.result = value
             elif kind == "status":
                 self.status = value
+            elif kind == "point" and self.schema_version == SCHEMA_V2:
+                reference = document["payload"].get("$evidence")
+                if not isinstance(reference, dict):
+                    raise RunDataError("v2 point requires its durable evidence reference")
+                self.codec.point_receipts[reference["sha256"]] = (
+                    reference, value, document["revision"], checksum)
         else:
             raise RunDataError("optimization record kind is unsupported: %s" % kind)
         self.revision = document["revision"]
@@ -236,7 +273,7 @@ class RunDataReader(object):
             changed_ids = set(identity for identities in self.change_ids[first_change:]
                               for identity in identities)
             result = {
-                "schema_version": SCHEMA_VERSION,
+                "schema_version": self.schema_version,
                 "revision": self.revision, "result": copy.deepcopy(self.result),
                 "status": copy.deepcopy(self.status), "committed_bytes": self.offset,
                 "head_sha256": self.head, "prefix_sha256": self.hasher.hexdigest(),
@@ -258,7 +295,7 @@ class RunDataReader(object):
 
 
 class RunDataStore(object):
-    def __init__(self, path, metadata=None, writable=True):
+    def __init__(self, path, metadata=None, writable=True, format_version=2):
         if not writable:
             raise ValueError("use RunDataReader for read-only optimization data")
         if fcntl is None:
@@ -271,6 +308,10 @@ class RunDataStore(object):
         self._reference_datasets = {}
         self._owner_thread = threading.get_ident()
         self._checkpoint_depth = 0
+        if format_version not in (1, 2):
+            raise RunDataError("unsupported optimization dataset version")
+        self.schema_version = SCHEMA_V2 if format_version == 2 else SCHEMA_VERSION
+        self.codec = Encoder(self)
         created = not os.path.lexists(self.path)
         flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
         if created:
@@ -288,6 +329,9 @@ class RunDataStore(object):
                 existing = self.reader.read(strict=True)
                 if metadata is not None and existing["metadata"] != metadata:
                     raise RunDataError("optimization data belongs to another run")
+                self.schema_version = existing["schema_version"]
+                if self.schema_version == SCHEMA_V2:
+                    self.codec.seed(self.reader)
                 self.revision = existing["revision"]
                 self.head = existing["head_sha256"]
                 self.offset = existing["committed_bytes"]
@@ -319,12 +363,31 @@ class RunDataStore(object):
 
     def append_event(self, kind, payload):
         with self.lock:
+            if self.schema_version == SCHEMA_V2:
+                if kind == "point":
+                    point = self.codec.prepare(payload)
+                    payload = self.codec.point(point)
+                    revision = self._append_wire(kind, payload)
+                    if point.get("candidate_completed") is False and point.get("token"):
+                        self.codec.points[(point.get("candidate_id"), point.get("task_id"), point["token"])] = (
+                            payload["$evidence"], copy.deepcopy(point))
+                    return revision
+                elif kind == "candidates":
+                    return self.commit_candidates(payload)
+                elif kind in ("evidence", "candidate_patch"):
+                    raise RunDataError("wire record kinds are internal")
+                elif kind != "metadata":
+                    payload = self.codec.pack(self.codec.prepare(payload))
+            return self._append_wire(kind, payload)
+
+    def _append_wire(self, kind, payload):
+        with self.lock:
             if self.fd is None or self.failed:
                 raise RunDataError("optimization data writer is unavailable")
-            if kind == "candidates":
+            if kind == "candidates" and self.schema_version == SCHEMA_VERSION:
                 for row in payload:
                     _validated_candidate(row)
-            document = {"schema_version": RECORD_SCHEMA, "revision": self.revision + 1,
+            document = {"schema_version": RECORD_V2 if self.schema_version == SCHEMA_V2 else RECORD_SCHEMA, "revision": self.revision + 1,
                         "previous_sha256": self.head, "kind": kind, "payload": payload}
             document["sha256"] = hashlib.sha256(_encoded(document)).hexdigest()
             raw = _encoded(document) + b"\n"
@@ -453,7 +516,17 @@ class RunDataStore(object):
     def verify_generation(self, generation):
         """Mandatory barrier before results reach the optimizer's tell method."""
         with self.lock:
-            self._verify_disk_prefix(stage="generation_commit", generation=generation)
+            verified = False
+            try:
+                self._verify_disk_prefix(stage="generation_commit", generation=generation)
+                verified = True
+            finally:
+                # Passive metadata cannot alter the mandatory barrier or its error.
+                try:
+                    self.persistence_timing.generation_commit.append(
+                        {"generation": generation + 1, "verified": verified})
+                except Exception:
+                    pass
 
     @contextmanager
     def checkpoint_evidence(self):
@@ -485,6 +558,11 @@ class RunDataStore(object):
                 raise RunDataError("optimization data changed outside its held writer")
             remaining = stop_bytes
             if remaining:
+                try:
+                    self.persistence_timing.prefix_scans.append(
+                        {"bytes": remaining, "file_size": before.st_size})
+                except Exception:
+                    pass
                 with observe_operation(self.persistence_timing, 'dataset_prefix_scan', remaining):
                     while remaining:
                         data = stream.read(min(remaining, 1024 * 1024))
@@ -505,7 +583,73 @@ class RunDataStore(object):
         return digest.hexdigest()
 
     def commit_candidates(self, rows):
-        return self.append_event("candidates", copy.deepcopy(list(rows)))
+        rows = copy.deepcopy(list(rows))
+        if self.schema_version == SCHEMA_VERSION:
+            return self.append_event("candidates", rows)
+        with self.lock:
+            rows = self.codec.prepare(rows)
+            full, patches, full_ids = [], [], set()
+            seen = set()
+            for row in rows:
+                _validated_candidate(row)
+                cid = row["candidate_id"]
+                if cid in seen:
+                    raise RunDataError("optimization record has duplicate candidates")
+                seen.add(cid)
+                previous = self.codec.rows.get(cid)
+                if previous and previous["values"] != row["values"]:
+                    raise RunDataError("optimization candidate parameters changed")
+                if previous and previous.get("status") in TERMINAL_STATES:
+                    if any(previous[key] != row[key] for key in PROTECTED):
+                        raise RunDataError("candidate delta changes protected fields")
+                    base_revision, base_sha = self.codec.versions[cid]
+                    changes = {key: value for key, value in row.items()
+                               if key not in previous or previous[key] != value}
+                    patches.append({"candidate_id": cid, "base_revision": base_revision,
+                                    "base_sha256": base_sha,
+                                    "set": self.codec.pack(changes, cid),
+                                    "remove": sorted(set(previous) - set(row))})
+                else:
+                    full.append(self.codec.candidate(row))
+                    full_ids.add(cid)
+            for kind, payload in (("candidates", full), ("candidate_patch", patches)):
+                if payload:
+                    revision = self._append_wire(kind, payload)
+                    ids = {item["candidate_id"] for item in payload} if kind == "candidate_patch" else full_ids
+                    for row in rows:
+                        if row["candidate_id"] in ids:
+                            self.codec.rows[row["candidate_id"]] = row
+                            self.codec.versions[row["candidate_id"]] = (revision, digest(row))
+            return self.revision
+
+    def import_point_history(self, reference, embedded=None, candidate_ids=()):
+        """Copy verified v2 audit/point evidence into a continuation's own prefix.
+
+        Audit references deliberately remain lazy in display rows. They must be
+        rebound to newly fsynced blobs, never carry authority across datasets.
+        """
+        if self.schema_version != SCHEMA_V2 or reference.get("schema_version") != SCHEMA_V2:
+            raise RunDataError("point history import requires v2 datasets")
+        dataset_from_reference(reference, embedded, force_full=True)
+        source = RunDataReader(reference.get("path") or "embedded")
+        if embedded is not None:
+            for line in embedded.encode("utf-8").splitlines(True):
+                source._apply(json.loads(line.decode("utf-8")))
+        else:
+            snapshot = source.read(strict=True, stop_bytes=reference["bytes"])
+            if (snapshot["prefix_sha256"] != reference["prefix_sha256"]
+                    or snapshot["revision"] != reference["revision"]
+                    or snapshot["head_sha256"] != reference["head_sha256"]):
+                raise RunDataError("point history source changed after validation")
+        with self.lock:
+            for old_ref, value in source.codec.blobs.values():
+                if isinstance(value, dict) and value.get("schema_version") == _contract_text("crescendo.scheduler_query_originals.v2"):
+                    new_ref = self.codec.pack(value, force=True)["$evidence"]
+                    self.codec.imported_audits[digest(old_ref)] = new_ref
+            candidates = set(candidate_ids)
+            for old_ref, point, revision, checksum in source.codec.point_receipts.values():
+                if point.get("candidate_id") in candidates:
+                    self.append_event("point", point)
 
     def commit_result(self, result):
         # Candidate history already lives in incremental records, once.
@@ -523,7 +667,7 @@ class RunDataStore(object):
             self._check_held_writer("reference")
             if force_full:
                 self._verify_disk_prefix()
-            reference = {"schema_version": SCHEMA_VERSION, "path": self.path,
+            reference = {"schema_version": self.schema_version, "path": self.path,
                     "revision": self.revision, "bytes": self.offset,
                     "head_sha256": self.head, "prefix_sha256": self.hasher.hexdigest()}
             # Parse only new records for writer-owned checkpoint snapshots.
@@ -623,7 +767,7 @@ def dataset_from_reference(reference, embedded=None, force_full=False):
     Ordinary loads always read disk in full. force_full also disables snapshot
     reuse when an explicit load occurs inside the writer checkpoint scope.
     """
-    if not isinstance(reference, dict) or reference.get("schema_version") != SCHEMA_VERSION:
+    if not isinstance(reference, dict) or reference.get("schema_version") not in (SCHEMA_VERSION, SCHEMA_V2):
         raise RunDataError("checkpoint optimization data reference is invalid")
     for name in ("revision", "bytes"):
         if type(reference.get(name)) is not int or reference[name] < 1:
@@ -643,7 +787,7 @@ def dataset_from_reference(reference, embedded=None, force_full=False):
             if not line.endswith(b"\n") or len(line) > MAX_RECORD_BYTES:
                 raise RunDataError("embedded optimization record is incomplete")
             reader._apply(json.loads(line.decode("utf-8")))
-        dataset = {"metadata": reader.metadata, "candidates": list(reader.rows.values()),
+        dataset = {"schema_version": reader.schema_version, "metadata": reader.metadata, "candidates": list(reader.rows.values()),
                    "revision": reader.revision, "head_sha256": reader.head}
     else:
         path = reference.get("path") or ""
@@ -669,6 +813,8 @@ def dataset_from_reference(reference, embedded=None, force_full=False):
                 dataset = RunDataReader(path).read(stop_bytes=reference["bytes"], strict=True)
         if dataset["prefix_sha256"] != reference["prefix_sha256"]:
             raise RunDataError("checkpoint optimization data prefix checksum is invalid")
+    if dataset.get("schema_version") != reference["schema_version"]:
+        raise RunDataError("checkpoint optimization data version differs")
     if dataset["revision"] != reference["revision"] or dataset["head_sha256"] != reference["head_sha256"]:
         raise RunDataError("checkpoint optimization data identity is invalid")
     return dataset

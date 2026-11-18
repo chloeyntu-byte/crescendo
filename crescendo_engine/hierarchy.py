@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import time
 
 from crescendo_engine.runtime import bind_text
 _contract_text = bind_text()
@@ -16,7 +17,7 @@ from .cadence import (
     write_readonly_cds_context,
 )
 from .headless_display import owned_headless_display
-from .config_hierarchy import config_probe_skill, is_schematic_implementation
+from .config_hierarchy import config_probe_skill, is_schematic_implementation, plain_switch_views
 from .utils import atomic_write_json, atomic_write_text, ensure_dir, run_id, utc_timestamp
 
 
@@ -52,6 +53,42 @@ def parse_physical_number(value):
     return number if math.isfinite(number) else None
 
 
+_NUMERIC_ALIASES = {
+    "width": {
+        "w", "width", "devicewidth", "channelwidth", "gatewidth",
+        "fingerwidth", "unitwidth", "stripwidth", "reswidth", "capwidth",
+        "wf", "fw", "wr", "wg", "wgate", "widthperfinger",
+    },
+    "length": {
+        "l", "length", "devicelength", "channellength", "gatelength",
+        "unitlength", "striplength", "reslength", "caplength", "lr", "lg", "lgate",
+    },
+    "fingers": {
+        "nf", "nfin", "nfing", "finger", "fingers", "numfinger",
+        "numfingers", "numberoffingers", "gatefingers",
+    },
+    "multiplier": {"m", "mult", "multi", "multiplier", "multiplicity", "parallel", "parallels", "nmult", "nmultiplier"},
+    "segments": {
+        "seg", "nseg", "nsegs", "segment", "segments", "numsegments",
+        "numberofsegments", "seriessegments", "sections", "nsections",
+    },
+    "array": {"nx", "ny", "nrow", "nrows", "ncol", "ncols", "rows", "cols", "columns"},
+    "radius": {"rad", "radius", "innerradius", "outerradius"},
+    "spacing": {"sp", "spacing", "segsp", "segmentspacing", "coilspacing"},
+    "turns": {"turn", "turns", "nturn", "nturns", "numturns", "numberofturns"},
+    "resistance": {"r", "res", "resistance", "rvalue", "resvalue", "sheetresistance"},
+    "capacitance": {"c", "cap", "capacitance", "cvalue", "capvalue"},
+    "inductance": {"ind", "inductance", "lvalue", "indvalue"},
+    "voltage": {"vdc", "dcvoltage", "voltage", "voffset", "v1", "v2"},
+    "current": {"idc", "dccurrent", "current", "ioffset"},
+    "amplitude": {"dc", "acm", "acmag", "acmagnitude", "va", "ampl", "amplitude"},
+    "phase": {"acp", "acphase", "phase", "sinephase", "initialphase"},
+    "frequency": {"f", "freq", "frequency", "sinefreq"},
+    "delay": {"td", "delay", "delaytime", "rise", "risetime", "fall", "falltime", "pulsewidth", "period"},
+    "impedance": {"z", "z0", "impedance", "characteristicimpedance"},
+}
+
+
 def numeric_parameter_semantic(parameter):
     name = "".join(character for character in str(parameter.get("name") or "").lower() if character.isalnum())
     prompt = "".join(character for character in str(parameter.get("prompt") or "").lower() if character.isalnum())
@@ -70,40 +107,7 @@ def numeric_parameter_semantic(parameter):
             "offset", "delta", "calculated", "effective", "pcell", "addwidth", "addlength")):
         return None
 
-    aliases = {
-        "width": {
-            "w", "width", "devicewidth", "channelwidth", "gatewidth",
-            "fingerwidth", "unitwidth", "stripwidth", "reswidth", "capwidth",
-            "wf", "fw", "wr", "wg", "wgate", "widthperfinger",
-        },
-        "length": {
-            "l", "length", "devicelength", "channellength", "gatelength",
-            "unitlength", "striplength", "reslength", "caplength", "lr", "lg", "lgate",
-        },
-        "fingers": {
-            "nf", "nfin", "nfing", "finger", "fingers", "numfinger",
-            "numfingers", "numberoffingers", "gatefingers",
-        },
-        "multiplier": {"m", "mult", "multi", "multiplier", "multiplicity", "parallel", "parallels", "nmult", "nmultiplier"},
-        "segments": {
-            "seg", "nseg", "nsegs", "segment", "segments", "numsegments",
-            "numberofsegments", "seriessegments", "sections", "nsections",
-        },
-        "array": {"nx", "ny", "nrow", "nrows", "ncol", "ncols", "rows", "cols", "columns"},
-        "radius": {"rad", "radius", "innerradius", "outerradius"},
-        "spacing": {"sp", "spacing", "segsp", "segmentspacing", "coilspacing"},
-        "turns": {"turn", "turns", "nturn", "nturns", "numturns", "numberofturns"},
-        "resistance": {"r", "res", "resistance", "rvalue", "resvalue", "sheetresistance"},
-        "capacitance": {"c", "cap", "capacitance", "cvalue", "capvalue"},
-        "inductance": {"ind", "inductance", "lvalue", "indvalue"},
-        "voltage": {"vdc", "dcvoltage", "voltage", "voffset", "v1", "v2"},
-        "current": {"idc", "dccurrent", "current", "ioffset"},
-        "amplitude": {"dc", "acm", "acmag", "acmagnitude", "va", "ampl", "amplitude"},
-        "phase": {"acp", "acphase", "phase", "sinephase", "initialphase"},
-        "frequency": {"f", "freq", "frequency", "sinefreq"},
-        "delay": {"td", "delay", "delaytime", "rise", "risetime", "fall", "falltime", "pulsewidth", "period"},
-        "impedance": {"z", "z0", "impedance", "characteristicimpedance"},
-    }
+    aliases = _NUMERIC_ALIASES
     # A prompt can disambiguate vendor names such as nr (fingers or turns).
     if "resistance" in prompt:
         return "resistance"
@@ -164,17 +168,69 @@ def _skill_quote(value):
     return str(value).replace("\\", "\\\\").replace('"', '\\"')
 
 
+
+def _candidate_skill():
+    # Conservative superset of numeric_parameter_semantic: negative exclusions
+    # remain in Python. Numeric string expressions and unusual vendor aliases
+    # keep the same eligibility; only fields with no semantic are skipped.
+    aliases = sorted(set(name for names in _NUMERIC_ALIASES.values() for name in names))
+    return _contract_text(r'''cr_CandSeen = makeTable('cr_CandSeen 'cr_NotSeen)
+cr_ProbeCpu = makeTable('cr_ProbeCpu 0)
+procedure(cr_ProbeTicks()
+  if(isCallable('cputime) then cputime() else 0)
+)
+procedure(cr_ProbeCharge(key started)
+  cr_ProbeCpu[key] = cr_ProbeCpu[key] + cr_ProbeTicks() - started
+)
+cr_ProbeStarted = cr_ProbeTicks()
+procedure(cr_ProbeWord(value)
+  let((text chars index character)
+    text = if(stringp(value) then lowerCase(value) else "")
+    for(index 1 strlen(text)
+      character = substring(text index 1)
+      when(rexMatchp("^[a-z0-9]$" character) chars = cons(character chars))
+    )
+    buildString(reverse(chars) "")
+  )
+)
+procedure(cr_ProbeCandidate(param)
+  let((name prompt key cached)
+    key = sprintf(nil "%%L" list(param~>name param~>prompt))
+    cached = cr_CandSeen[key]
+    when(cached == 'cr_NotSeen
+    name = cr_ProbeWord(param~>name)
+    prompt = cr_ProbeWord(param~>prompt)
+    cached = if(member(name list(%s)) || member(prompt list(%s)) ||
+    exists(fragment list("resistance" "capacitance" "inductance" "turn" "radius" "finger" "width" "length" "segment" "multiplier" "multiplicity")
+      rexMatchp(fragment prompt) ||
+      (member(fragment list("finger" "width" "length" "segment" "multiplier" "multiplicity")) && rexMatchp(fragment name)))
+      then t else nil)
+    cr_CandSeen[key] = cached
+    )
+    cached
+  )
+)
+''') % tuple(' '.join('"' + name + '"' for name in aliases) for _ in range(2))
+
+
 def probe_skill(lib, cell, view, output_path, max_depth, cells_only=False,
-                selected_cell_paths=None):
+                selected_cell_paths=None, candidate_only=True, targeted=False, switch_views=None):
     selected = list(selected_cell_paths or [])
+    switch_views = switch_views or plain_switch_views({})
     return _contract_text(r'''crescOut = outfile("%s")
 crescCellsOnly = %s
+cr_Targeted = %s
+cr_CandidateOnly = %s
 crescScoped = %s
 crescSelectedCellPaths = list(%s)
 crescTechSeen = nil
 crescProbeStack = nil
-crescSchematicSeen = makeTable('crescSchematicSeen 'crescNotSeen)
+crescPlainViews = list(%s)
+crescPlainViewSeen = makeTable('crescPlainViewSeen 'crescNotSeen)
 crescSimInfoSeen = makeTable('crescSimInfoSeen 'crescNotSeen)
+cr_EditorSeen = makeTable('cr_EditorSeen 'cr_NotSeen)
+cr_EditorWindows = nil
+%s
 %s
 procedure(crescProbeParameterScope(path)
   if(crescCellsOnly then nil else
@@ -187,18 +243,54 @@ procedure(crescProbeParameterScope(path)
     else t)
   )
 )
+procedure(cr_ProbeVisit(path)
+  !cr_Targeted || exists(scope crescSelectedCellPaths
+    scope == "/" || scope == path ||
+    (strlen(path) > strlen(scope) && substring(path 1 strlen(scope)+1) == strcat(scope "/")) ||
+    (strlen(scope) > strlen(path) && substring(scope 1 strlen(path)+1) == strcat(path "/")))
+)
+procedure(cr_ProbeInstances(cv path)
+  let((names result rest name inst)
+    if(!cr_Targeted || crescProbeParameterScope(path) || member(path crescSelectedCellPaths) then
+      cv~>instances
+    else
+      foreach(scope crescSelectedCellPaths
+        when(path == "/" ||
+             (strlen(scope) > strlen(path) && substring(scope 1 strlen(path)+1) == strcat(path "/"))
+          rest = if(path == "/" then substring(scope 2) else substring(scope strlen(path)+2))
+          name = car(parseString(rest "/"))
+          unless(member(name names)
+            names = cons(name names)
+            inst = dbFindAnyInstByName(cv name)
+            when(inst result = cons(inst result))
+          )
+        )
+      )
+      ; Preserve OA order among requested siblings without resolving other masters.
+      setof(inst cv~>instances member(inst result))
+    )
+  )
+)
 procedure(crescProbeNeedsEditor(raw)
   stringp(raw) && raw != "t" && raw != "nil"
 )
-procedure(crescProbeMasterSchematic(libName cellName)
+procedure(crescProbePlainView(libName cellName)
   let((key result childCv)
-    key = strcat(libName "/" cellName)
-    result = crescSchematicSeen[key]
+    key = list(libName cellName)
+    result = crescPlainViewSeen[key]
     when(result == 'crescNotSeen
-      childCv = dbOpenCellViewByType(libName cellName "schematic" "schematic" "r")
-      result = if(childCv then t else nil)
-      when(childCv dbClose(childCv))
-      crescSchematicSeen[key] = result
+      result = nil
+      foreach(view crescPlainViews
+        unless(result
+          if(view == "schematic" then
+            childCv = dbOpenCellViewByType(libName cellName view "schematic" "r")
+            when(childCv result = view dbClose(childCv))
+          else
+            when(ddGetObj(libName cellName view "*") result = view)
+          )
+        )
+      )
+      crescPlainViewSeen[key] = result
     )
     result
   )
@@ -226,6 +318,22 @@ procedure(crescProbeMasterSimInfo(libName cellName)
       crescSimInfoSeen[key] = result
     )
     car(result)
+  )
+)
+procedure(cr_ProbeEditor(libName cellName viewName)
+  let((key cached opened)
+    key = strcat(libName "/" cellName "/" viewName)
+    cached = cr_EditorSeen[key]
+    when(!cr_CandidateOnly || cached == 'cr_NotSeen
+      opened = errset(deOpenCellView(libName cellName viewName "schematic" nil "r") t)
+      cached = list(if(opened then car(opened) else nil))
+      when(cr_CandidateOnly
+        cr_EditorSeen[key] = cached
+        when(car(cached) cr_EditorWindows = cons(car(cached) cr_EditorWindows))
+      )
+    )
+    when(car(cached) errset(hiSetCurrentWindow(car(cached)) t))
+    car(cached)
   )
 )
 procedure(crescProbeCondition(raw defaultValue cv)
@@ -273,9 +381,9 @@ procedure(crescProbeTechnology(libName)
   )
 )
 procedure(crescProbeCell(libName cellName viewName hierPath depth @optional bindingContext bindingSignature)
-  prog((cv inst master childExists instPath instCdfResult instCdf param prop currentValue
+  prog((cv inst master childExists instPath instCdfResult instCdf params param prop currentValue
        cdfgData cdfgInst cdfgForm conditionEditable conditionDisplay probeIdentity spectreInfo
-       previousWindow probeWindowResult probeWindow probeWindowAttempted pcdb binding childLib childCell childView ignored ignoreReason)
+       previousWindow probeWindowResult probeWindow probeWindowAttempted pcdb binding childLib childCell childView plainView ignored ignoreReason phaseStarted)
     probeIdentity = list(libName cellName viewName)
     when(bindingContext probeIdentity = append(probeIdentity list(bindingSignature)))
     when(member(probeIdentity crescProbeStack)
@@ -289,6 +397,11 @@ procedure(crescProbeCell(libName cellName viewName hierPath depth @optional bind
     )
     cv = dbOpenCellViewByType(libName cellName viewName "schematic" "r")
     if(cv then
+      when(depth == 0 && !crescCellsOnly
+        foreach(cr_TopParam cdfGetCellCDF(ddGetObj(libName cellName))~>parameters
+          when(cr_TopParam~>editable != nil && cr_TopParam~>display != nil
+            fprintf(crescOut "TOP_PARAM\t%%L\t%%L\n" cr_TopParam~>name cr_TopParam~>value)))
+      )
       when(bindingContext && cv~>cellViewType != "schematic"
         crescConfigFailure("CONFIG_VIEW_UNSUPPORTED" hierPath "non-stop implementation is not an OA schematic")
         dbClose(cv)
@@ -309,16 +422,18 @@ procedure(crescProbeCell(libName cellName viewName hierPath depth @optional bind
       crescProbeStack = cons(probeIdentity crescProbeStack)
       fprintf(crescOut "CELL\t%%L\t%%L\t%%L\t%%L\t%%L\n" hierPath libName cellName viewName depth)
       fprintf(crescOut "CELL_VIEW_TYPE\t%%L\t%%L\n" hierPath cv~>cellViewType)
-      foreach(inst cv~>instances
+      foreach(inst cr_ProbeInstances(cv hierPath)
         master = inst~>master
         if(hierPath == "/" then
           instPath = strcat("/" inst~>name)
         else
           instPath = strcat(hierPath "/" inst~>name)
         )
+        when(cr_ProbeVisit(instPath)
         ignoreReason = crescConfigIgnoreReason(inst)
         ignored = if(ignoreReason then t else nil)
         binding = nil
+        plainView = nil
         if(bindingContext then
           binding = crescConfigBind(bindingContext pcdb inst libName cellName viewName hierPath instPath)
           childExists = binding && nth(9 binding)
@@ -330,14 +445,15 @@ procedure(crescProbeCell(libName cellName viewName hierPath depth @optional bind
             crescProbeTechnology(nth(3 binding))
           )
         else
-          childExists = !ignored && crescProbeMasterSchematic(master~>libName master~>cellName)
+          plainView = if(ignored then nil else crescProbePlainView(master~>libName master~>cellName))
+          childExists = plainView == "schematic"
           childLib = master~>libName
           childCell = master~>cellName
-          childView = "schematic"
+          childView = plainView
         )
         when(bindingContext crescProbeTechnology(master~>libName))
-        fprintf(crescOut "INSTANCE\t%%L\t%%L\t%%L\t%%L\t%%L\t%%L\t%%L\t%%L\t%%L\t%%L\t%%L\n"
-          instPath inst~>name master~>libName master~>cellName master~>viewName childExists hierPath depth master~>cellViewType ignored ignoreReason)
+        fprintf(crescOut "INSTANCE\t%%L\t%%L\t%%L\t%%L\t%%L\t%%L\t%%L\t%%L\t%%L\t%%L\t%%L\t%%L\n"
+          instPath inst~>name master~>libName master~>cellName master~>viewName childExists hierPath depth master~>cellViewType ignored ignoreReason plainView)
         ; Scoped scans retain netlister master metadata for unselected owners;
         ; no instance CDF, parameter values or editor conditions are read here.
         when(!ignored && !crescCellsOnly && crescScoped && !crescProbeParameterScope(instPath) &&
@@ -349,19 +465,25 @@ procedure(crescProbeCell(libName cellName viewName hierPath depth @optional bind
         )
         when(!ignored && crescProbeParameterScope(instPath) &&
           (!bindingContext || (binding && !nth(10 binding) && nth(11 binding) != "unknown"))
+        phaseStarted = cr_ProbeTicks()
         instCdfResult = errset(cdfGetInstCDF(inst) t)
+        cr_ProbeCharge("cdf" phaseStarted)
         when(instCdfResult
           instCdf = car(instCdfResult)
           when(instCdf
+            phaseStarted = cr_ProbeTicks()
+            params = setof(param instCdf~>parameters !cr_CandidateOnly || cr_ProbeCandidate(param))
+            cr_ProbeCharge("candidate_filter" phaseStarted)
             ; Literal conditions need no editor. Dynamic vendor conditions still
             ; receive the same read-only edit context, once per cell occurrence.
             when(!probeWindowAttempted && isCallable('deOpenCellView) &&
-                 exists(param instCdf~>parameters
+                 exists(param params
                    crescProbeNeedsEditor(param~>editable) || crescProbeNeedsEditor(param~>display))
               probeWindowAttempted = t
+              phaseStarted = cr_ProbeTicks()
               previousWindow = hiGetCurrentWindow()
-              probeWindowResult = errset(deOpenCellView(libName cellName viewName "schematic" nil "r") t)
-              when(probeWindowResult probeWindow = car(probeWindowResult))
+              probeWindow = cr_ProbeEditor(libName cellName viewName)
+              cr_ProbeCharge("editor" phaseStarted)
             )
             cdfgData = instCdf
             cdfgInst = inst
@@ -370,11 +492,14 @@ procedure(crescProbeCell(libName cellName viewName hierPath depth @optional bind
               fprintf(crescOut "SIMINFO\t%%L\t%%L\t%%L\n"
                 instPath car(spectreInfo) cadr(spectreInfo))
             )
-            foreach(param instCdf~>parameters
+            foreach(param params
               prop = dbFindProp(inst param~>name)
               currentValue = if(prop then prop~>value else param~>value)
+              phaseStarted = cr_ProbeTicks()
               conditionEditable = crescProbeCondition(param~>editable t cv)
               conditionDisplay = crescProbeCondition(param~>display t cv)
+              cr_ProbeCharge("conditions" phaseStarted)
+              phaseStarted = cr_ProbeTicks()
               fprintf(crescOut "PARAM\t%%L\t%%L\t%%L\t%%L\t%%L\t%%L"
                 instPath param~>name param~>prompt param~>type currentValue param~>defValue)
               fprintf(crescOut "\t%%L\t%%L\t%%L\t%%L\t%%L"
@@ -386,12 +511,15 @@ procedure(crescProbeCell(libName cellName viewName hierPath depth @optional bind
                 cadr(conditionEditable) cadr(conditionDisplay) get(param 'parseAsCEL))
               fprintf(crescOut "\t%%L\t%%L\t%%L\t%%L\n"
                 get(param 'increment) get(param 'resolution) get(param 'minVal) get(param 'maxVal))
+              cr_ProbeCharge("emit" phaseStarted)
             )
           )
         )
-        foreach(prop inst~>prop
-          fprintf(crescOut "PROP\t%%L\t%%L\t%%L\t%%L\t%%L\t%%L\n"
-            instPath prop~>name prop~>valueType prop~>value libName cellName)
+        when(!cr_CandidateOnly
+          foreach(prop inst~>prop
+            fprintf(crescOut "PROP\t%%L\t%%L\t%%L\t%%L\t%%L\t%%L\n"
+              instPath prop~>name prop~>valueType prop~>value libName cellName)
+          )
         )
         )
         when(childExists && depth < %d
@@ -403,9 +531,10 @@ procedure(crescProbeCell(libName cellName viewName hierPath depth @optional bind
             instPath childLib childCell childView)
         )
         when(bindingContext && binding && !nth(8 binding) hdbPopCell(car(bindingContext)))
+        ) ; selected path ancestors and descendants only
       )
       when(probeWindow
-        errset(hiCloseWindow(probeWindow) t)
+        unless(cr_CandidateOnly errset(hiCloseWindow(probeWindow) t))
         when(previousWindow errset(hiSetCurrentWindow(previousWindow) t))
       )
       dbClose(cv)
@@ -421,13 +550,22 @@ crescProbeResult = errset(crescProbeCell("%s" "%s" "%s" "/" 0) t)
 unless(crescProbeResult
   fprintf(crescOut "PROBE_FAILED\t%%L\n" "/")
 )
+foreach(cr_EditorWindow cr_EditorWindows
+  errset(hiCloseWindow(cr_EditorWindow) t)
+)
+fprintf(crescOut "PROBE_CPU\t%%L\t%%L\t%%L\t%%L\t%%L\t%%L\n"
+  cr_ProbeCpu["cdf"] cr_ProbeCpu["editor"] cr_ProbeCpu["conditions"]
+  cr_ProbeCpu["candidate_filter"] cr_ProbeCpu["emit"] cr_ProbeTicks()-cr_ProbeStarted)
 close(crescOut)
 exit()
 ''') % (
         _skill_quote(output_path), "t" if cells_only else "nil",
+        "t" if targeted else "nil",
+        "t" if candidate_only else "nil",
         "t" if selected_cell_paths is not None else "nil",
         " ".join('"%s"' % _skill_quote(path) for path in selected),
-        config_probe_skill(),
+        " ".join('"%s"' % _skill_quote(view) for view in switch_views),
+        config_probe_skill(), _candidate_skill(),
         int(max_depth), int(max_depth),
         _skill_quote(lib), _skill_quote(cell), _skill_quote(view),
         _skill_quote(lib), _skill_quote(cell), _skill_quote(view),
@@ -468,6 +606,11 @@ def _literal(token):
         return None
     if token == "t":
         return True
+    if token.startswith('"') and r"\/" not in token:
+        try:
+            return json.loads(token)
+        except ValueError:
+            pass  # retain SKILL/Python legacy escape handling
     try:
         return ast.literal_eval(token)
     except Exception:
@@ -492,6 +635,7 @@ def _iter_probe_records(path):
         for line_number, raw in enumerate(stream, 1):
             if line_number % 256 == 1:
                 check_command_cancellation()
+                time.sleep(.001)
             raw = raw.rstrip("\n")
             if not raw:
                 continue
@@ -570,6 +714,7 @@ def _parameter_from_record(values, source):
 
 def normalize_probe(records, design=None):
     cells = []
+    top_parameters = []
     instances = []
     parameters = []
     technology_bindings = []
@@ -582,14 +727,18 @@ def normalize_probe(records, design=None):
     config_bindings = []
     binding_by_path = {}
     cell_view_types = {}
+    native_profile = {}
     design_identity = dict(design or {})
     for record_index, record in enumerate(records):
         if record_index % 256 == 0:
             check_command_cancellation()
+            time.sleep(.001)
         kind = record["kind"]
         values = record["values"]
         if kind == "DESIGN" and len(values) >= 3 and not design_identity:
             design_identity = {"library": values[0], "cell": values[1], "view": values[2]}
+        elif kind == "TOP_PARAM" and len(values) >= 2:
+            top_parameters.append({"name": values[0], "value": values[1]})
         elif kind == "RESOLVED_TOP":
             if len(values) == 3 and all(isinstance(value, str) and value for value in values):
                 resolved_top = dict(zip(("library", "cell", "view"), values))
@@ -638,6 +787,9 @@ def normalize_probe(records, design=None):
             if len(values) > 9:
                 row["netlister_ignored"] = bool(values[9])
                 row["ignore_reason"] = values[10] if len(values) > 10 else None
+            if len(values) > 11 and values[11] in ("alps", "veriloga", "ahdl"):
+                row.update(resolved_library=row["master_library"], resolved_cell=row["master_cell"],
+                           resolved_view=values[11])
             row["kind"] = "hierarchical" if row["has_schematic"] else "device"
             binding = binding_by_path.get(row["hierarchy_path"])
             if binding:
@@ -718,6 +870,8 @@ def normalize_probe(records, design=None):
                 row.get("owner_library"), row.get("owner_cell"), instance.get("name"), row["name"]
             )
             parameters.append(row)
+        elif kind == "PROBE_CPU" and len(values) == 6:
+            native_profile = dict(zip(("cdf", "editor", "conditions", "candidate_filter", "emit", "total"), values))
         elif kind == "SIMINFO" and len(values) >= 3:
             instance = instance_by_path.get(values[0])
             if instance is not None:
@@ -797,6 +951,10 @@ def normalize_probe(records, design=None):
             "tunable_parameters": sum(bool(row["tunable"]) for row in parameters),
         },
     }
+    if top_parameters:
+        result["top_parameters"] = top_parameters
+    if native_profile:
+        result["probe_cpu_ticks"] = native_profile
     if resolved_top is not None or config_dependencies:
         result.update({"resolved_top": resolved_top, "config_dependencies": config_dependencies,
                        "config_bindings": config_bindings})
@@ -952,25 +1110,27 @@ def _hierarchy_display(config, design_root, cells_only):
 
 
 def probe_hierarchy(setup, config, max_depth=32, work_root=None, cells_only=False,
-                    selected_cell_paths=None):
+                    selected_cell_paths=None, candidate_only=True, targeted=False, allow_missing=False):
     check_command_cancellation()
     work_root = work_root or config["runtime"].get("hierarchy_probe_root") or os.path.join(config["runtime"]["run_root"], "probes")
     probe_root = ensure_dir(os.path.join(work_root, run_id("hierarchy")))
     all_designs = []
     unique = []
-    seen = set()
+    test_by_design = {}
     for test in setup.get("tests", []):
         design = (test.get("library"), test.get("cell"), test.get("view") or "schematic")
-        if all(design) and design not in seen:
+        if all(design) and design not in test_by_design:
             unique.append(design)
-            seen.add(design)
+            test_by_design[design] = test
     if not unique:
         raise ValueError("Maestro setup contains no resolvable design")
-    if cells_only and selected_cell_paths is not None:
+    if cells_only and selected_cell_paths is not None and not targeted:
         raise ValueError("Cell-only discovery and selected-cell parameter inspection are separate stages")
     scopes = _selected_scopes(selected_cell_paths, unique)
     for index, design in enumerate(unique):
         check_command_cancellation()
+        if targeted and scopes is not None and design not in scopes:
+            continue
         library, cell, view = design
         design_root = ensure_dir(os.path.join(probe_root, "design_%02d" % index))
         cadence = config.get("cadence", {})
@@ -1018,8 +1178,11 @@ def probe_hierarchy(setup, config, max_depth=32, work_root=None, cells_only=Fals
         log_path = os.path.join(design_root, _contract_text("virtuoso.log"))
         paths = scopes.get(design, []) if scopes is not None else None
         atomic_write_text(skill_path, probe_skill(library, cell, view, output_path, max_depth,
-                                                cells_only=cells_only, selected_cell_paths=paths))
+                                                cells_only=cells_only, selected_cell_paths=paths,
+                                                candidate_only=candidate_only, targeted=targeted,
+                                                switch_views=plain_switch_views(test_by_design[design])))
         no_parameter_inspection = cells_only or (paths is not None and not paths)
+        native_started = time.monotonic()
         with _hierarchy_display(config, design_root, no_parameter_inspection) as (probe_environment, display):
             command = run_command(
                 [config["cadence"]["virtuoso_bin"], "-nograph", "-restore", skill_path, "-log", log_path],
@@ -1032,11 +1195,16 @@ def probe_hierarchy(setup, config, max_depth=32, work_root=None, cells_only=Fals
         command["headless_display"] = display
         if command["returncode"] != 0 or not os.path.isfile(output_path):
             raise RuntimeError("hierarchy probe failed for %s/%s/%s: %s" % (library, cell, view, json.dumps(command, sort_keys=True)))
+        native_seconds = time.monotonic() - native_started
+        parse_started = time.monotonic()
         normalized = normalize_probe(_iter_probe_records(output_path), {
             "library": library, "cell": cell, "view": view,
         })
+        command["probe_timing"] = {"native_seconds": native_seconds,
+            "parse_seconds": time.monotonic() - parse_started, "record_bytes": os.path.getsize(output_path),
+            "native_cpu_ticks": normalized.get("probe_cpu_ticks") or {}}
         if scopes is not None:
-            existing = set(row.get("hierarchy_path") for row in normalized["cells"])
+            existing = set(row.get("hierarchy_path") for row in normalized["cells"] + normalized["instances"])
             for selected_path in paths:
                 if selected_path not in existing:
                     normalized["errors"].append({"kind": "SCOPE_NOT_FOUND", "hierarchy_path": selected_path,
@@ -1067,7 +1235,102 @@ def probe_hierarchy(setup, config, max_depth=32, work_root=None, cells_only=Fals
         validate_native_hierarchy(design_result["hierarchy"], design_result["design"], evidence_path)
         missing = [row["hierarchy_path"] for row in design_result["hierarchy"].get("errors", [])
                    if row.get("kind") == "SCOPE_NOT_FOUND"]
-        if missing:
+        if missing and not allow_missing:
             raise ValueError("Selected cell occurrence was not found in the actual hierarchy: %s; evidence: %s" %
                              (", ".join(missing), evidence_path))
     return result
+
+
+def instance_scope_records(hierarchy, setup=None, config=None, cell_records=None):
+    """Cell choices plus leaf occurrences owned by selectable user cells."""
+    rows = list(cell_records) if cell_records is not None else cell_scope_records(hierarchy, setup=setup, config=config)
+    owners = dict((_design_key(row["design"]) + (row["hierarchy_path"],), row) for row in rows)
+    for result in hierarchy.get("designs") or []:
+        design = dict(zip(("library", "cell", "view"), _design_key(result["design"])))
+        key = _design_key(design)
+        for inst in (result.get("hierarchy") or {}).get("instances") or []:
+            path = inst.get("hierarchy_path")
+            if key + (path,) in owners:
+                continue
+            parent = owners.get(key + (inst.get("parent_path"),)) or {}
+            row = {"scope_id": "cell_scope:" + _identifier(*(key + (path,))),
+                   "design": dict(design), "hierarchy_path": path,
+                   "library": inst.get("master_library"), "cell": inst.get("master_cell"),
+                   "view": inst.get("master_view"), "depth": inst.get("depth"),
+                   "parent_path": inst.get("parent_path"),
+                   "selectable": bool(parent.get("selectable") and not inst.get("netlister_ignored")
+                                      and not inst.get("symbol_masked"))}
+            for field in ("library", "cell", "view"):
+                row["master_" + field] = row[field]
+            if not row["selectable"]:
+                row["reason"] = "ignored, opaque, or reference-library internal occurrence"
+            rows.append(row)
+    return rows
+
+
+def parse_instance_paths(text, designs):
+    """Parse lines independently; angle-bracket scalar indices are literal OA names.
+
+    Ranges, wildcards, escaped names and square-bracket indices are deliberately
+    rejected. No implicit expansion of an OA iterated instance into shared bits.
+    """
+    if not isinstance(text, str):
+        raise ValueError("Instance paths must be newline-separated text")
+    designs = sorted(set(_design_key(row) for row in designs))
+    results = []
+    for number, raw in enumerate(text.splitlines(), 1):
+        value = raw.strip()
+        if not value:
+            continue
+        row = {"line": number, "input": raw, "valid": False}
+        results.append(row)
+        if value.startswith("/"):
+            if len(designs) != 1:
+                row["reason"] = "ambiguous design; prefix lib/cell/view before the absolute path"
+                continue
+            design, path = designs[0], value
+        else:
+            match = re.match(r"^([^/\s]+)/([^/\s]+)/([^/\s]+)(?:\s+)?(/.*)$", value)
+            if not match:
+                row["reason"] = "expected /instance/path or lib/cell/view /instance/path"
+                continue
+            design, path = tuple(match.group(i) for i in (1, 2, 3)), match.group(4)
+            if design not in designs:
+                row["reason"] = "unknown design lib/cell/view"
+                continue
+        if any(c in path for c in ":[]*?\\"):
+            row["reason"] = "ranges <a:b>, square brackets, wildcards and escaped names are unsupported; use an exact OA occurrence"
+            continue
+        parts = path[1:].split("/") if path != "/" else []
+        if any(not re.match(r"^[A-Za-z_$][A-Za-z0-9_$.-]*(?:<-?\d+>)?$", part) for part in parts):
+            row["reason"] = "invalid absolute instance path or scalar bus index (expected name<integer>)"
+            continue
+        row.update(design=dict(zip(("library", "cell", "view"), design)), hierarchy_path=path)
+    return results
+
+
+def resolve_instance_paths(setup, config, text, max_depth=32, work_root=None):
+    """Resolve only requested branches; invalid lines never trigger a full scan."""
+    rows = parse_instance_paths(text, setup.get("tests") or [])
+    requests = [row for row in rows if "design" in row]
+    if not requests:
+        return {"schema_version": _contract_text("crescendo.instance_paths.v1"), "lines": rows,
+                "scopes": [], "hierarchy": {"designs": []}}
+    hierarchy = probe_hierarchy(setup, config, max_depth=max_depth, work_root=work_root,
+        cells_only=True, selected_cell_paths=requests, targeted=True, allow_missing=True)
+    choices = dict((_design_key(row["design"]) + (row["hierarchy_path"],), row)
+                   for row in instance_scope_records(hierarchy, setup=setup, config=config))
+    scopes, seen = [], set()
+    for row in requests:
+        scope = choices.get(_design_key(row["design"]) + (row["hierarchy_path"],))
+        if scope is None:
+            row["reason"] = "path not found or not traversable; scalar bits of iterated OA names are not expanded"
+        elif not scope.get("selectable"):
+            row["reason"] = scope.get("reason") or "occurrence is not selectable"
+        else:
+            row.update(valid=True, scope_id=scope["scope_id"])
+            if scope["scope_id"] not in seen:
+                scopes.append(scope)
+                seen.add(scope["scope_id"])
+    return {"schema_version": _contract_text("crescendo.instance_paths.v1"), "lines": rows,
+            "scopes": scopes, "hierarchy": hierarchy}

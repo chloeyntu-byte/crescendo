@@ -585,6 +585,25 @@ def _freeze_diagnostic_candidate(spec, prepared):
             chosen = sampled[key]
             origin[key] = {'source': 'seed1_sample', 'reason': str(error)}
         candidate[key] = chosen
+    groups = {}
+    for variable in variables:
+        if variable.get('link_group'):
+            groups.setdefault(variable['link_group'], []).append(variable)
+    for group, members in groups.items():
+        # A group's current values are one design point. Never combine a
+        # partial or inconsistent current point with independently sampled values.
+        try:
+            for member in members:
+                key = member['parameter_id']
+                if origin[key]['source'] != 'design_current_value':
+                    raise ValueError('link_group %r member %s: %s' % (group, key, origin[key]['reason']))
+            validate_candidate_values({member['parameter_id']: candidate[member['parameter_id']]
+                                       for member in members}, members)
+        except (ValueError, TypeError, KeyError) as error:
+            for member in members:
+                key = member['parameter_id']
+                candidate[key] = sampled[key]
+                origin[key] = {'source': 'seed1_sample', 'reason': str(error)}
     return candidate, origin
 
 
@@ -630,6 +649,9 @@ class EnvironmentTestManager(object):
 
     def start(self, prepared_id, spec):
         spec = copy.deepcopy(spec or {})
+        from .diagnostic_log import report_options
+        detail, examples = report_options(self.service.config.get('runtime') or {}, spec)
+        spec.update(diagnostic_log_detail=detail, diagnostic_log_examples=examples)
         with self.service.lock:
             if getattr(self.service, 'closing', False):
                 raise RuntimeError('optimizer is closing')
@@ -703,13 +725,30 @@ class EnvironmentTestManager(object):
                    'log_queue': queue.Queue(maxsize=128), 'aux_threads': [],
                    'cancel': threading.Event(), 'prepared': prepared, 'prepared_id': prepared_id,
                    'config': frozen, 'spec': spec, 'storage_error': storage_error,
+                   'diagnostic_log_detail': detail, 'diagnostic_log_examples': examples,
+                   'report_sidecars': [], 'sidecar_integrity': None,
                    'source_simulator': source_simulator, 'source_simulators': sources,
                    'frozen_candidate': candidate, 'frozen_candidate_origin': candidate_origin, 'candidate_error': candidate_error,
-                   'frozen_plan': frozen_plan, 'diagnostic_shape': shape, 'timing_observer': timer, 'case_timing_observers': {},
+                   'frozen_plan': frozen_plan, 'effective_diagnostic': {}, 'diagnostic_shape': shape, 'timing_observer': timer, 'case_timing_observers': {},
                    'record_signatures': set(), 'engine_outcomes': {},
                    'simulator_capabilities': {}, 'shared_schema_artifacts': {},
                    'case_contexts': {}, 'case_records': {}, 'case_record_bytes': {},
                    'write_error': write_error, 'started_at': _utc(), 'finished_at': None}
+            from .diagnostic_focus import prepared_statistics
+            from .diagnostic_sections import registered_sections
+            row['section_registrations'] = registered_sections()
+            row['focused_cases'] = {}
+            try:
+                row['prepared_statistics'] = prepared_statistics(prepared)
+            except Exception as error:
+                row['prepared_statistics'] = {'available': False, 'error': str(error)}
+            observer = getattr(self.service, 'diagnostic_gui_observer', None)
+            row['gui_observer'] = observer
+            if observer is not None:
+                try:
+                    observer.begin(identifier)
+                except Exception:
+                    row['gui_observer'] = None
             thread = threading.Thread(target=self._run, args=(row,), name=identifier, daemon=True)
             row['thread'] = thread
             writer = threading.Thread(target=self._log_writer, args=(row,), name=identifier + '-report-writer', daemon=True)
@@ -767,7 +806,13 @@ class EnvironmentTestManager(object):
                 'message': (row.get('ui_progress') or {}).get('message', ''),
                 'gate_progress': copy.deepcopy((row.get('ui_progress') or {}).get('gate_progress')),
                 'main_log': row['main_log'], 'engine_logs': dict(row['engine_logs']),
+                'focused_checks': copy.deepcopy(row.get('focused_checks') or {}),
+                'diagnostic_sections': copy.deepcopy(row.get('diagnostic_sections') or []),
                 'report_ready': row.get('report_ready', False), 'report_write_error': row.get('write_error'),
+                'report_state': self._report_status(row),
+                'diagnostic_log_detail': row['diagnostic_log_detail'],
+                'report_sidecars': copy.deepcopy(row.get('report_sidecars') or []),
+                'sidecar_integrity': copy.deepcopy(row.get('sidecar_integrity')),
                 'simulator_logs': dict(row['simulator_logs']),
                 'simulator_log_tails': {simulator: row['physical_log_tails'][row['main_log']] for simulator in SIMULATORS},
                 'engine_log_tails': {engine: row['physical_log_tails'][row['main_log']] for engine in tuple(ENGINES) + tuple(LEGACY_ENGINES)},
@@ -788,6 +833,29 @@ class EnvironmentTestManager(object):
                 'diagnosis_schema_version': DIAGNOSIS_SCHEMA, 'case_contexts': contexts,
                 'checks': checks, 'summary': dict(collections.Counter(check['status'] for check in checks)),
                 'started_at': row['started_at'], 'finished_at': row['finished_at']}
+
+    @staticmethod
+    def _report_status(row):
+        warnings = []
+        integrity = row.get('sidecar_integrity') or {}
+        if integrity.get('status') == 'FAIL':
+            warnings.append({'code': 'sidecar_integrity', 'message': 'Sidecar integrity verification failed',
+                             'details': copy.deepcopy(integrity)})
+        status = ('write_failed' if row.get('write_error') else
+                  'ready_with_warnings' if row.get('report_ready') and warnings else
+                  'ready' if row.get('report_ready') else 'writing')
+        return {'status': status, 'warnings': warnings, 'write_error': row.get('write_error')}
+
+    def verify_report_evidence(self, identifier):
+        from .diagnostic_log import verify_sidecars
+        with self.lock:
+            manifest = copy.deepcopy(self.tests[identifier].get('report_sidecars') or [])
+        result = verify_sidecars(manifest)
+        with self.lock:
+            row = self.tests[identifier]
+            row['sidecar_integrity'] = result
+            row['report_state'].update(self._report_status(row))
+        return result
 
     def cancel_all(self):
         """Signal before parent Exit waits; it already sends STOP to owned runs."""
@@ -869,6 +937,9 @@ class EnvironmentTestManager(object):
                         self._check(row, 'log.capacity', 'WARN', context['report_omissions'], engine=engine)
             return {row.get('simulator', row.get('selected_simulator', 'spectre'))}
         if record.get('status') and record.get('id'):
+            if row.get('diagnostic_log_detail') == 'compact':
+                # All check IDs/statuses and full details are retained at final drain.
+                return set()
             if record['status'] == 'PASS':
                 # All successful checks are persisted once by functional category
                 # at the end; progress/UI still receives the full check now.
@@ -932,7 +1003,16 @@ class EnvironmentTestManager(object):
             try:
                 if item is None:
                     path = row['main_log']
-                    raw = 'diagnostic_timing ' + _json({
+                    integrity_tail = ''
+                    if row.get('diagnostic_log_detail') == 'compact':
+                        from .diagnostic_log import verify_sidecars
+                        integrity = verify_sidecars(row.get('report_sidecars') or [])
+                        with self.lock:
+                            row['sidecar_integrity'] = integrity
+                        integrity_tail = 'report_sidecar_integrity ' + _json(integrity) + '\n'
+                        integrity_tail += 'report_delivery_status ' + _json(
+                            self._report_status(dict(row, report_ready=True))) + '\n'
+                    raw = integrity_tail + 'diagnostic_timing ' + _json({
                         'scope': 'observed through report drain; excludes this timing tail write',
                         'timing': self._timing(row.get('timing_observer')),
                         'diagnostic_shape': row.get('diagnostic_shape'),
@@ -967,6 +1047,7 @@ class EnvironmentTestManager(object):
                     self._timing(row.get('timing_observer'), 'finish', row.get('state', 'failed'))
                     with self.lock:
                         row['report_ready'] = not bool(row['write_error'])
+                        row['report_state'].update(self._report_status(row))
                     return
 
     def _check(self, row, identifier, status, message, details=None, engine=None, candidate_id=None):
@@ -1202,37 +1283,32 @@ class EnvironmentTestManager(object):
                 with self.lock:
                     checks = copy.deepcopy(list(row['checks'].values()))
                 compact = [dict((key, check.get(key)) for key in ('id', 'status')) for check in checks]
-                full = row.get('config', {}).get('runtime', {}).get('diagnostic_log_detail') == 'full'
+                full = row['diagnostic_log_detail'] == 'full'
                 from .environment_diagnostics import concise_case_records, concise_diagnostic_value
                 roots = {'@run:' + scope: context['run_root'] for scope, context in
                          row.get('case_contexts', {}).items() if isinstance(context.get('run_root'), str)
                          and os.path.isabs(context['run_root'])}
                 def emit(raw):
                     self._append_report(row, raw if full else _short_report_paths(raw, roots), wait=True)
-                contexts = {}
+                contexts, contributor_contexts = {}, {}
                 for scope in ('environment',) + tuple(row['case_results']):
                     context = dict(row.get('case_contexts', {}).get(scope) or {})
                     context.pop('records', None)
                     context.pop('cdf_callback_failures', None)
                     context.pop('native_worker_diagnostics', None)
+                    contributor_contexts[scope] = context
                     contexts[scope] = context if full else _compact_report_context(context)
                 # The small verdict and completed mode timings precede every
                 # detail section. The writer still emits exact drain timing last.
                 overview = {'test_id': row['test_id'], 'state': row['state'],
                     'summary': dict(collections.Counter(check['status'] for check in checks)),
                     'diagnostic_shape': row.get('diagnostic_shape'),
-                    'package': (contexts.get('environment') or {}).get('package'),
-                    'execution_selection': (contexts.get('environment') or {}).get('execution_selection'),
+                    'package': (contributor_contexts.get('environment') or {}).get('package'),
+                    'execution_selection': (contributor_contexts.get('environment') or {}).get('execution_selection'),
                     'cases': [{key: case.get(key) for key in ('case_id', 'engine', 'state', 'run_id',
                         'stop_required', 'stop_proven', 'first_cause', 'skip_reason')} for case in row['case_results'].values()],
                     'case_timings': {key: self._timing(timer) for key, timer in row.get('case_timing_observers', {}).items()},
                     'timing_scope': 'completed mode intervals; report drain timing follows at the end'}
-                if not full:
-                    selection = overview['execution_selection']
-                    overview = concise_diagnostic_value(overview)
-                    overview['execution_selection'] = selection
-                    overview['path_roots'] = roots
-                    overview['detail_mode'] = 'concise; original artifacts unchanged; diagnostic_log_detail=full expands report'
                 generation_timings = {
                     case_id: [generation_report_timing(item) for item in case.get('generation_timings') or []]
                     for case_id, case in row['case_results'].items() if case.get('generation_timings')
@@ -1242,7 +1318,56 @@ class EnvironmentTestManager(object):
                     overview['phase_sum_fields'] = ['seconds', 'measured', 'total']
                     overview['storage_operation_fields'] = ['seconds', 'calls', 'max_seconds', 'bytes']
                     overview['storage_operation_scope'] = 'nested timings, included in generation wall time'
-                self._append_report(row, 'diagnostic_overview ' + _json(overview) + '\n', wait=True)
+                if full:
+                    self._append_report(row, 'diagnostic_overview ' + _json(overview) + '\n', wait=True)
+                from .diagnostic_focus import focused_checks
+                from .diagnostic_sections import collect_sections
+                gui = None
+                observer = row.get('gui_observer')
+                if observer is not None:
+                    try:
+                        gui = observer.diagnostic_snapshot(row['test_id'])
+                    except Exception:
+                        pass
+                try:
+                    focus = focused_checks(row, gui)
+                except Exception as error:
+                    focus = {name: {'status': 'NOT_TESTED', 'error': str(error)}
+                             for name in ('F1', 'F2', 'F3', 'F4')}
+                context = {'test_id': row['test_id'], 'report_root': row['report_root'],
+                           'run_ids': dict(row['run_ids']), 'focused_checks': focus,
+                           'cases': overview.get('cases') or [], 'case_contexts': contributor_contexts}
+                collector = getattr(self.service, 'diagnostic_section_collector', None)
+                if collector is None:
+                    contributions = collect_sections(context, row['section_registrations'],
+                        redactor=lambda value: _redact(value, self._redaction_environment(row)))
+                else:
+                    contributions = collector(context, self._redaction_environment(row))
+                with self.lock:
+                    row['focused_checks'] = focus
+                    row['diagnostic_sections'] = contributions
+                if not full:
+                    from .diagnostic_log import compact_report
+                    try:
+                        raw, manifest = compact_report(row, checks, overview, contexts, focus, contributions,
+                            format_ladder_summary(row['case_results'], row.get('source_simulator'),
+                                row.get('selected_simulator'), row.get('frozen_candidate'),
+                                row.get('frozen_candidate_origin'), row.get('case_contexts')))
+                        with self.lock:
+                            row['report_sidecars'] = manifest
+                        self._append_report(row, raw, wait=True)
+                    except Exception as error:
+                        with self.lock:
+                            row['write_error'] = _error(error)
+                            row['report_state']['write_error'] = row['write_error']
+                            row['checks']['report.write'] = {'id': 'report.write', 'status': 'FAIL',
+                                'category': 'storage', 'message': row['write_error']}
+                    row['log_queue'].put(None)
+                    return
+                emit('SECTION BEGIN focused_checks | Focused checks\n')
+                emit(_json(focus) + '\nSECTION END focused_checks\n')
+                for contribution in contributions:
+                    emit('diagnostic_section ' + _json(contribution) + '\n')
                 sections = collections.OrderedDict()
                 successes = collections.OrderedDict()
                 for check in checks:
@@ -1335,6 +1460,8 @@ class EnvironmentTestManager(object):
                           'case_results': [{key: case.get(key) for key in
                               ('case_id', 'simulator', 'simulator_identity_known', 'engine', 'state', 'run_id', 'stop_required', 'stop_proven', 'first_cause', 'skip_reason')}
                               for case in row['case_results'].values()],
+                          'focused_checks': row.get('focused_checks') or {},
+                          'diagnostic_sections': row.get('diagnostic_sections') or [],
                           'shared_summary': row['main_log'], 'run_ids': row['run_ids'],
                           'summary': dict(collections.Counter(check['status'] for check in checks))}
                 if not full:
@@ -1370,6 +1497,38 @@ class EnvironmentTestManager(object):
             spec['environment_test'].update(frozen_plan=copy.deepcopy(row['frozen_plan']),
                 frozen_plan_sha256=plan_digest(row['frozen_plan']))
         return spec
+
+    def _effective_plan(self, row, spec, name):
+        """Accept only audited device removals from this owned run's plan."""
+        from .design_variables import is_design, SCHEMA
+        from .diagnostic_plan import project_frozen_inputs
+        saved = self.service.read(name, _contract_text('spec.json')) or {}
+        priority = saved.get('design_variable_priority')
+        marker = spec['environment_test']
+        if priority is not None:
+            selected_ids = {item['parameter_id'] for item in spec['variables']}
+            parameters = {item['parameter_id']: item for item in row['prepared']['parameters']
+                          if item['parameter_id'] in selected_ids}
+            locked = set(priority.get('locked_parameter_ids') or [])
+            devices = {key for key, item in parameters.items() if not is_design(item)}
+            if (priority.get('schema_version') != SCHEMA or not locked.issubset(devices)
+                    or not any(is_design(item) for item in parameters.values())):
+                raise ValueError('Invalid diagnostic design-variable priority evidence')
+            variables = [item for item in spec['variables'] if item['parameter_id'] not in locked]
+            marker = project_frozen_inputs(spec, variables)
+            if ({item['parameter_id'] for item in saved.get('variables') or []} !=
+                    {item['parameter_id'] for item in variables} or saved.get('environment_test') != marker):
+                raise ValueError('Effective diagnostic inputs differ from qualified projection')
+        plan = marker.get('frozen_plan') or [dict(generation=0, index=0, values=marker.get('frozen_candidate'))]
+        effective = row.setdefault('effective_diagnostic', {})
+        if effective.get('plan') is not None and effective['plan'] != plan:
+            raise ValueError('Effective diagnostic plans differ across execution modes')
+        effective['plan'] = copy.deepcopy(plan)
+        if row.get('diagnostic_shape') is not None:
+            distinct = len({plan_digest(item['values']) for item in plan})
+            row['diagnostic_shape'].update(distinct_candidates=distinct,
+                repeated_candidates=len(plan) - distinct, plan_sha256=plan_digest(plan))
+        return plan
 
     def _engine(self, row, engine):
         spec = self._engine_spec(row, engine)
@@ -1502,6 +1661,14 @@ class EnvironmentTestManager(object):
                 self._scheduler(row, engine, new_ids)
                 queried_ids.update(value['job_id'] for value in new_ids)
             thread.join(.4)
+        # The last progress call can race with lifecycle finalization. Read
+        # again only after the owned thread has ended, before collecting files
+        # or deciding whether another diagnostic mode may start.
+        final_snapshot_error = None
+        try:
+            snapshot = self.service.progress(name)
+        except Exception as error:
+            final_snapshot_error = _error(error)
         with self.lock:
             row['active_runs'].remove(name)
         if owned_ids:
@@ -1509,6 +1676,18 @@ class EnvironmentTestManager(object):
         self._timing(row.get('case_timing_observer'), 'transition', 'verification')
         candidates = snapshot.get('candidates') or []
         status = snapshot.get('status') or {}
+        # Only the exact run registered by this diagnostic is profiled. No history.
+        from .diagnostic_focus import volume_check
+        try:
+            path = self.service.run_path(name, _contract_text('optimization.crescendo'))
+            owned_root = os.path.realpath(self._case_directory(row, row['simulator'], engine))
+            if os.path.commonpath([owned_root, os.path.realpath(path)]) != owned_root:
+                volume = {'status': 'NOT_TESTED', 'reason': 'Dataset outside owned diagnostic root'}
+            else:
+                volume = volume_check(path)
+        except Exception as error:
+            volume = {'status': 'FAIL', 'error': str(error)}
+        row['focused_cases'][row['case_id']] = {'candidates': copy.deepcopy(candidates), 'volume': volume}
         completed = [item for item in candidates if item.get('status') == 'completed' and (item.get('completion_evidence') or {}).get('ok') is True]
         pipelines = [pipeline_qualification(item, engine, row['simulator']) for item in completed]
         for item, pipeline in zip(completed, pipelines):
@@ -1520,7 +1699,12 @@ class EnvironmentTestManager(object):
             if isinstance(item.get('parameter_application'), dict)
             and item['parameter_application'].get('ok') is False), None)
         expected = row.get('frozen_plan') or [{'generation': 0, 'index': 0, 'values': row.get('frozen_candidate')}]
-        identity_status = _candidate_plan_observation(candidates, expected, status.get('state'))
+        try:
+            expected = self._effective_plan(row, spec, name)
+            identity_status = _candidate_plan_observation(candidates, expected, status.get('state'))
+        except (ValueError, TypeError, KeyError) as error:
+            identity_status = 'FAIL'
+            self._check(row, 'candidate_projection', 'FAIL', str(error), engine=engine)
         candidate_matches = identity_status == 'PASS'
         if identity_status != 'PASS':
             incomplete = len(candidates) < len(expected)
@@ -1644,9 +1828,41 @@ class EnvironmentTestManager(object):
             if 'final_cleanup' in status:
                 clean = clean and isinstance(final, dict) and all(final.get(key) is True for key in
                                     ('process_termination_proven', 'remote_stop_proven', 'artifact_cleanup_complete'))
+            missing = []
+            if not shutdown_proven(shutdown):
+                missing.append('worker_shutdown proof (schema/workers/results/final_cleanup)')
+            if isinstance(shutdown, dict):
+                for index, worker in enumerate(workers[:16] if isinstance(workers, list) else []):
+                    if not isinstance(worker, dict):
+                        missing.append('worker_shutdown.workers[%d] object' % index)
+                        continue
+                    prefix = 'worker_shutdown.workers[%d]' % index
+                    if worker.get('ok') is not True:
+                        missing.append(prefix + '.ok')
+                    result = worker.get('result')
+                    if isinstance(result, dict):
+                        for key in ('cleanup_proven', 'termination_proven', 'process_termination_proven',
+                                    'remote_stop_proven', 'artifact_cleanup_complete'):
+                            if key in result and result[key] is not True:
+                                missing.append(prefix + '.result.' + key)
+                        if 'process_still_alive' in result and result['process_still_alive'] is not False:
+                            missing.append(prefix + '.result.process_still_alive')
+            for key in ('process_termination_proven', 'remote_stop_proven', 'artifact_cleanup_complete'):
+                shutdown_final = shutdown.get('final_cleanup') or {}
+                if isinstance(shutdown_final, dict) and key in shutdown_final and shutdown_final[key] is not True:
+                    missing.append('worker_shutdown.final_cleanup.' + key)
+                if isinstance(final, dict) and final.get(key) is not True:
+                    missing.append('final_cleanup.' + key)
+            if 'final_cleanup' in status and not isinstance(final, dict):
+                missing.append('final_cleanup object')
+            if (status.get('cleanup_failure') or {}).get('recovery_required'):
+                missing.append('cleanup_failure.recovery_required remains set')
+            if final_snapshot_error:
+                missing.append('post-lifecycle status read: ' + final_snapshot_error)
+                clean = False
             self._check(row, 'termination_and_cleanup', 'PASS' if clean else 'FAIL',
-                        'Owned shutdown and retention proof verified' if clean else 'Shutdown, shared resource safety or retention remains unproven; inspect the separate evidence fields',
-                        {'shutdown': _proof_brief(shutdown) if clean else shutdown,
+                        'Owned shutdown and retention proof verified' if clean else 'Stop/cleanup unproven: ' + '; '.join(missing),
+                        {'missing_proofs': missing, 'shutdown': _proof_brief(shutdown) if clean else shutdown,
                          'final_cleanup': _proof_brief(final) if clean else final,
                          'local_process_termination_proven': (final or {}).get('process_termination_proven'),
                          'native_termination_proven': (final or {}).get('native_termination_proven'),
@@ -1897,7 +2113,13 @@ class EnvironmentTestManager(object):
                 if str(descriptor.get('kind') or '').startswith(('spectre', 'alps', 'simulator')):
                     chunk = self.service.read_candidate_log_chunk(name, cid, descriptor['log_id'], offset=offsets.get(key, 0), max_bytes=16384)
                     if chunk.get('text'):
-                        context = _windows(chunk['text'])
+                        from .native_diagnostics import recorded_ocean_warnings
+                        simulator = row.get('simulator') or row.get('selected_simulator')
+                        simulators = tuple(row.get('source_simulators') or ()) + (simulator,) if simulator else ()
+                        context = _windows(chunk['text'], console_source=descriptor.get('location'), simulators=simulators)
+                        for warning in recorded_ocean_warnings(context):
+                            self._log(row, {'observation': 'diagnostic.ocean_tool_warning',
+                                            'payload': warning}, engine)
                         if context['error_count']:
                             self._log(row, {'observation': 'simulator.log.increment', 'candidate_id': cid,
                                 'descriptor': descriptor, 'context': context, 'offset': offsets.get(key, 0)}, engine)

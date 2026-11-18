@@ -143,8 +143,8 @@ class UnifiedProducerLifecycleTests(unittest.TestCase):
         self.assertEqual(summary['termination_evidence']['source'], 'owned_local_guardian')
         self.assertNotIn(point['raw_terminal_receipt']['token'], repr(summary))
 
-    def test_adapter_preserves_requested_and_applied_values_without_claiming_native_oa_export(self):
-        from crescendo_engine.optimized_schematic import build_export_evidence, OptimizedSchematicError
+    def test_adapter_preserves_requested_values_and_exports_verified_oa_values(self):
+        from crescendo_engine.optimized_schematic import build_export_evidence
         parameter = self.parameters[0]
         parameter.update(hierarchy_path='/M0', owner_library='Design', owner_cell='Core', owner_view='schematic',
             owner_occurrence_path='/', design_library='Design', design_cell='TB', design_view='config')
@@ -176,8 +176,9 @@ class UnifiedProducerLifecycleTests(unittest.TestCase):
         self.assertEqual(candidate['values'], {'p': 2e-6})
         self.assertEqual(candidate['completion_evidence']['parameters'], {'p': 1.9e-6})
         self.assertTrue(pipeline_qualification(candidate, 'maestro_netlist', 'spectre')['ok'])
-        with self.assertRaisesRegex(OptimizedSchematicError, 'no verified OA/CDF backannotation snapshot'):
-            build_export_evidence(candidate, self.parameters)
+        evidence = build_export_evidence(candidate, self.parameters)
+        self.assertEqual(evidence['proof']['kind'], 'verified_oa_parameters')
+        self.assertAlmostEqual(evidence['values']['p'], 1.9e-6, places=15)
 
     def test_unproven_common_stop_does_not_reclaim_native_preparation_views(self):
         prepared, config, spec = fixtures(self.root)

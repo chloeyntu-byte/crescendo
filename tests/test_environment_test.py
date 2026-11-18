@@ -10,7 +10,9 @@ import time
 import unittest
 from unittest import mock
 
+from crescendo_engine.runtime import text as _contract_text
 from crescendo_engine.config import DEFAULTS
+from crescendo_engine.diagnostic_log import read_evidence
 from crescendo_engine.diagnosis_catalog import read_section
 from crescendo_engine.environment_test import (EnvironmentTestManager, compact_diagnostic_run, _schema_artifact_index,
                                                 cleanup_test_runtime_lease, _request_gate_failure)
@@ -94,7 +96,7 @@ class FixtureService(object):
                                                                       "callback_status": "executed"}]},
             "metrics": evaluate_metrics(parsed, spec["objectives"], spec.get("constraints", [])),
         }
-        status = {"schema_version": "crescendo.run_status.v1", "run_id": name, "run_root": root,
+        status = {"schema_version": _contract_text("crescendo.run_status.v1"), "run_id": name, "run_root": root,
                   "state": "running", "message": "fixture native run", "total_candidates": spec["population"] * spec["generations"],
                   "completed_candidates": 0}
         self.snapshots[name] = {"status": status, "candidates": [candidate], "execution": {
@@ -104,7 +106,7 @@ class FixtureService(object):
             self.snapshots[name]["execution"]["commands"].append({
                 "kind": "native_submission", "argv": ["batch-submit", "fixture_icrp"],
                 "job_ids": ["54321"], "returncode": 0})
-        for relative, text in (("crescendo.log", "fixture engine progress\n"),
+        for relative, text in ((_contract_text("crescendo.log"), "fixture engine progress\n"),
                                ("native/spectre.out", "Spectre fixture log beginning\n"),
                                ("native/protocol.tsv", "owned candidate protocol fixture\n")):
             with open(os.path.join(root, relative), "w", encoding="utf-8") as stream:
@@ -128,29 +130,29 @@ class FixtureService(object):
                     candidate["execution_progress"]["stage"] = "cancelled"
                 if candidate["status"] == "completed":
                     candidate["completion_evidence"] = {
-                        "schema_version": "crescendo.completion_evidence.v1", "ok": True,
+                        "schema_version": _contract_text("crescendo.completion_evidence.v1"), "ok": True,
                         "simulator": "spectre" if behavior == "wrong_simulator" else spec["simulator"],
                         "tests": ["main"], "corners": ["TT"], "points": [{"test": "main", "corner": "TT", "point_id": 1}],
                         "execution_simulator": spec["simulator"], "native_parameter_readback_verified": True,
                         "simulator_runs": [{"simulator": spec["simulator"], "returncode": 0}],
                         "spectre_runs": [] if spec["simulator"] == "alps" else [{"error_count": 0}], "fixture_only": True,
                         "execution_pipeline": {
-                            "schema_version": "crescendo.execution_pipeline.v1", "solver": "shared_cli",
+                            "schema_version": _contract_text("crescendo.execution_pipeline.v1"), "solver": "shared_cli",
                             "submission": "shared_local_or_command",
                             "netlist_source": "maestro" if engine == "maestro_netlist" else "template",
                             "netlist_generation": {"source_mode": engine, "private_identity": {"workspace_root": root},
                                 "method": "fixture", "point_count": 1, "solver_invocations": 0, "remote_submissions": 0},
                             "tasks": [{"task_id": "main_TT_1", "test": "main", "corner": "TT", "point_id": 1,
                                 "execution_simulator": spec["simulator"],
-                                "solver_command_plan": {"schema_version": "crescendo.execution_command_plan.v1", "layer": "solve",
+                                "solver_command_plan": {"schema_version": _contract_text("crescendo.execution_command_plan.v1"), "layer": "solve",
                                     "argv": ["fixture_" + spec["simulator"], "input.scs"], "template": "{simulator} {netlist}"},
-                                "submission_command_plan": {"schema_version": "crescendo.execution_command_plan.v1", "layer": "submit",
+                                "submission_command_plan": {"schema_version": _contract_text("crescendo.execution_command_plan.v1"), "layer": "submit",
                                     "argv": ["/bin/sh", "fixture_owned_wrapper"], "remote": False},
                                 "receipt": {"returncode": 0, "cleanup_proven": True}}]}}
                     if engine == "maestro_baseline":
                         candidate["completion_evidence"]["history_name"] = "Interactive.0"
                         candidate["completion_evidence"]["execution_pipeline"] = {
-                            "schema_version": "crescendo.maestro_baseline.v1", "solver": "native_maestro",
+                            "schema_version": _contract_text("crescendo.maestro_baseline.v1"), "solver": "native_maestro",
                             "submission": "native_job_setup", "native_run_invoked": True,
                             "native_wait_completed": True, "native_session_closed": True,
                             "solver_completion_proven": True, "run_id": "1",
@@ -169,7 +171,7 @@ class FixtureService(object):
                     status["primary_failure"] = {"message": status["message"], "failure_stage": "result_reader_parameter_metadata"}
                     candidate.update(error=status["message"], failure_stage="result_reader_parameter_metadata")
                     self._write(name, "native/result_reader_capability.json", {
-                        "schema_version": "crescendo.result_reader_capability.v1", "fixture_only": True,
+                        "schema_version": _contract_text("crescendo.result_reader_capability.v1"), "fixture_only": True,
                         "task_id": "main_TT_1", "test": "main", "corner": "TT", "point_id": 1,
                         "execution_simulator": spec["simulator"], "result_reader": "spectre",
                         "psf_dir": os.path.join(root, "native", "psf"), "analysis_names": ["sp"],
@@ -215,9 +217,9 @@ class FixtureService(object):
                 status['completed_candidates'] = sum(item['status'] == 'completed' for item in candidates)
                 self._write(name, "status.json", status)
                 self._write(name, "worker_shutdown.json", {
-                    "schema_version": "crescendo.worker_shutdown.v1", "workers": [{"worker_index": 0, "ok": not unsafe}],
+                    "schema_version": _contract_text("crescendo.worker_shutdown.v1"), "workers": [{"worker_index": 0, "ok": not unsafe}],
                     "final_cleanup": status["final_cleanup"]})
-                store = RunDataStore(os.path.join(root, "optimization.crescendo"), metadata={"run_id": name, "spec": spec})
+                store = RunDataStore(os.path.join(root, _contract_text("optimization.crescendo")), metadata={"run_id": name, "spec": spec})
                 store.commit_candidates(copy.deepcopy(candidates))
                 store.commit_result({"state": status["state"], "representative": candidate if candidate["status"] == "completed" else None,
                                      "pareto_front": [candidate] if candidate["status"] == "completed" else []})
@@ -832,6 +834,83 @@ class EnvironmentTestManagerTests(unittest.TestCase):
         self.assertTrue(any(check["check_id"] == "stop_request" and check["engine"] == "maestro_baseline" for check in payload["checks"]))
         self.assertFalse(any(name == "formal_fixture" for name in service.stops))
 
+    def test_timeout_reads_final_status_after_lifecycle_before_collecting(self):
+        self.available_simulators = {'spectre', 'alps'}
+        manager, service, spec = self.fixture({'maestro_baseline': 'wait_for_stop'})
+        spec['engine_timeout_seconds'] = .03
+        progress, collect = service.progress, manager._collect_inline
+        stale_delivered, collected = [], []
+        def stale_once(name):
+            snapshot = progress(name)
+            if (service.starts[0]['execution_backend'] == 'maestro_baseline'
+                    and name == 'fixture_owned_001' and not service.threads[name].is_alive()
+                    and not stale_delivered):
+                stale_delivered.append(name)
+                snapshot['status']['final_cleanup'] = {'process_termination_proven': False,
+                    'remote_stop_proven': False, 'artifact_cleanup_complete': False}
+                snapshot['status']['cleanup_failure'] = {'recovery_required': True}
+            return snapshot
+        def after_cleanup(row, engine, root, request, clean):
+            name = row['run_ids'][row['case_id']]
+            self.assertFalse(service.threads[name].is_alive())
+            collected.append((engine, clean))
+            return collect(row, engine, root, request, clean)
+        with mock.patch.object(service, 'progress', side_effect=stale_once), \
+             mock.patch.object(manager, '_collect_inline', side_effect=after_cleanup):
+            payload = self.finish(manager, manager.start('prepared-fixture', spec)['test_id'])
+        self.assertTrue(stale_delivered)
+        self.assertEqual(len(service.starts), 3)
+        self.assertEqual(collected[0], ('maestro_baseline', True))
+        self.assertTrue(payload['case_results'][0]['stop_proven'])
+        self.assertEqual(payload['case_results'][0]['state'], 'failed')
+        self.assertIn('diagnostic_deadline', str(payload['case_results'][0]['first_cause']))
+
+    def test_timeout_with_missing_terminal_proof_blocks_and_names_gap(self):
+        self.available_simulators = {'spectre', 'alps'}
+        for missing in ('process_termination_proven', 'remote_stop_proven', 'artifact_cleanup_complete'):
+            with self.subTest(missing=missing):
+                manager, service, spec = self.fixture({'maestro_baseline': 'wait_for_stop'})
+                spec['engine_timeout_seconds'] = .03
+                progress, read = service.progress, service.read
+                def incomplete(name):
+                    snapshot = progress(name)
+                    if not service.threads[name].is_alive():
+                        snapshot['status']['final_cleanup'][missing] = False
+                    return snapshot
+                def shutdown(name, relative):
+                    value = read(name, relative)
+                    if relative == 'worker_shutdown.json':
+                        value['final_cleanup'][missing] = False
+                    return value
+                with mock.patch.object(service, 'progress', side_effect=incomplete), \
+                     mock.patch.object(service, 'read', side_effect=shutdown):
+                    payload = self.finish(manager, manager.start('prepared-fixture', spec)['test_id'])
+                self.assertTrue(service.stops)
+                self.assertEqual(len(service.starts), 1)
+                self.assertEqual([case['state'] for case in payload['case_results']], ['failed', 'blocked', 'blocked'])
+                check = self.checks(payload, 'termination_and_cleanup')[0]
+                self.assertIn('final_cleanup.' + missing, check['details']['missing_proofs'])
+                self.assertIn(missing, check['message'])
+
+    def test_failed_post_lifecycle_status_read_cannot_reuse_old_stop_proof(self):
+        manager, service, spec = self.fixture({'maestro_baseline': 'wait_for_stop'})
+        spec['engine_timeout_seconds'] = .03
+        progress = service.progress
+        ended = []
+        def unavailable(name):
+            snapshot = progress(name)
+            if not service.threads[name].is_alive():
+                ended.append(name)
+                if len(ended) > 1:
+                    raise RuntimeError('fixture final status unavailable')
+            return snapshot
+        with mock.patch.object(service, 'progress', side_effect=unavailable):
+            payload = self.finish(manager, manager.start('prepared-fixture', spec)['test_id'])
+        self.assertEqual(len(service.starts), 1)
+        self.assertFalse(payload['case_results'][0]['stop_proven'])
+        check = self.checks(payload, 'termination_and_cleanup')[0]
+        self.assertIn('post-lifecycle status read', check['message'])
+
     def test_session_summary_finishes_before_native_execution(self):
         manager, service, spec = self.fixture()
         self.probe_release.clear()
@@ -894,7 +973,8 @@ class EnvironmentTestManagerTests(unittest.TestCase):
             self.assertIn("run_context ", report)
             self.assertIn("success_summary", report)
             self.assertEqual(report.count("Spectre fixture log beginning"), 0)
-            self.assertIn("concise_success", report)
+            self.assertIn("sidecar_manifest", report)
+            self.assertTrue(read_evidence(payload["report_sidecars"][0]["path"])["case_records"])
             self.assertIn("report_evidence_integrity", report)
             self.assertIn("completion_evidence", report)
             self.assertIn("termination_and_cleanup", report)
@@ -929,12 +1009,12 @@ class EnvironmentTestManagerTests(unittest.TestCase):
         payload = self.finish(manager, manager.start('prepared-fixture', spec)['test_id'])
         with open(payload['main_log'], encoding='utf-8') as stream:
             lines = stream.read().splitlines()
-        summaries = [json.loads(line[len('success_summary '):]) for line in lines if line.startswith('success_summary ')]
-        proofs = [check['proof'] for summary in summaries for check in summary['checks']
-                  if '.maestro_netlist.' in check['id'] and check['id'].endswith('.parameter_application')]
+        evidence = read_evidence(payload['report_sidecars'][0]['path'])
+        proofs = [check['details'] for check in evidence['checks']
+                  if check.get('engine') == 'maestro_netlist' and check.get('check_id') == 'parameter_application']
         self.assertEqual(len(proofs), 6)
-        self.assertTrue(all(proof['parameters_count'] == 1 for proof in proofs))
-        self.assertTrue(all('parameters' not in proof for proof in proofs))
+        self.assertTrue(all(len(proof['parameters']) == 1 for proof in proofs))
+        self.assertFalse(any('"parameters":' in line for line in lines if line.startswith('success_summary ')))
         proof = next(check['details'] for check in self.checks(payload, 'parameter_application') if check['engine'] == 'maestro_netlist')
         self.assertEqual(proof['proof_kind'], 'native_run_device_parameters')
         self.assertFalse(proof['private_oa_backannotation_proven'])
@@ -1095,7 +1175,13 @@ class EnvironmentTestManagerTests(unittest.TestCase):
         self.finish(manager,identifier)
 
     def test_slow_filesystem_queue_overflow_keeps_complete_final_checks_in_disk_report(self):
+        for detail in ("compact", "full"):
+            with self.subTest(detail=detail):
+                self._slow_filesystem_queue_overflow(detail)
+
+    def _slow_filesystem_queue_overflow(self, detail):
         manager, service, spec = self.fixture({"maestro_netlist": "wait_for_stop"})
+        spec["diagnostic_log_detail"] = detail
         blocked, release = threading.Event(), threading.Event()
         self.addCleanup(release.set)
         original_open = os.open
@@ -1113,8 +1199,10 @@ class EnvironmentTestManagerTests(unittest.TestCase):
             self.assertTrue(blocked.wait(10))
             self.wait(lambda: bool(manager.progress(identifier)["active_runs"]))
             row = manager.tests[identifier]
+            # Compact suppresses per-check writes. Exercise the shared bounded
+            # writer queue directly so both modes face identical backpressure.
             for index in range(160):
-                manager._log(row, {"id": "fixture.queue_pressure", "status": "WARN", "message": str(index)}, "maestro_netlist")
+                manager._append_report(row, "fixture.queue_pressure {}\n".format(index))
             self.assertTrue(row["log_queue"].full())
             manager._check(row, "fixture.critical_final", "FAIL", "Critical final result survives log queue overflow",
                            engine="maestro_netlist")
@@ -1126,6 +1214,14 @@ class EnvironmentTestManagerTests(unittest.TestCase):
             report = stream.read()
         self.assertIn("Critical final result survives log queue overflow", report)
         self.assertIn("test.summary", report)
+        self.assertTrue(payload['report_ready'])
+        self.assertEqual(next(c for c in payload['checks'] if c['id'] == 'report.queue_capacity')['status'], 'WARN')
+        if detail == 'compact':
+            from crescendo_engine.diagnostic_log import read_evidence
+            self.assertEqual(payload['sidecar_integrity']['status'], 'PASS')
+            complete = read_evidence(payload['report_sidecars'][0]['path'])['checks']
+            self.assertEqual({c['id']: c['status'] for c in complete},
+                             {c['id']: c['status'] for c in payload['checks']})
 
     def test_join_does_not_miss_auxiliary_thread_registered_during_its_wait(self):
         manager, _service, _spec = self.fixture()

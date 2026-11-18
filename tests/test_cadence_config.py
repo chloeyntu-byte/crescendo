@@ -52,6 +52,21 @@ def fake_install(root):
 
 
 class CadenceDiscoveryTest(unittest.TestCase):
+    def test_explicit_config_native_candidate_batching_default_and_override(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.json")
+            user_path = os.path.join(root, "user.json")
+            for payload, expected in (({}, "generation"), ({"runtime": {}}, "generation"),
+                                      ({"runtime": {"native_candidate_batching": "serial"}}, "serial")):
+                with self.subTest(payload=payload):
+                    with open(path, "w") as stream:
+                        json.dump(payload, stream)
+                    with mock.patch.dict(os.environ, {"CRESCENDO_RUN_ROOT": root}), \
+                         mock.patch("crescendo_engine.config.user_config_path", return_value=user_path), \
+                         mock.patch("crescendo_engine.config.discover_eda_environment", return_value={"effective": {}}):
+                        config = load_config(path, persist_discovery=False, validate_discovery=False)
+                    self.assertEqual(config["runtime"]["native_candidate_batching"], expected)
+
     def test_version_probe_preserves_argument_environment_and_nonzero_result(self):
         with tempfile.TemporaryDirectory(prefix="crescendo version '") as root:
             binary = os.path.join(root, "version wrapper")

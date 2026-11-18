@@ -1,6 +1,7 @@
 import copy
 import json
 import os
+import re
 import tempfile
 import unittest
 from unittest import mock
@@ -154,6 +155,31 @@ class MaestroContextTests(unittest.TestCase):
         self.assertTrue(os.path.isfile(path))
         self.assertEqual(os.stat(os.path.dirname(first["context_path"])).st_mode & 0o777, 0o700)
         self.assertEqual(os.stat(first["context_path"]).st_mode & 0o777, 0o600)
+
+    def test_menu_transport_checks_permissions_and_consumes_only_valid_input(self):
+        directory = os.path.join(self.root, "transport")
+        os.mkdir(directory, 0o700)
+        path = os.path.join(directory, "context")
+        with open(path, "w") as stream:
+            stream.write("\n".join(self.rows) + "\n")
+        with mock.patch("crescendo_engine.maestro_context._NATIVE_TRANSPORT",
+                        re.compile(re.escape(path))):
+            os.chmod(path, 0o644)
+            with self.assertRaisesRegex(ValueError, "0600"):
+                load_launch_context(path)
+            os.chmod(path, 0o600)
+            os.chmod(directory, 0o755)
+            with self.assertRaisesRegex(ValueError, "0700"):
+                load_launch_context(path)
+            os.chmod(directory, 0o700)
+            alias = os.path.join(directory, "alias")
+            os.link(path, alias)
+            with self.assertRaisesRegex(ValueError, "exclusively linked"):
+                load_launch_context(path)
+            os.unlink(alias)
+            context = load_launch_context(path, storage_base_root=os.path.join(self.root, "runtime"))
+            self.assertTrue(os.path.isfile(context["context_path"]))
+            self.assertFalse(os.path.exists(path))
 
     def test_reopened_same_source_accepts_existing_checkpoint_origin(self):
         from crescendo_engine.server import _checkpoint_origin_path

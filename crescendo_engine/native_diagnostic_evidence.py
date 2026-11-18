@@ -4,6 +4,7 @@ from crescendo_engine.runtime import bind_text
 _contract_text = bind_text()
 
 
+import errno
 import json
 import math
 import os
@@ -24,17 +25,49 @@ _LOG_LIMIT = 128 * 1024
 _SOLVER_TEXT = frozenset(('spectre.out', _contract_text('spectre.log'), 'alps.out', _contract_text('psf.log'), 'psf.warn'))
 
 
-def _json_file(path, remaining, limit=_METADATA_LIMIT):
+class _IdentityChanged(ValueError):
+    """A producer replaced the pathname while this diagnostic held its old fd."""
+
+
+def _identity_stat(value):
+    return (value.st_dev, value.st_ino, value.st_size, value.st_nlink,
+            getattr(value, 'st_mtime_ns', value.st_mtime),
+            getattr(value, 'st_ctime_ns', value.st_ctime))
+
+
+def _json_file(path, remaining, limit=_METADATA_LIMIT, on_read=None):
     if os.path.abspath(path) != os.path.realpath(path):
         raise ValueError('identity path contains a symbolic link')
-    fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
+    except OSError as error:
+        if error.errno == errno.ENOENT:
+            raise _IdentityChanged('identity path missing during open')
+        raise
     try:
         st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_size > limit or st.st_size > remaining:
-            raise ValueError('identity file is not a bounded regular file')
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError('identity file is not a regular file')
+        if st.st_nlink == 0:
+            raise _IdentityChanged('identity file replaced after open')
+        if st.st_nlink != 1:
+            raise ValueError('identity file is not singly linked')
+        if st.st_size > limit:
+            raise ValueError('identity file exceeds metadata limit')
+        if st.st_size > remaining:
+            raise ValueError('identity read byte budget exhausted')
         data = os.read(fd, min(limit + 1, remaining))
-        if len(data) > limit:
-            raise ValueError('identity file exceeds limit')
+        if on_read is not None:
+            on_read(len(data))
+        try:
+            current = os.lstat(path)
+        except OSError as error:
+            if error.errno == errno.ENOENT:
+                raise _IdentityChanged('identity path missing after read')
+            raise
+        if (_identity_stat(st) != _identity_stat(os.fstat(fd))
+                or _identity_stat(st) != _identity_stat(current) or len(data) != st.st_size):
+            raise _IdentityChanged('identity file changed during read')
         return data
     finally:
         os.close(fd)
@@ -73,15 +106,31 @@ def collect_native_storage_evidence(candidate_root, max_bytes, max_files, deadli
             raise ValueError('candidate root contains a symbolic link')
         control = os.path.join(candidate_root, 'native_baseline')
         def read_identity(path, limit=_METADATA_LIMIT):
-            if expired() or result['files_read'] >= max_files:
-                raise ValueError('identity read budget exhausted')
-            data = _json_file(path, max_bytes - result['read_bytes'], limit)
-            result['read_bytes'] += len(data)
-            result['files_read'] += 1
-            obj = json.loads(data.decode('utf-8'))
-            if not isinstance(obj, dict):
-                raise ValueError('identity file is not an object')
-            return obj
+            relative = os.path.relpath(path, candidate_root)
+            def charge(count):
+                result['read_bytes'] += count
+            # Retry only observable replacement races, never unsafe file types,
+            # links, oversized metadata, stable invalid JSON or spent budgets.
+            for attempt in range(3):
+                if expired() or result['files_read'] >= max_files:
+                    raise ValueError(relative + ': identity read deadline/cancel or file budget exhausted')
+                result['files_read'] += 1
+                try:
+                    data = _json_file(path, max_bytes - result['read_bytes'], limit, on_read=charge)
+                except _IdentityChanged as error:
+                    if attempt == 2:
+                        raise ValueError(relative + ': identity replacement retries exhausted: ' + str(error))
+                    omit('identity_changed_retry: ' + str(error), relative)
+                    continue
+                except (OSError, ValueError) as error:
+                    raise ValueError(relative + ': ' + str(error))
+                try:
+                    obj = json.loads(data.decode('utf-8'))
+                except (UnicodeError, ValueError) as error:
+                    raise ValueError(relative + ': invalid or incomplete identity JSON: ' + str(error))
+                if not isinstance(obj, dict):
+                    raise ValueError(relative + ': identity file is not an object')
+                return obj
         manifest = read_identity(os.path.join(control, _contract_text('native_storage_evidence.json')))
         state = read_identity(os.path.join(control, _contract_text('native_baseline_state.json')))
         result['manifest'] = manifest

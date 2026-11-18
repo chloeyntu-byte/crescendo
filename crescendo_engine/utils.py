@@ -79,7 +79,8 @@ def atomic_write_text(path, text):
 
 
 def atomic_write_json(path, value):
-    atomic_write_text(path, json.dumps(value, indent=2, sort_keys=True) + "\n")
+    from .catalog_json import write
+    write(path, value)
     if os.path.basename(path) in (_contract_text("status.json"), _contract_text("startup_failure.json"), _contract_text("server_error.json"), _contract_text("worker_shutdown.json"), _contract_text("candidate.json")):
         try:
             from .run_log import observe_saved_json
@@ -92,7 +93,8 @@ def atomic_write_json(path, value):
 
 def load_json(path):
     with open(path, "r") as stream:
-        return json.load(stream)
+        from .catalog_json import load
+        return load(stream)
 
 
 def sha256_file(path):

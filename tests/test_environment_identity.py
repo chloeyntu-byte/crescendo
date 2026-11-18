@@ -3,7 +3,10 @@ import os
 import tempfile
 import time
 import unittest
+from pathlib import Path
+from unittest import mock
 
+from crescendo_engine import environment_identity
 from crescendo_engine.environment_identity import (
     check_external_eda_environment_metadata, collect_external_eda_environment,
     validate_external_eda_environment_identity,
@@ -128,6 +131,83 @@ class ExternalEdaIdentityTests(unittest.TestCase):
             serialized = repr(result["identity"])
             self.assertNotIn(root, serialized)
 
+    def _collect_during_cds_lib_read(self, cds_lib, mutate):
+        normalize = environment_identity._normalized_cds_lib
+
+        def normalize_then_mutate(path):
+            normalized = normalize(path)
+            mutate()
+            return normalized
+
+        with mock.patch.object(environment_identity, "_normalized_cds_lib", normalize_then_mutate):
+            return collect_external_eda_environment(
+                {}, {}, {"source_cds_lib": str(cds_lib)},
+            )["identity"]
+
+    def test_parent_directory_write_during_read_preserves_identity(self):
+        with tempfile.TemporaryDirectory() as root:
+            parent = Path(root)
+            cds_lib = parent / "cds.lib"
+            cds_lib.write_text("DEFINE sample ./sample\n", encoding="utf-8")
+            os.utime(parent, (1, 1))
+            baseline = collect_external_eda_environment(
+                {}, {}, {"source_cds_lib": str(cds_lib)},
+            )["identity"]
+
+            identity = self._collect_during_cds_lib_read(
+                cds_lib, (parent / "unrelated").touch,
+            )
+
+            self.assertIn("source_cds_lib", [row["role"] for row in identity["artifacts"]])
+            self.assertEqual(baseline["fingerprint"], identity["fingerprint"])
+
+    def test_path_changes_during_cds_lib_read_are_detected(self):
+        for mutation in (
+            "directory_replacement", "directory_to_symlink", "directory_mode",
+            "symlink_repoint", "file_contents", "file_mode",
+        ):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as root:
+                root = Path(root)
+                parent = root / "parent"
+                parent.mkdir()
+                cds_lib = parent / "cds.lib"
+                cds_lib.write_text("DEFINE sample ./sample\n", encoding="utf-8")
+                cds_lib.chmod(0o600)
+                alternate = root / "alternate"
+                alternate.mkdir()
+                # Preserve the file inode across directory replacements.
+                os.link(cds_lib, alternate / cds_lib.name)
+                link = root / "link"
+                reference = cds_lib
+                if mutation == "symlink_repoint":
+                    link.symlink_to(parent)
+                    reference = link / cds_lib.name
+
+                def mutate():
+                    if mutation == "directory_replacement":
+                        parent.rename(root / "previous")
+                        alternate.rename(parent)
+                    elif mutation == "directory_to_symlink":
+                        parent.rename(root / "previous")
+                        parent.symlink_to(alternate)
+                    elif mutation == "directory_mode":
+                        parent.chmod(0o700)
+                    elif mutation == "symlink_repoint":
+                        link.unlink()
+                        link.symlink_to(alternate)
+                    elif mutation == "file_contents":
+                        cds_lib.write_text("DEFINE changed ./changed\n", encoding="utf-8")
+                    else:
+                        cds_lib.chmod(0o644)
+
+                parent.chmod(0o755)
+                identity = self._collect_during_cds_lib_read(reference, mutate)
+                self.assertNotIn("source_cds_lib", [row["role"] for row in identity["artifacts"]])
+                self.assertIn(
+                    ("source_cds_lib", "referenced_file_changed_while_reading"),
+                    [(row["role"], row["reason"]) for row in identity["limitations"]],
+                )
+
     def test_resolved_file_metadata_detects_changes_and_symlink_replacement(self):
         with tempfile.TemporaryDirectory() as root:
             setup, cadence, pdk, child = self._fixture(root)
@@ -236,7 +316,13 @@ class ExternalEdaIdentityTests(unittest.TestCase):
             diagnostics = copy.deepcopy(
                 collect_external_eda_environment(setup, cadence, pdk)["diagnostics"]
             )
-            diagnostics.pop("path_watch", None)
+            for row in diagnostics["resolved_paths"] + diagnostics["path_watch"]:
+                for entry in [row] + row.get("path_components", []) + row.get("symlink_chain", []):
+                    entry["lstat"].pop("uid", None)
+                    entry["lstat"].pop("gid", None)
+            self.assertTrue(check_external_eda_environment_metadata(diagnostics)["ok"])
+            diagnostics.pop("path_watch")
+            self.assertTrue(check_external_eda_environment_metadata(diagnostics)["ok"])
             for row in diagnostics["resolved_paths"]:
                 row.pop("reference_path", None)
                 row.pop("symlink_chain", None)

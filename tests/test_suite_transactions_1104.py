@@ -23,7 +23,8 @@ class SuiteTransactionTests(SetupPrivateSessionTests):
         row = session.list_setup_private_sessions(self.config)[0]
         self.assertEqual('quarantined', row['status'])
         self.assertFalse(row['can_load'])
-        self.assertFalse(row['can_delete'])
+        self.assertTrue(row['can_delete'])
+        self.assertIn('lease_active', [x['code'] for x in row['blocked_reasons']])
         with self.assertRaisesRegex(RuntimeError, 'closed, unsafe'):
             controller._lock()
         self.assertTrue(all(os.path.isdir(row['path']) for row in self.reference['views']))

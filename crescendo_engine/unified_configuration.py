@@ -445,7 +445,7 @@ def _legacy_design(document):
     for variable in _rows(optimization.get("variables")):
         key = state._text(variable.get("parameter_id"))
         if key:
-            config = state._fields(variable, ("minimum", "maximum", "scale", "value_type"))
+            config = state._fields(variable, ("minimum", "maximum", "scale", "value_type", "step", "grid_origin", "link_group"))
             config["selected"] = True
             # Legacy minimum/maximum are base-unit numbers, not display-unit text.
             config["unit"] = ""
@@ -577,6 +577,9 @@ def normalize_configuration(document, current_context=None):
         "environment_overrides": clean_environment_overrides(document.get("environment_overrides")),
         "environment_draft": clean_environment_draft(document.get("environment_draft")),
         "selection": {"provided": provided}, "legacy": legacy}
+    paths = clean_instance_path_selection(document.get("instance_path_selection"))
+    if paths is not None:
+        canonical["instance_path_selection"] = paths
     if isinstance(document.get("maestro_snapshot"), dict):
         canonical["maestro_snapshot"] = _semantic_value(document["maestro_snapshot"])
     execution = document.get("execution_selection")
@@ -609,6 +612,33 @@ def _merge_records(previous, current, key, known):
     return result[:state.MAX_RECORDS]
 
 
+def clean_instance_path_selection(value):
+    if value is None:
+        return None
+    from .hierarchy import parse_instance_paths
+    # Early injected runtimes wrote the canonical schema without binding.
+    # Accept that recorded identity and preserve it when normalizing old data.
+    if not isinstance(value, dict) or value.get("schema_version") not in (
+            _contract_text("crescendo.instance_paths.v1"), "crescendo.instance_paths.v1"):
+        raise ValueError("Unsupported instance path selection schema")
+    scopes = value.get("scopes")
+    if not isinstance(scopes, list) or not scopes:
+        raise ValueError("Instance path selection requires nonempty scopes")
+    result = []
+    for scope in scopes:
+        if not isinstance(scope, dict) or not isinstance(scope.get("design"), dict):
+            raise ValueError("Instance path selection requires design identities")
+        design = scope["design"]
+        if not all(isinstance(design.get(key), str) and design[key] for key in ("library", "cell", "view")):
+            raise ValueError("Instance path selection has an incomplete design identity")
+        path = scope.get("hierarchy_path")
+        rows = parse_instance_paths(path if isinstance(path, str) else "", [design])
+        if len(rows) != 1 or "design" not in rows[0]:
+            raise ValueError("Instance path selection has an invalid absolute path")
+        result.append({"design": dict(design), "hierarchy_path": path})
+    return {"schema_version": value["schema_version"], "scopes": result}
+
+
 def build_configuration(raw_ui, parameter_by_id=None, cell_scopes=None, outputs=None, previous=None):
     """Save complete or unfinished UI inputs, retaining unmatched earlier drafts."""
     raw_ui = raw_ui if isinstance(raw_ui, dict) else {}
@@ -618,6 +648,9 @@ def build_configuration(raw_ui, parameter_by_id=None, cell_scopes=None, outputs=
                 "environment_overrides": clean_environment_overrides(raw_ui.get("environment_overrides")),
                 "environment_draft": clean_environment_draft(raw_ui.get("environment_draft")),
                 "selection": {"provided": cell_scopes is not None}, "legacy": {"design_config": False}}
+    paths = clean_instance_path_selection(raw_ui.get("instance_path_selection"))
+    if paths is not None:
+        document["instance_path_selection"] = paths
     for key, cleaner in (("private_suite", clean_private_suite), ("maestro_snapshot", _semantic_value),
                          ("execution_selection", clean_execution_selection)):
         if isinstance(raw_ui.get(key), dict):

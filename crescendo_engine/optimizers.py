@@ -11,7 +11,7 @@ from .metrics import dominates
 ALGORITHMS = ("random", "differential_evolution", "nsga2", "bayesian_optimization")
 
 
-def validate_variables(variables):
+def _normalize_variables(variables):
     normalized = []
     for variable in variables:
         row = dict(variable)
@@ -92,6 +92,50 @@ def validate_variables(variables):
     return normalized
 
 
+def validate_variables(variables):
+    normalized = []
+    for variable in variables:
+        try:
+            normalized.extend(_normalize_variables([variable]))
+        except (TypeError, ValueError, OverflowError) as error:
+            if isinstance(variable, dict) and variable.get("link_group"):
+                raise ValueError("link_group %r member %s: %s" % (
+                    variable["link_group"], variable.get("parameter_id") or "variable", error))
+            raise
+    if not normalized:
+        raise ValueError("at least one optimization variable is required")
+    _validate_link_groups(normalized)
+    return normalized
+
+
+def _validate_link_groups(variables):
+    groups = {}
+    stepped = {}
+    for row in variables:
+        if "link_group" not in row:
+            continue
+        group = row["link_group"]
+        member = row.get("parameter_id") or "variable"
+        if not isinstance(group, str) or (group and not group.strip()):
+            raise ValueError("link_group %r member %s: expected a nonblank string or empty string" % (group, member))
+        if not group:
+            continue
+        if row["value_type"] == "enum":
+            raise ValueError("link_group %r member %s: enum linking is not supported" % (group, member))
+        if row["scale"] not in ("linear", "log"):
+            raise ValueError("link_group %r member %s: unsupported scale" % (group, member))
+        if row["scale"] == "log" and row["minimum"] <= 0:
+            raise ValueError("link_group %r member %s: log scale requires positive bounds" % (group, member))
+        first = groups.setdefault(group, row)
+        if first["scale"] != row["scale"]:
+            raise ValueError("link_group %r member %s: scale must match member %s" % (group, member, first["parameter_id"]))
+        discrete = row.get("step") is not None
+        if discrete:
+            first_stepped = stepped.setdefault(group, row)
+            if first_stepped["step_count"] != row["step_count"]:
+                raise ValueError("link_group %r member %s: step_count must match member %s" % (group, member, first_stepped["parameter_id"]))
+
+
 def _decode(unit_value, variable):
     unit_value = min(1.0, max(0.0, unit_value))
     if variable.get("value_type") == "enum":
@@ -162,6 +206,30 @@ def validate_candidate_values(values, variables):
             normalized[parameter_id] = int(number)
         else:
             normalized[parameter_id] = number
+    groups = {}
+    for variable in normalized_variables:
+        if variable.get("link_group"):
+            groups.setdefault(variable["link_group"], []).append(variable)
+    for group, members in groups.items():
+        # A continuous member retains u exactly in a mixed group. Discrete
+        # members alone retain the shared grid index, as before.
+        anchor = next((row for row in members if row.get("step") is None), members[0])
+        coordinate = _encode(normalized[anchor["parameter_id"]], anchor)
+        grid_coordinate = None
+        for variable in members:
+            member = variable["parameter_id"]
+            actual = _encode(normalized[member], variable)
+            consistent = abs(actual - coordinate) <= 1.0e-9
+            if variable.get("step") is not None and anchor.get("step") is None:
+                # Re-encoding a continuous value can move an exact half-grid
+                # tie by one ulp. Accept either adjacent index at that tie,
+                # while requiring every discrete member to use the same one.
+                consistent = abs(actual - coordinate) * variable["step_count"] <= 0.5 + 1.0e-9
+                if grid_coordinate is not None:
+                    consistent = consistent and abs(actual - grid_coordinate) <= 1.0e-9
+                grid_coordinate = actual
+            if not consistent:
+                raise ValueError("link_group %r member %s: candidate coordinate differs from member %s" % (group, member, anchor["parameter_id"]))
     return normalized
 
 
@@ -338,6 +406,21 @@ def _squared_distance(left, right):
 class PopulationGenerator(object):
     def __init__(self, variables, algorithm="nsga2", seed=1, parameters=None):
         self.variables = validate_variables(variables)
+        self._dimensions = []
+        self._dimension_indices = []
+        groups = {}
+        for variable in self.variables:
+            group = variable.get("link_group")
+            if group and group in groups:
+                dimension = groups[group]
+                if variable.get("step") is None and self._dimensions[dimension].get("step") is not None:
+                    self._dimensions[dimension] = variable
+            else:
+                dimension = len(self._dimensions)
+                self._dimensions.append(variable)
+                if group:
+                    groups[group] = dimension
+            self._dimension_indices.append(dimension)
         if algorithm not in ALGORITHMS:
             raise ValueError("unsupported algorithm: %s" % algorithm)
         self.algorithm = algorithm
@@ -348,8 +431,24 @@ class PopulationGenerator(object):
         self._de_targets = {}
         self.unmatched_trials = []
 
+    def _decode_vector(self, vector):
+        values = {}
+        for variable, dimension in zip(self.variables, self._dimension_indices):
+            unit = vector[dimension]
+            if variable.get("link_group") and variable.get("step") is not None:
+                # Quantize u once in index space, avoiding per-range float ties.
+                count = variable["step_count"]
+                index = int(round(min(1.0, max(0.0, unit)) * count))
+                value = variable["minimum"] + index * variable["step"]
+                if variable["value_type"] == "integer":
+                    value = int(round(value))
+            else:
+                value = _decode(unit, variable)
+            values[variable["parameter_id"]] = value
+        return values
+
     def _initial(self, size):
-        dimensions = len(self.variables)
+        dimensions = len(self._dimensions)
         columns = []
         for _dimension in range(dimensions):
             column = [(index + self.rng.random()) / float(size) for index in range(size)]
@@ -360,21 +459,21 @@ class PopulationGenerator(object):
     def _de(self, size):
         vectors = []
         population = list(self.previous)
-        encoded = [[_encode(row["values"][variable["parameter_id"]], variable) for variable in self.variables] for row in population]
+        encoded = [[_encode(row["values"][variable["parameter_id"]], variable) for variable in self._dimensions] for row in population]
         for index in range(size):
             target_index = index % len(encoded)
             target = encoded[target_index]
             choices = [row for offset, row in enumerate(encoded) if offset != target_index]
             while len(choices) < 3:
-                choices.append(_random_vector(self.rng, len(self.variables)))
+                choices.append(_random_vector(self.rng, len(self._dimensions)))
             a, b, c = self.rng.sample(choices, 3)
-            forced = self.rng.randrange(len(self.variables))
+            forced = self.rng.randrange(len(self._dimensions))
             vector = []
-            for dimension in range(len(self.variables)):
+            for dimension in range(len(self._dimensions)):
                 trial = a[dimension] + float(self.parameters.get("differential_weight", 0.8)) * (b[dimension] - c[dimension])
                 vector.append(min(1.0, max(0.0, trial)) if self.rng.random() < float(self.parameters.get("crossover_rate", 0.9)) or dimension == forced else target[dimension])
             vectors.append(vector)
-            decoded = dict((variable["parameter_id"], _decode(vector[offset], variable)) for offset, variable in enumerate(self.variables))
+            decoded = self._decode_vector(vector)
             self._de_targets.setdefault(_candidate_key(decoded, self.variables), []).append(population[target_index])
         return vectors
 
@@ -395,9 +494,9 @@ class PopulationGenerator(object):
             left = choose()
             right = choose()
             vector = []
-            dimensions = len(self.variables)
+            dimensions = len(self._dimensions)
             mutation_probability = float(self.parameters.get("mutation_probability", 1.0 / float(dimensions)))
-            for variable in self.variables:
+            for variable in self._dimensions:
                 key = variable["parameter_id"]
                 a = _encode(left["values"][key], variable)
                 b = _encode(right["values"][key], variable)
@@ -416,14 +515,14 @@ class PopulationGenerator(object):
         return vectors
 
     def _bayesian(self, size):
-        dimensions = len(self.variables)
+        dimensions = len(self._dimensions)
         initial_samples = int(self.parameters.get("initial_samples", max(size, 2 * dimensions + 1)))
         if len(self.previous) < initial_samples:
             return self._initial(size)
         observations = self._bayesian_observations(self.previous)
         training_vectors = [[
             _encode(row["values"][variable["parameter_id"]], variable)
-            for variable in self.variables
+            for variable in self._dimensions
         ] for row in observations]
         training_scores = [float(row["metrics"].get("merit", 0.0)) for row in observations]
         center = sum(training_scores) / float(len(training_scores))
@@ -480,7 +579,7 @@ class PopulationGenerator(object):
         return selected
 
     def _bayesian_observations(self, rows):
-        limit = int(self.parameters.get("max_observations", max(80, 4 * len(self.variables))))
+        limit = int(self.parameters.get("max_observations", max(80, 4 * len(self._dimensions))))
         if len(rows) <= limit:
             return list(rows)
         best_count = max(1, limit // 2)
@@ -505,7 +604,7 @@ class PopulationGenerator(object):
         if self.population_size is None:
             self.population_size = size
         if not self.previous or self.algorithm == "random":
-            vectors = self._initial(size) if not self.previous else [_random_vector(self.rng, len(self.variables)) for _ in range(size)]
+            vectors = self._initial(size) if not self.previous else [_random_vector(self.rng, len(self._dimensions)) for _ in range(size)]
         elif self.algorithm == "differential_evolution":
             vectors = self._de(size)
         elif self.algorithm == "nsga2":
@@ -514,7 +613,7 @@ class PopulationGenerator(object):
             vectors = self._bayesian(size)
         else:
             raise ValueError("unsupported algorithm: %s" % self.algorithm)
-        return [dict((variable["parameter_id"], _decode(vector[index], variable)) for index, variable in enumerate(self.variables)) for vector in vectors]
+        return [self._decode_vector(vector) for vector in vectors]
 
     def tell(self, rows):
         evaluated = _evaluated_rows(rows)

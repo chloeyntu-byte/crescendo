@@ -69,6 +69,18 @@ class NativeBaselineAlpsCompletionTests(unittest.TestCase):
         self.assertTrue(all('returncode' not in row['receipt'] for row in result['simulator_runs']))
         self.assertTrue(result['native_parameter_readback_verified'])
 
+    def test_retry_protocol_must_match_the_bound_attempt(self):
+        retry_dir = os.path.join(os.path.dirname(self.path), 'retry-2')
+        os.mkdir(retry_dir)
+        self.path = os.path.join(retry_dir, os.path.basename(self.path))
+        self.write_protocol()
+        record = self.fixture.command['native_baseline']
+        record['startup_attempt'] = 2
+        self.assertTrue(self.validate()['ok'])
+        record['startup_attempt'] = 1
+        with self.assertRaisesRegex(completion.CompletionEvidenceError, 'protocol path or nonce'):
+            self.validate()
+
     def test_idle_native_wait_nil_retains_other_completion_gates(self):
         self.states[self.states.index(('WAIT_RETURN', 't'))] = ('WAIT_RETURN', 'nil')
         self.write_protocol()

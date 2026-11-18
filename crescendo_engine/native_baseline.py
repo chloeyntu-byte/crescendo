@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import stat
 import subprocess
 import threading
@@ -20,6 +21,8 @@ import uuid
 from crescendo_engine.runtime import bind_text
 _contract_text = bind_text()
 
+from .design_variables import native_parameter
+from .native_startup import STAGE, StartupObservation, settings as startup_settings
 from .diagnostic_timing import timing_tick, elapsed_seconds, phase_seconds
 from .utils import atomic_write_json, atomic_write_text, ensure_dir
 from .workspace import (_skill_quote, _workspace_startup_load_lines,
@@ -31,6 +34,14 @@ _ACTIVE_LOCK = threading.Lock()
 
 
 class NativeBaselineError(RuntimeError):
+    pass
+
+
+class NativeStartupCrash(NativeBaselineError):
+    pass
+
+
+class NativeBaselineTimeout(NativeBaselineError):
     pass
 
 
@@ -82,6 +93,32 @@ def _record_storage_evidence(driver):
     driver.persist()
 
 
+def _unqualified_library_init(diagnostics):
+    retained = dict(diagnostics)
+    if "library_init_warnings" in retained:
+        retained["library_init_candidates"] = [dict(warning, severity="UNQUALIFIED")
+                                                for warning in retained.pop("library_init_warnings")]
+    return retained
+
+
+def _session_tool_diagnostics(driver, startup, simulator):
+    from .native_diagnostics import skill_command_diagnostics, log_ocean_tool_warnings, recorded_ocean_warnings
+    process = driver.process
+    diagnostics = skill_command_diagnostics(
+        {"returncode": getattr(process, "returncode", None)},
+        startup, owned_root=driver.control, simulators=(simulator,), native_completion=True)
+    warnings = recorded_ocean_warnings(diagnostics)
+    if warnings or diagnostics.get("native_error"):
+        try:
+            atomic_write_json(os.path.join(driver.control, _contract_text("native_skill_diagnostics.json")),
+                              _unqualified_library_init(diagnostics))
+        except OSError as error:
+            diagnostics["diagnostic_write_error"] = str(error)
+        log_ocean_tool_warnings(driver.config, driver.control,
+                                diagnostics.get("ocean_tool_warnings") or [])
+    return diagnostics
+
+
 def _read_protocol(path, nonce):
     if not os.path.isfile(path):
         return []
@@ -94,23 +131,91 @@ def _read_protocol(path, nonce):
     return [{"state": row[1], "value": row[2], "sequence": index} for index, row in enumerate(rows)]
 
 
+def native_attempt_control(root, attempt=1):
+    if type(attempt) is not int or attempt < 1:
+        raise NativeBaselineError("Invalid Native Run startup attempt")
+    control = os.path.join(root, "native_baseline")
+    if attempt > 1:
+        control = os.path.join(control, "retry-%d" % attempt)
+    if os.path.realpath(control) != control:
+        raise NativeBaselineError("Native Run startup attempt path is unsafe")
+    return control
+
+
+def _local_termination_proven(proof):
+    return proof.get("state") == "dead" and proof.get("termination_proof", {}).get("ok") is True
+
+
+def native_submission_absent(state, rows):
+    return (state.get("submission_intent") is False and
+            not any(row["state"] in ("RUN_BEGIN", "RUN_ID", "SIM_DONE", "HISTORY", "CLOSED") for row in rows))
+
+
+def _new_session_state(root, workspace, candidate_id, nonce):
+    return {"schema_version": SCHEMA_VERSION, "nonce": nonce,
+            "candidate_id": str(candidate_id), "request_root": root, "workspace_root": workspace,
+            "started_epoch": time.time(), "launch_attempted": False, "submission_intent": False,
+            "native_session_closed": False, "native_policy_local": False, "cleanup_proven": False,
+            "cleanup_pending": False, "native_stop": {"requested": False, "remote_stop_proven": False}}
+
+
 class _NativeSession(object):
     def __init__(self, root, workspace, config, candidate_id):
         self.root, self.workspace, self.config = root, workspace, config
-        self.control = ensure_dir(os.path.join(root, "native_baseline"))
-        self.path = os.path.join(self.control, _contract_text("native_baseline_state.json"))
+        self.settings = startup_settings(config.get("runtime") or {})
+        self.path = os.path.join(native_attempt_control(root), _contract_text("native_baseline_state.json"))
         if os.path.lexists(self.path):
             raise NativeBaselineError("Native Run request directory already used; no replay allowed")
+        self._begin_attempt(candidate_id, [])
+
+    def _begin_attempt(self, candidate_id, crashes):
+        attempt = len(crashes) + 1
+        self.control = native_attempt_control(self.root, attempt)
+        if attempt > 1:
+            os.mkdir(self.control)
+        else:
+            ensure_dir(self.control)
         self.nonce = uuid.uuid4().hex
         self.protocol = os.path.join(self.control, "native_baseline_protocol.tsv")
         self.process = None
-        self.state = {"schema_version": SCHEMA_VERSION, "nonce": self.nonce,
-                      "candidate_id": str(candidate_id), "request_root": root, "workspace_root": workspace["root"],
-                      "started_epoch": time.time(), "launch_attempted": False,
-                      "native_session_closed": False, "native_policy_local": False, "cleanup_proven": False,
-                      "cleanup_pending": False, "native_stop": {"requested": False,
-                      "remote_stop_proven": False}}
+        self.state = _new_session_state(self.root, self.workspace["root"], candidate_id, self.nonce)
+        self.state.update(startup_attempt=attempt, previous_startup_crashes=crashes,
+                          startup_recovery_settings=dict(self.settings))
         self.persist()
+
+    def start(self, make_scripts, timeout, cancel_check):
+        while True:
+            scripts = make_scripts()
+            locked = CADENCE_STARTUP_LOCK.acquire(timeout=max(1, timeout))
+            if not locked:
+                raise NativeBaselineError("Native startup lock timed out")
+            try:
+                self.launch(scripts[0])
+                self.wait(("READY",), timeout, cancel_check)
+                return scripts
+            except NativeStartupCrash as error:
+                crash = {"attempt": self.state["startup_attempt"], "nonce": self.nonce,
+                         "message": str(error), "detected_epoch": time.time()}
+                self.state["startup_crash"] = crash
+                self.persist()
+            except NativeBaselineError as error:
+                crashes = self.state["previous_startup_crashes"]
+                if not crashes or getattr(error, "cancelled", False):
+                    raise
+                failure = NativeStartupCrash(crashes[0]["message"])
+                failure.detail = {"startup_retry_error": str(error)}
+                raise failure from error
+            finally:
+                CADENCE_STARTUP_LOCK.release()
+            proof = self.cleanup()
+            crashes = self.state["previous_startup_crashes"] + [crash]
+            if (not proof.get("native_not_submitted") or self.status() or
+                    len(crashes) > self.settings["native_startup_crash_retries"] or
+                    (cancel_check and cancel_check())):
+                error = NativeStartupCrash(crashes[0]["message"])
+                error.cancelled = bool(cancel_check and cancel_check())
+                raise error
+            self._begin_attempt(self.state["candidate_id"], crashes)
 
     def persist(self):
         atomic_write_json(self.path, self.state)
@@ -124,8 +229,11 @@ class _NativeSession(object):
         self.process.stdin.write('load(%s)\n' % _quote(script))
         self.process.stdin.flush()
 
-    def wait(self, terminal, timeout, cancel_check=None):
-        deadline = time.monotonic() + timeout if timeout > 0 else None
+    def wait(self, terminal, timeout, cancel_check=None, deadline=None):
+        if deadline is None and timeout > 0:
+            deadline = time.monotonic() + timeout
+        startup = (StartupObservation(self.control, self.settings["native_startup_crash_quiet_seconds"])
+                   if terminal == ("READY",) else None)
         while True:
             rows = self.status()
             for row in reversed(rows):
@@ -137,10 +245,22 @@ class _NativeSession(object):
                 error = NativeBaselineError("Native Run cancelled")
                 error.cancelled = True
                 raise error
-            if self.process is None or self.process.poll() is not None:
+            if startup:
+                signature = startup.observe(rows)
+                if signature and not self.status():
+                    raise NativeStartupCrash("Native Ocean startup crash: " + signature)
+            if (self.process is None or self.process.poll() is not None) and not (
+                    startup and startup.signature and not startup.stage_seen):
                 raise NativeBaselineError("Owned Ocean exited before native terminal evidence")
             if deadline is not None and time.monotonic() >= deadline:
-                raise NativeBaselineError("Native Run exceeded its total operation deadline")
+                stage = {"READY": "Ocean startup", "SIM_DONE": "native Run execution",
+                         "HISTORY": "native Wait/history readback", "CLOSED": "native session close",
+                         "STOP_DONE": "native Stop"}.get(terminal[0], "native operation")
+                error = NativeBaselineTimeout("%s timed out after %g seconds waiting for %s" %
+                                              (stage, timeout, "/".join(terminal)))
+                error.detail = {"timeout_seconds": timeout, "expected_states": list(terminal),
+                                "last_protocol_state": rows[-1]["state"] if rows else None}
+                raise error
             time.sleep(0.1)
 
     def launch(self, script):
@@ -194,13 +314,16 @@ class _NativeSession(object):
         self.send(script)
 
     def cleanup(self, timeout=12):
+        if "local_cleanup" in self.state:
+            return dict(self.state)
         if not self.state["launch_attempted"]:
             self.state.update(cleanup_proven=True, cleanup_pending=False)
             self.persist()
             return dict(self.state)
         rows = self.status()
         closed = any(row["state"] in ("CLOSED", "STOP_DONE") for row in rows)
-        if not closed and self.process is not None and self.process.poll() is None:
+        not_submitted = native_submission_absent(self.state, rows)
+        if not closed and not_submitted is False and self.process is not None and self.process.poll() is None:
             script = os.path.join(self.control, "stop.il")
             atomic_write_text(script, '\n'.join([
                 _contract_text('unless(equal(crescBaselineNonce %s) error("Crescendo reference Stop nonce mismatch\\n"))') % _quote(self.nonce),
@@ -234,19 +357,31 @@ class _NativeSession(object):
         self.state["native_session_closed"] = closed
         command_terminal = (_command_terminal_proof(self) if native_stopped and not self.state.get('native_policy_local')
                             else {'ok': False})
-        if closed:
-            if self.process is not None and self.process.poll() is None:
-                try:
-                    self.process.stdin.write("exit(0)\n")
-                    self.process.stdin.flush()
-                    self.process.wait(timeout=max(1, timeout))
-                except Exception:
-                    pass
-            from .legacy_guardian import quiesce_legacy_guardian_attempt
-            proof = quiesce_legacy_guardian_attempt(self.control,
-                expected_workspace_root=self.workspace["root"], timeout_seconds=timeout)
-            self.state["local_cleanup"] = proof
-            self.state["cleanup_proven"] = bool(proof.get("state") == "dead" and proof.get("termination_proof", {}).get("ok") is True)
+        if self.process is not None and self.process.poll() is None and closed:
+            try:
+                self.process.stdin.write("exit(0)\n")
+                self.process.stdin.flush()
+                self.process.wait(timeout=max(1, timeout))
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        if self.process is not None and self.process.stdin is not None:
+            try:
+                self.process.stdin.close()  # EOF tells the owned guardian to stop and reap its descendants.
+            except OSError:
+                pass
+        from .legacy_guardian import quiesce_legacy_guardian_attempt
+        proof = quiesce_legacy_guardian_attempt(self.control,
+            expected_workspace_root=self.workspace["root"],
+            expected_token_identity={"legacy": True, "token": self.nonce},
+            timeout_seconds=self.settings["native_cleanup_proof_timeout_seconds"],
+            poll_live_identity_conflict=self.process is not None)
+        self.state["local_cleanup"] = proof
+        process_proven = _local_termination_proven(proof)
+        not_submitted = native_submission_absent(self.state, self.status())
+        self.state["native_not_submitted"] = bool(not_submitted and process_proven)
+        self.state["cleanup_proven"] = bool(process_proven and (closed or not_submitted))
+        if self.process is not None:
+            self.process.poll()
         if native_stopped:
             never_submitted = bool(getattr(self, 'batch', None)) and not self.state.get('submission_intent') and not any(r['state'] == 'RUN_BEGIN' for r in rows)
             local_stopped = self.state["cleanup_proven"] and (self.state.get("native_policy_local") is True or never_submitted)
@@ -265,26 +400,49 @@ class _NativeSession(object):
 
 
 def reconcile_native_baseline(root, request_cancel=True, timeout_seconds=12):
+    from .legacy_guardian import inspect_legacy_guardian_attempt
+
     root = os.path.abspath(root)
     with _ACTIVE_LOCK:
         active = _ACTIVE.get(root)
     if active:
         return active.cleanup(timeout_seconds) if request_cancel else dict(active.state)
-    path = os.path.join(root, "native_baseline", _contract_text("native_baseline_state.json"))
+    path = os.path.join(native_attempt_control(root), _contract_text("native_baseline_state.json"))
     if not os.path.exists(path):
         return {"schema_version": SCHEMA_VERSION, "cleanup_proven": False,
                 "cleanup_pending": True, "reason": "native launch record missing; termination cannot be established"}
     state = _load(path)
     if state.get("schema_version") != SCHEMA_VERSION or state.get("request_root") != root:
         raise NativeBaselineError("Native Run recovery protocol mismatch")
+    attempt = state.get("startup_attempt", 1)
+    control = native_attempt_control(root, attempt)
+    crashes = state.get("previous_startup_crashes", [])
+    if not isinstance(crashes, list) or len(crashes) != attempt - 1:
+        raise NativeBaselineError("Native Run startup attempt history mismatch")
+
+    def inspect(control, nonce):
+        return inspect_legacy_guardian_attempt(control,
+            expected_workspace_root=state["workspace_root"],
+            expected_token_identity={"legacy": True, "token": nonce})
+
+    for index, crash in enumerate(crashes, 1):
+        previous = native_attempt_control(root, index)
+        if (crash.get("attempt") != index or
+                not _local_termination_proven(inspect(previous, crash.get("nonce"))) or
+                _read_protocol(os.path.join(previous, "native_baseline_protocol.tsv"), crash["nonce"])):
+            return dict(state, cleanup_proven=False, cleanup_pending=True,
+                        reason="Previous Native Run startup attempt cleanup is unproven")
     if not state.get("launch_attempted"):
         return dict(state, cleanup_proven=True, cleanup_pending=False)
     if state.get("cleanup_proven") and state.get("native_session_closed"):
         return state
-    # Lost Python controller cannot submit a new Stop into an unrelated session.
+    if state.get("native_not_submitted") is True and state.get("cleanup_proven") is True:
+        rows = _read_protocol(os.path.join(control, "native_baseline_protocol.tsv"), state["nonce"])
+        if native_submission_absent(state, rows) and _local_termination_proven(inspect(control, state["nonce"])):
+            return state
+    # A lost controller cannot submit Stop into an unrelated session.
     return dict(state, cleanup_proven=False, cleanup_pending=True,
                 reason="Owned native terminal proof missing; preserve suite and do not replay")
-
 
 
 def _native_policy_definitions(workspace, policy):
@@ -426,7 +584,10 @@ def _scripts(driver, rows, plan, run_setup, execution_selection, corner_selectio
         body += native_batch_skill_lines(driver.batch, plan, os.path.join(root, "native_batch_columns.tsv"))
     else:
         body += native_parameter_skill_lines(plan, os.path.join(root, "native_parameters.tsv"))
-    body += [_contract_text('crescBaselineRecord("READY" "")')]
+    body.insert(0, 'sstatus(stacktrace 16)')
+    body.insert(1, 'printf("%s\\n") drain(poport)' % STAGE.decode("ascii"))
+    body += [_contract_text('crescBaselineRecord("READY" "")'),
+             _contract_text('printf("CRESCENDO_NATIVE_RUN_STAGE Startup RETURN\\n")')]
     bounded, generation = bounded_skill_body_lines(body, _contract_text("crescBaselineBootstrap"))
     startup = os.path.join(driver.control, "startup.il")
     atomic_write_text(startup, '\n'.join(definitions + bounded + [
@@ -438,6 +599,7 @@ def _scripts(driver, rows, plan, run_setup, execution_selection, corner_selectio
         _contract_text('crescBaselineRun=errset(progn('),
         _contract_text(' crescBaselineSubmitted=t'),
         _contract_text(' crescBaselineRecord("RUN_BEGIN" "")'),
+        _contract_text(' printf("CRESCENDO_NATIVE_RUN_STAGE Run BEGIN\\n")'),
         _contract_text(' runId=maeRunSimulation(?waitUntilDone nil ?returnRunId t ?callback "crescBaselineFinished()" ?session session)'),
         ' unless(runId error("Native Run did not return runId\\n"))',
         _contract_text(' crescBaselineRecord("RUN_ID" sprintf(nil "%L" runId))'),
@@ -454,14 +616,67 @@ def _scripts(driver, rows, plan, run_setup, execution_selection, corner_selectio
         ' historyName=axlGetHistoryName(runData)',
         ' unless(stringp(historyName) && historyName!="" error("Exact history missing\\n"))',
         native_history_readback_line(workspace, root),
-        _contract_text(' crescBaselineRecord("HISTORY" historyName)'),
     ] + (native_batch_export(driver) if getattr(driver, 'batch', None) else []) + [
-        ' unless(maeCloseSession(?session session ?forceClose t) error("Native session close failed\\n"))',
-        ' session=nil',
-        _contract_text(' crescBaselineRecord("CLOSED" "native Run/Wait and session close complete")'),
+        _contract_text(' crescBaselineRecord("HISTORY" historyName)'),
         ' t) t)',
         _contract_text('unless(crescBaselineFinish crescBaselineRecord("ERROR" "native result finalization failed"))')]) + '\n')
+    atomic_write_text(os.path.join(driver.control, "close.il"), '\n'.join([
+        _contract_text('unless(equal(crescBaselineNonce %s) error("Native close nonce mismatch\\n"))') % _quote(driver.nonce),
+        _contract_text('crescBaselineClose=errset(progn('),
+        ' unless(maeCloseSession(?session session ?forceClose t) error("Native session close failed\\n"))',
+        ' session=nil',
+        _contract_text(' printf("CRESCENDO_NATIVE_RUN_STAGE Run RETURN\\n")'),
+        _contract_text(' crescBaselineRecord("CLOSED" "native Run/Wait and session close complete")'),
+        ' t) t)',
+        _contract_text('unless(crescBaselineClose crescBaselineRecord("ERROR" "native session close failed"))')]) + '\n')
     return startup, run, finish
+
+
+def _drain_native_spectre(workspace, rdb_path, history, cancel_check, timeout=2.0):
+    """Give Spectre's footer time to reach disk before forcing Maestro closed."""
+    from .completion import _SPECTRE_COMPLETION, _history_root, _tail_text
+    from .rdb import read_rdb_test_statuses
+    from .utils import is_under
+
+    deadline = time.monotonic() + timeout
+    tests = {test["name"]: test for test in workspace["setup"].get("tests", [])}
+    pending = None
+    if not is_under(os.path.realpath(rdb_path), workspace["root"]):
+        return {"terminal_logs_seen": False, "reason": "unbound history path"}
+    while not (cancel_check and cancel_check()):
+        try:
+            statuses = read_rdb_test_statuses(rdb_path)
+        except (OSError, sqlite3.Error):
+            statuses = []
+        if statuses:
+            pending = completed = 0
+            for status in statuses:
+                test = status["test_name"]
+                point = status["pointID"]
+                if (test not in tests or test in (".", "..") or os.path.basename(test) != test
+                        or type(point) is not int or point < 0):
+                    return {"terminal_logs_seen": False, "reason": "unbound point identity"}
+                # A failed/omitted native point may never start its solver.
+                if status["statusCode"] != 3:
+                    continue
+                completed += 1
+                log = os.path.join(_history_root(workspace, tests[test], history), str(point), test, "psf", "spectre.out")
+                if not is_under(os.path.realpath(log), workspace["root"]):
+                    return {"terminal_logs_seen": False, "reason": "unbound solver log"}
+                try:
+                    terminal = bool(_SPECTRE_COMPLETION.search(_tail_text(log)))
+                except OSError:
+                    terminal = False
+                pending += int(not terminal)
+            if completed and pending == 0:
+                return {"terminal_logs_seen": True}
+            if not completed and all(status["stopTime"] is not None for status in statuses):
+                return {"terminal_logs_seen": False, "reason": "no completed Spectre points"}
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.05, remaining))
+    return {"terminal_logs_seen": False, "pending_logs": pending}
 
 
 def evaluate_native_baseline(candidate_id, values, parameters, spec, prepared, config, root,
@@ -474,12 +689,16 @@ def evaluate_native_baseline(candidate_id, values, parameters, spec, prepared, c
                                  load_native_storage_readback, qualify_native_history_paths)
     from .test_selection import selection_plan as test_plan, effective_setup as test_setup
     from .corner_selection import selection_plan as corner_plan, effective_setup as corner_setup
-    from .private_netlist import parse_native_corner_schedule, _capture_setup_identity
-    from .completion import validate_candidate_completion, _history_root, prepare_native_point_parameter_requests
+    from .private_netlist import parse_native_corner_schedule, _capture_setup_identity, _capture_worker_logs
+    from .completion import (CompletionEvidenceError, UnsafeCompletionEvidence, validate_candidate_completion,
+                             _history_root, prepare_native_point_parameter_requests)
     from .native_point_parameters import prefetch_point_parameters
+    from .native_diagnostics import log_ocean_tool_warnings
     from .rdb import parse_rdb
     root = os.path.abspath(root)
+    startup = native_diagnostics = worker_diagnostics = None
     spec = spec or {}
+    deferred_consumers = []
     if _batch is not None:
         from .generation_batch import qualify_deterministic, qualify_shared_inputs
         qualify_deterministic(prepared["setup"])
@@ -488,7 +707,7 @@ def evaluate_native_baseline(candidate_id, values, parameters, spec, prepared, c
         raise NativeBaselineError("Native Run requires an applied Maestro working copy")
     if not parameters or set(values) != {row["parameter_id"] for row in parameters}:
         raise NativeBaselineError("Native Run selected parameter identity mismatch")
-    if any(row.get("backend", "schematic") != "schematic" for row in parameters):
+    if any(not native_parameter(row) for row in parameters):
         raise NativeBaselineError("Native Run supports selected Device Parameters only")
     from .simulators import selected_simulator
     selected = str(spec.get("simulator") or selected_simulator(config)).lower()
@@ -546,25 +765,23 @@ def evaluate_native_baseline(candidate_id, values, parameters, spec, prepared, c
             snapshot["run_execution_selection"] = copy.deepcopy(execution_selection)
             snapshot["run_corner_selection"] = copy.deepcopy(corner_selection)
             driver.workspace = workspace
-            _record_storage_evidence(driver)
             with _ACTIVE_LOCK:
                 _ACTIVE[root] = driver
             if progress_callback:
                 progress_callback({"stage": "native_baseline_startup", "candidate_id": str(candidate_id),
                                    "message": "Opening owned Maestro with native Device Parameters"})
-            startup, run, finish = _scripts(driver, rows, plan, run_setup, execution_selection,
-                                            corner_selection, prepared, spec)
+            def make_scripts():
+                nonlocal startup
+                _record_storage_evidence(driver)
+                scripts = _scripts(driver, rows, plan, run_setup, execution_selection,
+                                   corner_selection, prepared, spec)
+                startup = scripts[0]
+                return scripts
+
             timeout = float(config.get("runtime", {}).get("ocean_startup_timeout_seconds", 90))
             phase_started = finish_phase()
             phase = "worker_setup"
-            locked = CADENCE_STARTUP_LOCK.acquire(timeout=max(1, timeout))
-            if not locked:
-                raise NativeBaselineError("Native startup lock timed out")
-            try:
-                driver.launch(startup)
-                driver.wait(("READY",), timeout, cancel_check)
-            finally:
-                CADENCE_STARTUP_LOCK.release()
+            startup, run, finish = driver.start(make_scripts, timeout, cancel_check)
             phase_started = finish_phase()
             phase = "native_setup_readback"
             from .native_variable_scope_readback import parse_native_variable_scope
@@ -622,6 +839,8 @@ def evaluate_native_baseline(candidate_id, values, parameters, spec, prepared, c
                                    "message": "Native Maestro Run; using saved Job Setup"})
             phase_started = finish_phase()
             phase = "execution"
+            _, worker_before = _capture_worker_logs(workspace)
+            worker_started_ns = time.time_ns() if hasattr(time, "time_ns") else int(time.time() * 1e9)
             driver.state['submission_intent'] = True
             if _batch is not None:
                 _batch['submitted'] = True
@@ -631,10 +850,24 @@ def evaluate_native_baseline(candidate_id, values, parameters, spec, prepared, c
             driver.wait(("SIM_DONE",), budget, cancel_check)
             phase_started = finish_phase()
             phase = "native_collection"
+            collection_deadline = time.monotonic() + timeout if timeout > 0 else None
             driver.send(finish)
-            driver.wait(("CLOSED",), timeout, cancel_check)
+            history = driver.wait(("HISTORY",), timeout, cancel_check, deadline=collection_deadline)["value"]
+            if history in (".", "..") or os.path.basename(history) != history:
+                raise UnsafeCompletionEvidence("Unsafe Native Run history identity")
+            if selected == "spectre":
+                drain_timeout = (max(0, min(2.0, collection_deadline - time.monotonic()))
+                                 if collection_deadline is not None else 2.0)
+                driver.state["spectre_finalization"] = _drain_native_spectre(
+                    workspace, workspace_rdb_path(workspace, history), history, cancel_check, timeout=drain_timeout)
+                driver.persist()
+            if cancel_check and cancel_check():
+                error = NativeBaselineError("Native Run cancelled before session close")
+                error.cancelled = True
+                raise error
+            driver.send(os.path.join(driver.control, "close.il"))
+            driver.wait(("CLOSED",), timeout, cancel_check, deadline=collection_deadline)
             protocol = driver.status()
-            history = next(row["value"] for row in protocol if row["state"] == "HISTORY")
             run_id = next(row["value"] for row in protocol if row["state"] == "RUN_ID")
             command = {"schema_version": SCHEMA_VERSION, "backend": "maestro", "execution_simulator": selected,
                        "history_name": history, "run_id": run_id, "candidate_id": str(candidate_id),
@@ -642,37 +875,77 @@ def evaluate_native_baseline(candidate_id, values, parameters, spec, prepared, c
                        "native_corner_identity": {"setup_snapshot": snapshot,
                            "schedule": parse_native_corner_schedule(os.path.join(root, "native_corner_schedule.tsv")),
                            "point_parameters_required": True}}
+            if "spectre_finalization" in driver.state:
+                command["spectre_finalization"] = driver.state["spectre_finalization"]
             workspace["native_corner_identity"] = command["native_corner_identity"]
             command["native_history_storage"] = qualify_native_history_paths(workspace, root, history, command["started_epoch"])
             command["rdb_path"] = workspace_rdb_path(workspace, history)
             parsed = parse_rdb(command["rdb_path"])
-            requests = prepare_native_point_parameter_requests(workspace, run_setup, command, parsed, root, config=config)
-            try:
-                if _batch is None:
-                    parameter_reader = prefetch_point_parameters(requests, config, root, driver, cancel_check=cancel_check)
-                else:
-                    from .generation_batch import batch_parameter_reader
-                    parameter_reader = batch_parameter_reader(requests, config, root, driver, cancel_check)
-            except Exception as error:
-                reader_detail = getattr(error, 'detail', {}) or {}
-                error.detail = {'failure_stage': 'native_point_parameter_readback',
-                                'diagnostic_path': os.path.join(root, _contract_text('point_identity.json')),
-                                'reader': reader_detail, 'command': reader_detail.get('command')}
-                raise
+            if _batch is not None:
+                from .generation_batch import parse_native_rows, map_native_points, HistoryReferences
+                from .rdb import slice_candidate_rdb
+                native_rows = parse_native_rows(os.path.join(root, 'native_batch_points.tsv'))
+                test_map = {t['name']: t['name'] for t in run_setup['tests'] if t.get('enabled', True)}
+
+                def batch_partitions(data):
+                    mapped = map_native_points(_batch, run_id, history, data, native_rows, allow_missing_status=True)
+                    command["native_batch_points"] = [(point["test"], point["point_id"])
+                                                      for points in mapped.values() for point in points]
+                    if any(test not in test_map for test, _ in command["native_batch_points"]):
+                        raise UnsafeCompletionEvidence("Native batch mapped an unexpected physical test")
+                    partitions = []
+                    for row in _batch["rows"]:
+                        ids = {point["point_id"] for point in mapped[row["row_id"]]}
+                        part = slice_candidate_rdb(data, test_map, ids)
+                        part["expected_native_points"] = [
+                            (point["test"], point["point_id"]) for point in mapped[row["row_id"]]]
+                        partitions.append((row, part))
+                    return partitions
+
+            partitions = [(None, parsed)] if _batch is None else batch_partitions(parsed)
+            readback_failures, parameter_readers = {}, {}
+            for physical_row, partition in partitions:
+                row_id = physical_row["row_id"] if physical_row else None
+                readback_root = os.path.join(root, row_id) if physical_row else root
+                try:
+                    requests = prepare_native_point_parameter_requests(
+                        workspace, run_setup, command, partition, readback_root, config=config)
+                    parameter_readers[row_id] = prefetch_point_parameters(
+                        requests, config, readback_root, driver, cancel_check=cancel_check)
+                except UnsafeCompletionEvidence:
+                    raise
+                except CompletionEvidenceError as error:
+                    readback_failures[row_id] = error
+                except Exception as error:
+                    reader_detail = getattr(error, 'detail', {}) or {}
+                    error.detail = {'failure_stage': 'native_point_parameter_readback',
+                                    'diagnostic_path': os.path.join(readback_root, _contract_text('point_identity.json')),
+                                    'reader': reader_detail, 'command': reader_detail.get('command')}
+                    raise
             phase_started = finish_phase()
             phase = "native_cleanup"
             cleanup = driver.cleanup(12)
             if not cleanup.get("cleanup_proven"):
                 raise NativeBaselineError("Native session completed but owned process cleanup is unproven")
+            native_diagnostics = _session_tool_diagnostics(driver, startup, selected)
+            worker_diagnostics, _ = _capture_worker_logs(workspace, before=worker_before,
+                simulators=(selected,), console=native_diagnostics, script_path=startup,
+                capture_started_ns=worker_started_ns, completion=True)
+            for key in ("ocean_tool_warnings", "diagnostic_write_error"):
+                if key in native_diagnostics:
+                    command[key] = native_diagnostics[key]
             phase_started = finish_phase()
             phase = "collection"
             command.update(guardian_returncode=driver.process.returncode, cleanup_pending=False,
                            finished_epoch=time.time(), native_stop=cleanup["native_stop"])
+            if cleanup["previous_startup_crashes"]:
+                command["native_startup_crashes"] = cleanup["previous_startup_crashes"]
             protocol = driver.status()
             with open(driver.protocol, "rb") as protocol_stream:
                 protocol_digest = hashlib.sha256(protocol_stream.read()).hexdigest()
             command["native_baseline"] = {"schema_version": SCHEMA_VERSION,
                 "nonce": driver.nonce, "candidate_id": str(candidate_id), "request_root": root,
+                "startup_attempt": driver.state["startup_attempt"],
                 "protocol_path": driver.protocol, "protocol_sha256": protocol_digest,
                 "records": protocol, "run_id": run_id, "history_name": history,
                 "started_epoch": command["started_epoch"], "finished_epoch": command["finished_epoch"],
@@ -681,74 +954,101 @@ def evaluate_native_baseline(candidate_id, values, parameters, spec, prepared, c
             # validation independently derives the identical point requests.
             parsed = parse_rdb(command["rdb_path"])
             if _batch is not None:
-                from .generation_batch import parse_native_rows, map_native_points, HistoryReferences
-                from .rdb import slice_candidate_rdb
-                mapped = map_native_points(_batch, run_id, history, parsed,
-                    parse_native_rows(os.path.join(root, 'native_batch_points.tsv')))
+                partitions = batch_partitions(parsed)
                 atomic_write_json(os.path.join(root, _contract_text('batch_manifest.json')), _batch)
                 references = HistoryReferences(os.path.join(root, _contract_text('history_references.json')), _batch)
-                partitions = []
-                test_map = {t['name']: t['name'] for t in run_setup['tests'] if t.get('enabled', True)}
-                for physical_row in _batch['rows']:
-                    part = slice_candidate_rdb(parsed, test_map,
-                        [p['point_id'] for p in mapped[physical_row['row_id']]])
-                    partitions.append((physical_row, part))
             else:
                 partitions = [(None, parsed)]
-            results = {}
-            for physical_row, partition in partitions:
-                parsed = partition
-                if physical_row is not None:
-                    values = physical_row['values']
-                required = sorted({row["output_key"] for row in spec.get("objectives", []) + spec.get("constraints", []) if row.get("output_key")})
-                completion = validate_candidate_completion(workspace, root, command, parsed,
-                    setup=run_setup, required_output_keys=required or None, config=config,
-                    reader_cancel_check=cancel_check, native_parameter_reader=parameter_reader)
-                tests = {row["name"]: row for row in run_setup["tests"]}
-                tasks = [{"test": point["test"], "point_id": point["point_id"], "corner": point.get("corner"),
-                          "netlist_path": point.get("netlist_path") or os.path.join(_history_root(workspace, tests[point["test"]], history),
-                               str(point["point_id"]), point.get("artifact_test") or point["test"], "netlist", _contract_text("input.scs"))}
-                         for point in completion["points"]]
-                parameter_application = verify_native_parameter_application(rows, tasks, values, run_setup, parsed)
-                parameter_application.update(settings=settings, solver_completion_proven=True)
+            def require_source_guard():
                 guard = compact_source_guard(verify_sources_unchanged(owned))
                 if not guard.get("ok"):
                     error = NativeBaselineError("Source changed during Native Run evaluation")
                     error.detail = {"failure_stage": "source_guard", "source_guard": guard}
                     raise error
-                pipeline = {"schema_version": SCHEMA_VERSION, "solver": "native_maestro",
-                            "submission": "native_job_setup", "run_id": run_id, "history_name": history,
-                            "rdb_path": command["rdb_path"], "native_run_invoked": True,
-                            "native_wait_completed": True, "native_session_closed": True,
-                            "solver_completion_proven": True, "native_parallelism": native_parallelism}
-                completion["execution_pipeline"] = pipeline
-                if progress_callback:
-                    progress_callback({"stage": "native_baseline_verified", "candidate_id": str(candidate_id),
-                                       "history_name": history, "point_count": len(completion["points"]),
-                                       "message": "Exact native history, solver completion and selected parameters verified"})
-                atomic_write_json(os.path.join(root, _contract_text("completion_evidence.json") if _batch is None else physical_row["row_id"] + _contract_text("_completion.json")), completion)
-                result = {"parsed": parsed, "parameter_application": parameter_application,
-                          "completion_evidence": completion, "command": command, "source_guard": guard,
-                          "timing": timing}
-                atomic_write_json(os.path.join(root, _contract_text("native_baseline_result.json") if _batch is None else physical_row["row_id"] + _contract_text("_result.json")), result)
+                return guard
+
+            from .design_variables import candidate_setup
+            required = sorted({row["output_key"] for row in spec.get("objectives", []) + spec.get("constraints", [])
+                               if row.get("output_key")})
+            tests = {row["name"]: row for row in run_setup["tests"]}
+            results = {}
+            for physical_row, partition in partitions:
+                parsed = partition
+                if physical_row is not None:
+                    values = physical_row['values']
+                row_id = physical_row["row_id"] if physical_row else None
+                try:
+                    if row_id in readback_failures:
+                        raise readback_failures[row_id]
+                    point_output = (os.path.join(root, row_id + _contract_text("_completion.json"))
+                                    if physical_row else None)
+                    completion = validate_candidate_completion(workspace, root, command, parsed, output_path=point_output,
+                        setup=candidate_setup(run_setup, parameters, values), required_output_keys=required or None, config=config,
+                        reader_cancel_check=cancel_check, native_parameter_reader=parameter_readers[row_id],
+                        native_diagnostics=native_diagnostics, native_worker_diagnostics=worker_diagnostics)
+                    tasks = [{"test": point["test"], "point_id": point["point_id"], "corner": point.get("corner"),
+                              "netlist_path": point.get("netlist_path") or os.path.join(_history_root(workspace, tests[point["test"]], history),
+                                   str(point["point_id"]), point.get("artifact_test") or point["test"], "netlist", _contract_text("input.scs"))}
+                             for point in completion["points"]]
+                    parameter_application = verify_native_parameter_application(
+                        rows, tasks, values, run_setup, parsed,
+                        exact=bool(_batch and _batch.get('native_run_exact_values')))
+                    parameter_application.update(settings=settings, solver_completion_proven=True)
+                    guard = require_source_guard()
+                    warnings = (completion.get("library_init_warnings") or []) + (completion.get("ocean_tool_warnings") or [])
+                    log_ocean_tool_warnings(config, driver.control, warnings)
+                    candidate_command = dict(command, library_init_warnings=completion.get("library_init_warnings") or [])
+                    pipeline = {"schema_version": SCHEMA_VERSION, "solver": "native_maestro",
+                                "submission": "native_job_setup", "run_id": run_id, "history_name": history,
+                                "rdb_path": command["rdb_path"], "native_run_invoked": True,
+                                "native_wait_completed": True, "native_session_closed": True,
+                                "solver_completion_proven": True, "native_parallelism": native_parallelism}
+                    completion["execution_pipeline"] = pipeline
+                    if progress_callback:
+                        progress_callback({"stage": "native_baseline_verified", "candidate_id": str(candidate_id),
+                                           "history_name": history, "point_count": len(completion["points"]),
+                                           "message": "Exact native history, solver completion and selected parameters verified"})
+                    atomic_write_json(os.path.join(root, _contract_text("completion_evidence.json") if _batch is None else physical_row["row_id"] + _contract_text("_completion.json")), completion)
+                    result = {"parsed": parsed, "parameter_application": parameter_application,
+                              "completion_evidence": completion, "command": candidate_command, "source_guard": guard,
+                              "timing": timing}
+                    atomic_write_json(os.path.join(root, _contract_text("native_baseline_result.json") if _batch is None else physical_row["row_id"] + _contract_text("_result.json")), result)
+                except UnsafeCompletionEvidence:
+                    raise
+                except CompletionEvidenceError as error:
+                    if physical_row is None:
+                        raise
+                    guard = require_source_guard()
+                    error.detail = dict(getattr(error, "detail", None) or {},
+                        source_guard=guard, cleanup_pending=False,
+                        native_baseline=cleanup, native_stop=cleanup["native_stop"])
+                    error.detail.setdefault("failure_stage", "native_completion_evidence")
+                    result = error
                 if _batch is None:
                     finish_phase()
                     return result
                 for candidate in [c for c in _batch['candidates'] if c['row_id'] == physical_row['row_id']]:
-                    item = copy.deepcopy(result)
-                    item['batch_reference'] = {'schema_version': _batch['schema_version'],
+                    reference = {'schema_version': _batch['schema_version'],
                         'batch_epoch': _batch['batch_epoch'], 'root': root,
                         'manifest': os.path.join(root, _contract_text('batch_manifest.json')),
                         'timing': os.path.join(root, _contract_text('batch_timing.json')),
                         'physical_ids': _batch['candidate_to_physical'][candidate['candidate_id']]}
-                    item['timing'] = {'phases': {}, 'shared_batch': item['batch_reference']}
-                    if _consume:
-                        _consume(candidate, item)
-                    references.commit(candidate['candidate_id'])
-                    results[candidate['candidate_id']] = item
+                    if isinstance(result, CompletionEvidenceError):
+                        item = type(result)(str(result))
+                        item.detail = copy.deepcopy(result.detail)
+                        item.batch_reference = reference
+                    else:
+                        item = copy.deepcopy(result)
+                        item['batch_reference'] = reference
+                        item['timing'] = {'phases': {}, 'shared_batch': reference}
+                    finish_consumer = _consume(candidate, item) if _consume else None
+                    if callable(finish_consumer):
+                        deferred_consumers.append((candidate["candidate_id"], finish_consumer))
+                    else:
+                        references.commit(candidate["candidate_id"])
+                    results[candidate["candidate_id"]] = item
             finish_phase()
             atomic_write_json(os.path.join(root, _contract_text('batch_timing.json')), timing)
-            return results
         except BaseException as error:
             if phase not in timing["phases"]:
                 finish_phase(completed=False)
@@ -764,13 +1064,52 @@ def evaluate_native_baseline(candidate_id, values, parameters, spec, prepared, c
             if _batch is not None:
                 atomic_write_json(os.path.join(root, _contract_text('batch_timing.json')), timing)
             detail = dict(getattr(error, "detail", None) or {})
+            if isinstance(error, CompletionEvidenceError):
+                detail.setdefault("failure_stage", "native_completion_evidence")
+                if isinstance(error, UnsafeCompletionEvidence):
+                    detail["completion_evidence_unsafe"] = True
+                source_guard = compact_source_guard(verify_sources_unchanged(owned))
+                detail["source_guard"] = source_guard
+                if not source_guard.get("ok"):
+                    detail.update(failure_stage="source_guard",
+                                  completion_evidence_unsafe=True)
+            if isinstance(error, NativeStartupCrash):
+                detail["failure_stage"] = "native_startup_crash"
+            elif isinstance(error, NativeBaselineTimeout):
+                detail.setdefault("failure_stage", "native_operation_timeout")
+                detail["phase"] = phase
+            crashes = driver.state.get("previous_startup_crashes") or []
+            first_crash = crashes[0] if crashes else driver.state.get("startup_crash")
+            if first_crash:
+                detail["first_startup_crash"] = first_crash
             detail.setdefault("failure_stage", "native_maestro_baseline")
+            if startup is not None and native_diagnostics is None and driver is not None:
+                try:
+                    native_diagnostics = _session_tool_diagnostics(driver, startup, selected)
+                except (OSError, ValueError):
+                    pass  # A diagnostic write cannot replace the native failure.
+            if native_diagnostics and (native_diagnostics.get("native_error") or native_diagnostics.get("library_init_warnings")):
+                detail["skill"] = _unqualified_library_init(native_diagnostics)
+                if (not getattr(error, "cancelled", False)
+                        and not isinstance(error, (CompletionEvidenceError, NativeStartupCrash, NativeBaselineTimeout))
+                        and (native_diagnostics.get("first_simulator_tool_error")
+                             or phase in ("worker_setup", "execution", "native_collection"))
+                        and native_diagnostics.get("first_error")):
+                    error.args = (native_diagnostics["first_error"]["message"],)
+            if worker_diagnostics:
+                detail["native_worker_diagnostics"] = dict(worker_diagnostics, logs=[
+                    dict(log, warnings=[dict(row, severity="UNQUALIFIED")
+                                        if row.get("category") == "library_init" else row
+                                        for row in log["warnings"]])
+                    for log in worker_diagnostics["logs"]])
             detail.update(cleanup_pending=not proof.get("cleanup_proven"), native_stop=proof.get("native_stop") or {},
                 native_baseline=proof, cancelled=bool(getattr(error, "cancelled", False)),
                 timing=timing)
             error.detail = detail
             if (_batch is not None and not driver.state.get('submission_intent')
                     and proof.get('cleanup_proven') and not getattr(error, 'cancelled', False)
+                    and not detail.get('completion_evidence_unsafe')
+                    and detail.get('failure_stage') != 'source_guard'
                     and not (cancel_check and cancel_check())):
                 from .generation_batch import BatchUnsupported
                 fallback = BatchUnsupported(str(error))
@@ -781,6 +1120,12 @@ def evaluate_native_baseline(candidate_id, values, parameters, spec, prepared, c
             if driver is not None and driver.state.get("cleanup_proven"):
                 with _ACTIVE_LOCK:
                     _ACTIVE.pop(root, None)
+    # Retrying a partition borrows the same suite again. Release this batch's
+    # lease first and retain its history reference until the retry is settled.
+    for candidate_id, finish_consumer in deferred_consumers:
+        finish_consumer()
+        references.commit(candidate_id)
+    return results
 
 
 def native_batch_export(driver):
@@ -792,6 +1137,10 @@ def evaluate_native_baseline_generation(plan, parameters, spec, prepared, config
                                         cancel_check=None, progress_callback=None, consume=None):
     if plan.get('schema_version') != _contract_text('crescendo.generation_batch.v1') or plan.get('submitted'):
         raise NativeBaselineError('Invalid or already submitted native generation plan')
+    if len(plan["rows"]) == 1:
+        from .generation_batch import BatchUnsupported
+        # Cadence exports a single set as a scalar run without design conditions.
+        raise BatchUnsupported("Native generation has only one distinct physical row")
     return evaluate_native_baseline('batch_' + plan['batch_epoch'], plan['rows'][0]['values'],
         parameters, spec, prepared, config, root, cancel_check, progress_callback,
         _batch=plan, _consume=consume)

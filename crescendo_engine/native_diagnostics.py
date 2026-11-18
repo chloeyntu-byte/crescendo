@@ -6,6 +6,7 @@ import re
 import stat
 import json
 import collections
+from contextlib import ExitStack
 
 from crescendo_engine.runtime import bind_text
 _contract_text = bind_text()
@@ -15,6 +16,7 @@ from .maestro_progress import _owned_binary_stream
 MAX_SCAN_BYTES = 64 * 1024 * 1024
 MAX_LINE_BYTES = 1024 * 1024
 MAX_ERRORS = 12
+MAX_COMPLETION_ERROR_SCOPES = 4096
 MAX_GUARD_SCRIPT_BYTES = 65536
 NATIVE_ERROR_FOLLOWING_LINES = 24
 MAX_NATIVE_ERROR_CONTEXTS = 4
@@ -200,7 +202,9 @@ _READER_RETURN = re.compile(r'^\s*\|+\s*\[(\d+)\]\s*(readstring|linereadstring)\
 MAX_READER_ENTRY_CHARS = 2048
 MAX_READER_ERROR_DISTANCE = 12
 
-_CODED_ERROR = re.compile(r'^\s*ERROR\s*\(([A-Z][A-Z0-9_]*-\d+)\)\s*:', re.I)
+# ADE workers can prefix output/error records in their transcript files.
+_OCEAN_RECORD_PREFIX = r'^[ \t]*(?:(?:\\[oe]|>)[ \t]+)?'
+_CODED_ERROR = re.compile(_OCEAN_RECORD_PREFIX + r'ERROR\s*\(([A-Z][A-Z0-9_]*-\d+)\)\s*:', re.I)
 _CRESCENDO_GUARD = re.compile(_contract_text(r'^\s*\*Error\*\s+(Crescendo [^\r\n]+)'))
 
 _SYNTAX = re.compile(r'\*Error\*\s+(?:lineread/read|read|load|eval).*?syntax error', re.I)
@@ -426,7 +430,278 @@ def generated_guard_context(text, message):
     return result
 
 
-def skill_command_diagnostics(command, script_path, required_marker=None, owned_root=None):
+# APS is a Spectre execution mode. A bridge can use both the saved capture
+# simulator and a different CLI solver, so protect the union of their names.
+OCEAN_TOOL_NAMES = {
+    "spectre": frozenset(("spectre", "aps", "spectreaps")),
+    "aps": frozenset(("spectre", "aps", "spectreaps")),
+    "spectreaps": frozenset(("spectre", "aps", "spectreaps")),
+    "alps": frozenset(("alps", "alpss")),
+}
+_TOOL_ERROR = re.compile(
+    _OCEAN_RECORD_PREFIX + r"""ERROR[ \t]*\((?:"""
+    r"""(ADE-5066)\)[ \t]*:[ \t]*Tool[ \t]+['"]([\w.+-]{1,256})['"][ \t]+has not been registered\."""
+    r"""|(ADE-5067)\)[ \t]*:[ \t]*Unable to initialize tool[ \t]+['"]([\w.+-]{1,256})['"]"""
+    r"""(?:; either tool class is not(?: defined or tool is not registered\.)?)?)[ \t]*$""",
+    re.I)
+_TOOL_CONTINUATION = re.compile(
+    r'^[ \t]*(?:\\[oe][ \t]+|[ \t]+)defined or tool is not registered\.[ \t]*$', re.I)
+
+
+def ocean_tool_error_code(line):
+    coded = _CODED_ERROR.match(line)
+    if coded and coded.group(1).upper() in ("ADE-5066", "ADE-5067"):
+        return coded.group(1).upper()
+    return None
+
+
+def ocean_tool_error(line, simulators):
+    """Return an exact tool diagnostic, with unknown simulator identity failing closed."""
+    text = line.rstrip('\r\n')
+    match = _TOOL_ERROR.match(text)
+    if not match:
+        return None
+    code = match.group(1) or match.group(3)
+    tool = match.group(2) or match.group(4)
+    names = sorted({str(name).strip().lower() for name in simulators})
+    unrelated = bool(names) and all(name in OCEAN_TOOL_NAMES and
+                                    tool.lower() not in OCEAN_TOOL_NAMES[name] for name in names)
+    return {"severity": "WARN" if unrelated else "ERROR", "native_code": code.upper(),
+            "tool": tool, "message": text, "simulators": names}
+
+
+def ocean_tool_continuation(warning, line):
+    text = line.rstrip('\r\n')
+    if (warning["native_code"] == "ADE-5067" and
+            warning["message"].rstrip().lower().endswith("tool class is not") and
+            _TOOL_CONTINUATION.match(text)):
+        warning["message"] += "\n" + text
+        return True
+    return False
+
+
+def ocean_console_warnings(lines, simulators, source, start_line=1, limit=MAX_ERRORS):
+    warnings = {}
+    for index, line in enumerate(lines):
+        warning = ocean_tool_error(line, simulators)
+        if warning and warning["severity"] == "WARN":
+            if index + 1 < len(lines):
+                ocean_tool_continuation(warning, lines[index + 1])
+            warnings.setdefault(index, dict(warning, console_source=source,
+                console_line=start_line + index))
+            if len(warnings) >= limit:
+                break
+    return warnings
+
+
+_CONSOLE_PREFIX = re.compile(_OCEAN_RECORD_PREFIX)
+_SKILL_ERROR = re.compile(r'^\*Error\*\s')
+_SKILL_FRAME = re.compile(r'^(?:[A-Za-z_?][\w.?@:-]*\(|\(|\.\.\.$)')
+_SKILL_LOAD_FRAME = re.compile(r'^loadi?\(\s*"([^"]+)"')
+_LIBRARY_INIT = re.compile(r'(?:^|/)libInit\.ils?$', re.I)
+_CADENCE_LIBRARY_CALLER = re.compile(
+    r'^(?:\(\.\.\. in )?(?:_axlTraverse|_axlTraverseDesignUnderTest|_maeGetLCVViewType|ddGetObj|ddLoadLibInit|_ddLoadLibInit)(?=[ (])')
+_GENERATED_SKILL_LOCATION = re.compile(
+    r'(?:^|[/\s"\'])(?:capture|patch|setup|startup|bootstrap|run|finish|stop)\.ils?(?=[:\s"\']|$)', re.I)
+_LIBRARY_INIT_WARNING_LIMIT = 256
+_LIBRARY_INIT_EVIDENCE_CHARS = 8192
+_OCEAN_WARNING_FIELDS = ('ocean_tool_warnings', 'library_init_warnings')
+
+
+def _console_record(line):
+    return _CONSOLE_PREFIX.sub('', line, count=1).strip()
+
+
+def library_init_error_text(line, script_path=None, exact=False):
+    """Return the exact SKILL error text eligible for library-init attribution."""
+    error = _CONSOLE_PREFIX.sub('', line, count=1).rstrip('\r\n')
+    if not exact:
+        error = error.rstrip()
+    if not _SKILL_ERROR.match(error) or "\ufffd" in error or "\0" in error:
+        return None
+    if _CRESCENDO_GUARD.match(error) or _GENERATED_SKILL_LOCATION.search(error):
+        return None
+    if script_path and os.path.basename(script_path) in error:
+        return None
+    return error
+
+
+def _library_init_error(stack, script_path):
+    if library_init_error_text(_console_record(stack[0]), script_path) is None:
+        return None
+    load_path = None
+    for raw in stack[1:]:
+        frame = _console_record(raw)
+        if load_path:
+            if _CADENCE_LIBRARY_CALLER.match(frame):
+                return load_path
+            # A second load with no Cadence caller separates a direct script
+            # load from a library initialized by Cadence.
+            if _SKILL_LOAD_FRAME.match(frame):
+                break
+        else:
+            if _GENERATED_SKILL_LOCATION.search(frame):
+                break
+            load = _SKILL_LOAD_FRAME.match(frame)
+            if load:
+                if not _LIBRARY_INIT.search(load.group(1)):
+                    break
+                load_path = load.group(1)
+    return None
+
+
+def library_init_console_warnings(lines, source, start_line=1, required_marker=None, script_path=None,
+                                  legacy_run=False):
+    """Classify only stack-backed errors in a matched stage on this console."""
+    pairs = {_contract_text('CRESCENDO_PRIVATE_NETLIST_CAPTURE_BEGIN'):
+                 _contract_text('CRESCENDO_PRIVATE_NETLIST_CAPTURE_DONE'),
+             _contract_text('CRESCENDO_SETUP_PRIVATE_BINDING_BEGIN'):
+                 _contract_text('CRESCENDO_SETUP_PRIVATE_BINDING_DONE')}
+    stages = ('Startup', 'LibraryLookup', 'Run', 'RunIdCheck', 'Wait', 'HistoryLookup', 'HistoryName')
+    for stage in stages:
+        prefix = 'CRESCENDO_NATIVE_RUN_STAGE ' + stage
+        pairs[_contract_text(prefix + ' BEGIN')] = _contract_text(prefix + ' RETURN')
+    # A caller replaying an older application dialect supplies its exact DONE.
+    if required_marker and required_marker.endswith('_PRIVATE_NETLIST_CAPTURE_DONE'):
+        stage_prefix = required_marker[:-len('_PRIVATE_NETLIST_CAPTURE_DONE')] + '_NATIVE_RUN_STAGE'
+        pairs[required_marker[:-len('_DONE')] + '_BEGIN'] = required_marker
+        for stage in stages:
+            prefix = stage_prefix + ' ' + stage
+            pairs[prefix + ' BEGIN'] = prefix + ' RETURN'
+    if legacy_run:
+        for stage in stages:
+            prefix = 'MCO_NATIVE_RUN_STAGE ' + stage
+            pairs[prefix + ' BEGIN'] = prefix + ' RETURN'
+    ends = frozenset(pairs.values())
+    active, warnings = [], {}
+    stack, error_index, trace_seen = [], None, False
+
+    def record_stack(last):
+        if not trace_seen or not active:
+            return
+        path = _library_init_error(stack, script_path)
+        pending = active[-1][2]
+        if path and len(warnings) + len(pending) < _LIBRARY_INIT_WARNING_LIMIT:
+            message = '\n'.join(stack)
+            truncated = len(message) > _LIBRARY_INIT_EVIDENCE_CHARS or _console_record(stack[-1]) == '...'
+            pending[error_index] = {
+                'severity': 'WARN', 'category': 'library_init',
+                'message': message[:_LIBRARY_INIT_EVIDENCE_CHARS], 'stack_trace_truncated': truncated,
+                'library_init_path': path, 'console_source': source, 'console_line': start_line + error_index,
+                'console_end_line': start_line + last,
+            }
+
+    for index, line in enumerate(lines):
+        line = line.rstrip('\r\n')
+        text = _console_record(line)
+        if stack:
+            if not trace_seen and (not text or text == '<<< Stack Trace >>>') and len(stack) < 5:
+                trace_seen = bool(text)
+                stack.append(line)
+                continue
+            if trace_seen and _SKILL_FRAME.match(text) and len(stack) < 64:
+                stack.append(line)
+                continue
+            if not (trace_seen and _SKILL_FRAME.match(text)):
+                record_stack(index - 1)
+            stack, trace_seen = [], False
+        if text.startswith('[diagnostic byte gap:'):
+            active.clear()
+        elif text in pairs:
+            for i, (end, _, _) in enumerate(active):
+                if end == pairs[text]:
+                    del active[i:]
+                    break
+            active.append((pairs[text], start_line + index, {}))
+        elif text in ends:
+            if active and active[-1][0] == text:
+                _, begin, pending = active.pop()
+                for first, warning in pending.items():
+                    if len(warnings) >= _LIBRARY_INIT_WARNING_LIMIT:
+                        break
+                    warnings[first] = dict(warning, stage_begin_line=begin, completion_line=start_line + index,
+                                           completion_marker=text)
+            else:
+                active.clear()
+        elif active and _SKILL_ERROR.match(text):
+            stack, error_index = [line], index
+    return warnings
+
+
+def library_init_console_proofs(diagnostics, exact=False):
+    """Exact headers that a complete owned Ocean transcript attributed by stack."""
+    if diagnostics.get('console_scope') != 'owned_full_logs' or not diagnostics.get('scan_complete'):
+        return {}
+    return {library_init_error_text(row['message'].split('\n', 1)[0], exact=exact): row
+            for row in diagnostics.get('library_init_warnings', ())
+            if 'related_console_line' not in row}
+
+
+def related_library_init(line, source, number, proofs, script_path=None):
+    header = library_init_error_text(line, script_path, exact=True)
+    proof = proofs.get(header) if header is not None else None
+    if proof is not None:
+        return {'severity': 'WARN', 'category': 'library_init', 'message': line.rstrip('\r\n'),
+                'console_source': source, 'console_line': number,
+                'library_init_path': proof['library_init_path'],
+                'related_console_source': proof['console_source'],
+                'related_console_line': proof['console_line']}
+
+
+def stackless_skill_errors(lines):
+    """Yield only exact headers whose next nonblank line has no stack trace."""
+    pending = None
+    for index, line in enumerate(lines):
+        text = _console_record(line)
+        if not text:
+            continue
+        if pending is not None and text != '<<< Stack Trace >>>':
+            yield pending
+        pending = (index, line) if _SKILL_ERROR.match(text) else None
+    if pending is not None:
+        yield pending
+
+
+def ocean_warning_lines(warnings, start_line=1):
+    return {index for warning in warnings.values()
+            for index in range(warning['console_line'] - start_line,
+                               warning.get('console_end_line', warning['console_line']) - start_line + 1)}
+
+
+def recorded_ocean_warnings(diagnostics):
+    return [item for field in _OCEAN_WARNING_FIELDS for item in (diagnostics.get(field) or [])]
+
+
+def ocean_warning_key(warning):
+    key = (warning.get('native_code') or warning.get('category'), warning.get('message'))
+    if warning.get('source') == 'worker':
+        return key + (warning.get('console_source'), warning.get('console_line'))
+    return key
+
+
+def log_ocean_tool_warnings(config, root, warnings):
+    run_root = (config or {}).get("_native_warning_run_root")
+    if not run_root:
+        return
+    from .run_log import append_run_event
+    from .environment_probes import _redact
+    cadence = (config or {}).get("cadence") or {}
+    environment = dict(os.environ)
+    environment.update(cadence.get("launch_environment") or {})
+    if cadence.get("license_file"):
+        environment["CDS_LIC_FILE"] = cadence["license_file"]
+    seen = set()
+    for warning in warnings:
+        key = ocean_warning_key(warning)
+        if key in seen:
+            continue
+        seen.add(key)
+        safe = _redact(dict(warning, path=root), environment)
+        append_run_event(run_root, "ocean_tool_warning", safe["message"], details=safe, level="WARN")
+
+
+def skill_command_diagnostics(command, script_path, required_marker=None, owned_root=None, simulators=(),
+                              native_completion=False):
     """Scan this owned command's console, retaining only bounded useful evidence.
 
     Intentional capture-only simulator exits (ASSEMBLER-5031) are observations,
@@ -445,13 +720,39 @@ def skill_command_diagnostics(command, script_path, required_marker=None, owned_
     native_run_evidence = []
     reader_traces, reader_pending = {}, {}
     terminal_error = None
+    first_simulator_tool_error = None
+    tool_warnings, warning_keys, pending_warnings = [], set(), {}
     run_prefixes, run_prefix_evidence, setup_observations = {}, [], []
+    library_warnings, point_reports, completion_errors = [], {}, {}
 
     def inspect_line(raw, source, number):
-        nonlocal marker_seen, last_block, expected_capture_failures, terminal_error
+        nonlocal marker_seen, last_block, expected_capture_failures, terminal_error, first_simulator_tool_error
+        nonlocal scan_complete
         text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+        point = None
+        if native_completion:
+            record = _console_record(text)
+            report = re.fullmatch(
+                r"ERROR \(ASSEMBLER-5011\): While simulating run ([^,]+), point (\d+), test (.+?), received error:",
+                record)
+            if report:
+                point = dict(history_name=report[1], point_id=int(report[2]), test=report[3])
+                point_reports[source] = (point, False)
+            elif source in point_reports:
+                current, in_body = point_reports[source]
+                if record == "------------------------------" and not in_body:
+                    point_reports[source] = (current, True)
+                elif record == "------------------------------" or text.lstrip().startswith(">") or (
+                        _contract_text("CRESCENDO_NATIVE_RUN_STAGE ") in record or
+                        record.startswith("MCO_NATIVE_RUN_STAGE ")):
+                    point_reports.pop(source)
+                elif in_body:
+                    point = current
         if source in ('ocean.stdout', 'ocean.stderr'):
-            marker = text.strip()
+            marker = _console_record(text)
+            if native_completion and marker in (_contract_text('CRESCENDO_NATIVE_RUN_STAGE Run RETURN'),
+                                                'MCO_NATIVE_RUN_STAGE Run RETURN'):
+                marker_seen = True
             if marker.startswith((_contract_text('CRESCENDO_NATIVE_SETUP_OBSERVATION '), _contract_text('CRESCENDO_NATIVE_SETUP_TRACE '))) and len(setup_observations) < 8:
                 setup_observations.append({'source': source, 'line': number, 'text': marker[:1024]})
             evidence = re.match(_contract_text(r'^CRESCENDO_NATIVE_RUN_(STAGE (RunIdCheck|HistoryLookup|HistoryName) (BEGIN|RETURN)|VALUE (runId|history) (.*))$'), marker)
@@ -548,11 +849,28 @@ def skill_command_diagnostics(command, script_path, required_marker=None, owned_
             last_block = {"name": block.group(1), "block": int(block.group(2)),
                           "blocks": int(block.group(3)), "body_first_line": int(block.group(4)),
                           "body_last_line": int(block.group(5))}
+        pending_warning = pending_warnings.pop(source, None)
+        if pending_warning is not None and ocean_tool_continuation(pending_warning, text):
+            return
+        tool_error = ocean_tool_error(text, simulators)
+        if tool_error and tool_error["severity"] == "WARN":
+            key = (source, tool_error["message"])
+            if key not in warning_keys and len(tool_warnings) < MAX_ERRORS:
+                warning_keys.add(key)
+                tool_error.update(console_source=source, console_line=number)
+                tool_warnings.append(tool_error)
+                pending_warnings[source] = tool_error
+            return
         coded = _CODED_ERROR.match(text)
+        if (coded and coded.group(1).upper() in ("ADE-5066", "ADE-5067")
+                and first_simulator_tool_error is None):
+            first_simulator_tool_error = dict(tool_error or {}, severity="ERROR",
+                native_code=coded.group(1).upper(), message=text.rstrip("\r\n")[:2048],
+                console_source=source, console_line=number)
         display_fatal = bool(_DISPLAY_FATAL.match(text))
         # Keep the existing 5031-only exclusion. A required DONE marker is not
         # proof that a wrapper ran, so other coded errors are never waived here.
-        capture_aftermath = bool(coded and coded.group(1).upper() == 'ASSEMBLER-5031')
+        capture_aftermath = bool(not native_completion and coded and coded.group(1).upper() == 'ASSEMBLER-5031')
         if "ASSEMBLER-5031" in text:
             expected_capture_failures += 1
         if capture_aftermath or (not display_fatal and "*Error*" not in text and not coded and not re.search(r'\bsyntax error\b', text, re.I)):
@@ -566,9 +884,20 @@ def skill_command_diagnostics(command, script_path, required_marker=None, owned_
             "kind": "native_display_error" if display_fatal else "skill_syntax_error" if _SYNTAX.search(key) or re.search(r'\bsyntax error\b', key, re.I) else "native_error"}
         if coded:
             terminal_error['native_code'] = coded.group(1).upper()
+        if point:
+            terminal_error.update(point)
+            key = (key, point["history_name"], point["test"], point["point_id"])
+        if native_completion:
+            scope = ((point["history_name"], point["test"], point["point_id"]) if point else None)
+            if scope not in completion_errors:
+                if len(completion_errors) == MAX_COMPLETION_ERROR_SCOPES:
+                    scan_complete = False
+                else:
+                    completion_errors[scope] = terminal_error
         if key in seen:
             return
         seen.add(key)
+        key = text.strip()
         if (not pending or number > pending['error_line'] + pending['following_line_limit']) and len(native_contexts) < MAX_NATIVE_ERROR_CONTEXTS:
             trace = native_run_traces.get(source) or {}
             context = native_error_context([item[1] for item in recent], len(recent)-1,
@@ -605,6 +934,8 @@ def skill_command_diagnostics(command, script_path, required_marker=None, owned_
                 row['native_reader_call'] = evidence
         if coded:
             row['native_code'] = coded.group(1).upper()
+        if point:
+            row.update(point)
         if location:
             row["reported_file"] = location.group(3)[:2048]
             row["reported_line"] = int(location.group(1))
@@ -622,27 +953,57 @@ def skill_command_diagnostics(command, script_path, required_marker=None, owned_
         errors.append(row)
         terminal_error = row
 
-    for name in ("ocean.stdout", "ocean.stderr"):
-        path = os.path.join(root, name)
+    def scan(lines, source, classified, proofs):
+        if native_completion:
+            for index, line in stackless_skill_errors(lines()):
+                warning = related_library_init(line, source, index + 1, proofs, script_path)
+                if warning is not None and len(classified) < _LIBRARY_INIT_WARNING_LIMIT:
+                    classified[index] = warning
+        skipped = ocean_warning_lines(classified)
+        library_warnings.extend(dict(classified[index], source="ocean") for index in sorted(classified))
+        for number, line in enumerate(lines(), 1):
+            if number - 1 not in skipped:
+                inspect_line(line, source, number)
+
+    def console_lines(stream):
+        nonlocal scan_complete
+        stream.seek(0)
         total = 0
-        with _owned_binary_stream(path, root) as stream:
-            if stream is None:
-                continue
-            inspected.append(name)
-            for number in range(1, 10000000):
-                raw = stream.readline(MAX_LINE_BYTES + 1)
-                if not raw:
-                    break
-                total += len(raw)
-                if len(raw) > MAX_LINE_BYTES or total > MAX_SCAN_BYTES:
-                    scan_complete = False
-                    break
-                inspect_line(raw, name, number)
+        for raw in iter(lambda: stream.readline(MAX_LINE_BYTES + 1), b""):
+            total += len(raw)
+            if len(raw) > MAX_LINE_BYTES or total > MAX_SCAN_BYTES:
+                scan_complete = False
+                break
+            text = raw.decode("utf-8", "replace")
+            if _console_record(text).startswith("[diagnostic byte gap:"):
+                scan_complete = False
+            yield text
+
+    with ExitStack() as stack:
+        streams, classified = {}, {}
+        for name in ("ocean.stdout", "ocean.stderr"):
+            path = os.path.join(root, name)
+            stream = stack.enter_context(_owned_binary_stream(path, root))
+            if native_completion and stream is None and os.path.lexists(path):
+                scan_complete = False
+            if stream is not None:
+                inspected.append(name)
+                streams[name] = stream
+                classified[name] = library_init_console_warnings(console_lines(stream), name,
+                    required_marker=required_marker, script_path=script_path, legacy_run=native_completion)
+        proofs = {}
+        if native_completion and scan_complete:
+            proofs = {library_init_error_text(row['message'].split('\n', 1)[0], exact=True): row
+                      for source in classified.values() for row in source.values()}
+        for name, stream in streams.items():
+            scan(lambda: console_lines(stream), name, classified[name], proofs)
     if not inspected:
-        # Injected runners may provide only tails. Keep this scope explicit.
+        # Injected runners may provide only tails. They cannot qualify Native Run's owned console.
         for name in ("stdout_tail", "stderr_tail"):
-            for number, line in enumerate(str(command.get(name) or "").splitlines(), 1):
-                inspect_line(line, name, number)
+            lines = str(command.get(name) or "").splitlines()
+            classified = {} if native_completion else library_init_console_warnings(
+                lines, name, required_marker=required_marker, script_path=script_path)
+            scan(lambda: iter(lines), name, classified, {})
     syntax_errors = [row for row in errors if row["kind"] == "skill_syntax_error"]
     result = {"schema_version": _contract_text("crescendo.native_skill_diagnostics.v1"),
             "console_scope": "owned_full_logs" if inspected else "command_tails_only",
@@ -661,6 +1022,14 @@ def skill_command_diagnostics(command, script_path, required_marker=None, owned_
             "ok": command.get("returncode") == 0 and scan_complete and not errors
                 and (not required_marker or marker_seen)
                 and not any(command.get(key) for key in ("timed_out", "cancelled", "termination_failed"))}
+    if native_completion:
+        result["completion_errors"] = list(completion_errors.values())
+    if tool_warnings:
+        result["ocean_tool_warnings"] = tool_warnings
+    if library_warnings:
+        result["library_init_warnings"] = library_warnings
+    if first_simulator_tool_error:
+        result["first_simulator_tool_error"] = first_simulator_tool_error
     if setup_observations:
         result['native_setup_observations'] = setup_observations
     if run_prefix_evidence:

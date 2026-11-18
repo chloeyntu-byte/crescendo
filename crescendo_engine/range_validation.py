@@ -412,9 +412,18 @@ def validate_variable_request_report(prepared, variables):
 
         issues.extend(row_issues)
         if not row_issues:
-            normalized.append({
-                "parameter_id": parameter_id, "minimum": minimum, "maximum": maximum,
-            })
+            item = {"parameter_id": parameter_id, "minimum": minimum, "maximum": maximum}
+            if any(field in row for field in ("step", "grid_origin", "link_group")):
+                for field in ("scale", "value_type", "step", "grid_origin", "link_group"):
+                    if field in row:
+                        item[field] = row[field]
+            normalized.append(item)
+    if not issues and any(row.get("link_group") for row in normalized):
+        try:
+            validate_variables([merge_catalog_domain(row, available[row["parameter_id"]]) for row in normalized])
+        except ValueError as error:
+            issues.append(_validation_issue("invalid_link_group", None, None, "link_group", None,
+                                           None, None, None, None, str(error)))
     return {"valid": not issues, "variables": normalized, "issues": issues}
 
 

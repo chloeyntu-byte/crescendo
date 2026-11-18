@@ -18,6 +18,14 @@ class CompletionEvidenceError(RuntimeError):
     pass
 
 
+class NativeTemporaryDirectoryError(CompletionEvidenceError):
+    """A Native Run worker could not create a directory in its private ADE tree."""
+
+
+class UnsafeCompletionEvidence(CompletionEvidenceError):
+    """A path, artifact identity or cleanup guarantee is unsafe to reuse."""
+
+
 class UnsupportedCompletionEvidence(CompletionEvidenceError):
     pass
 
@@ -32,10 +40,10 @@ _DONE_MESSAGES = set(("done", "completed", "complete", "passed", "pass", "succes
 def _relative_artifact(path, workspace_root, label):
     absolute = os.path.abspath(path)
     if not is_under(absolute, workspace_root):
-        raise CompletionEvidenceError("%s escapes the working candidate workspace: %s" % (label, absolute))
+        raise UnsafeCompletionEvidence("%s escapes the working candidate workspace: %s" % (label, absolute))
     real = os.path.realpath(absolute)
     if not is_under(real, workspace_root):
-        raise CompletionEvidenceError("%s resolves outside the working candidate workspace: %s" % (label, absolute))
+        raise UnsafeCompletionEvidence("%s resolves outside the working candidate workspace: %s" % (label, absolute))
     return os.path.relpath(absolute, workspace_root).replace(os.sep, "/")
 
 
@@ -45,11 +53,11 @@ def _owned_setup_results_root(workspace):
     from .same_library_views import owns_view
     target = tuple(workspace.get(key) for key in ("primary_library", "setup_cell", "setup_view"))
     if not all(target) or not owns_view(workspace, target, role="maestro", require_marker=True):
-        raise CompletionEvidenceError("Maestro working copy result ownership was not proven")
+        raise UnsafeCompletionEvidence("Maestro working copy result ownership was not proven")
     setup_dir = workspace.get("setup_dir")
     expected = os.path.join(os.path.realpath(workspace["source_libraries"][target[0]]), target[1], target[2])
     if not setup_dir or os.path.abspath(setup_dir) != expected:
-        raise CompletionEvidenceError("Maestro working copy setup does not match its exact owned view")
+        raise UnsafeCompletionEvidence("Maestro working copy setup does not match its exact owned view")
     return os.path.join(expected, "results", "maestro")
 
 
@@ -99,6 +107,16 @@ def _spectre_log_evidence(path, workspace_root, include_timing=False):
         raise UnsupportedCompletionEvidence("Spectre completion log is missing: %s" % path)
     text = _tail_text(path)
     matches = list(_SPECTRE_COMPLETION.finditer(text))
+    start = matches[-2].end() if len(matches) > 1 else 0
+    end = matches[-1].start() if matches else len(text)
+    invocation = text[start:end]
+    killed = re.search(r"^\s*(ERROR \(SPECTRE-25\): )?Killed by user\.\s*$", invocation, re.MULTILINE)
+    if killed:
+        sender = re.search(r"^Spectre received (SIG[A-Z0-9]+) sent from PID: (\d+) with UID: (\d+)\.$",
+                           invocation, re.MULTILINE)
+        code = " (SPECTRE-25)" if killed.group(1) else ""
+        detail = ("; %s from PID %s UID %s" % sender.groups()) if sender else ""
+        raise CompletionEvidenceError("Spectre was terminated externally%s%s: %s" % (code, detail, path))
     if not matches:
         raise UnsupportedCompletionEvidence(
             "Spectre log has no recognized completion summary; add a completion adapter for this simulator/version: %s" % path
@@ -114,8 +132,7 @@ def _spectre_log_evidence(path, workspace_root, include_timing=False):
         "error_count": error_count,
     }
     if include_timing and not os.path.islink(path):
-        start = matches[-2].end() if len(matches) > 1 else 0
-        evidence["solver_wall_seconds"] = _spectre_wall_seconds(text[start:match.start()])
+        evidence["solver_wall_seconds"] = _spectre_wall_seconds(invocation)
     return evidence
 
 
@@ -142,10 +159,10 @@ def _alps_log_evidence(task, owned_root, launch_epoch):
             return result
         except FileNotFoundError:
             if source_present or os.path.lexists(path):
-                raise CompletionEvidenceError("ALPS preferred PSF result log is dangling or changed; unsafe log rejected: " + path)
+                raise UnsafeCompletionEvidence("ALPS preferred PSF result log is dangling or changed; unsafe log rejected: " + path)
             continue
         except OwnedSolverLogError as error:
-            raise CompletionEvidenceError("ALPS fresh owned PSF result log is missing, empty or stale; unsafe log rejected (%s): %s" % (error.reason, path))
+            raise UnsafeCompletionEvidence("ALPS fresh owned PSF result log is missing, empty or stale; unsafe log rejected (%s): %s" % (error.reason, path))
     raise UnsupportedCompletionEvidence("ALPS fresh owned PSF result log is missing, empty or stale: " + psf)
 
 
@@ -157,7 +174,7 @@ def _shared_spectre_log_binding(path, psf_dir, history_root, test_name):
     components = os.path.relpath(real_log, history_root).split(os.sep)
     if (len(components) != 4 or not components[0].isdigit()
             or components[1:] != [test_name, "psf", "spectre.out"]):
-        raise CompletionEvidenceError(
+        raise UnsafeCompletionEvidence(
             "shared Spectre log is not bound to the same history/test: %s" % path
         )
     expected_psf = os.path.realpath(psf_dir)
@@ -175,7 +192,7 @@ def _shared_spectre_log_binding(path, psf_dir, history_root, test_name):
                     "point_psf_output": reference,
                     "real_log": os.path.relpath(real_log, history_root).replace(os.sep, "/"),
                 }
-    raise CompletionEvidenceError(
+    raise UnsafeCompletionEvidence(
         "shared Spectre log has no output binding for the completed point PSF: %s" % psf_dir
     )
 
@@ -227,7 +244,7 @@ def _validate_command(command):
         raise CompletionEvidenceError("ADE command timed out")
     if command.get('schema_version') == _contract_text('crescendo.maestro_baseline.v1'):
         if command.get('guardian_returncode') != 0 or command.get('cleanup_pending') is not False:
-            raise CompletionEvidenceError('Native Maestro guardian termination is unproven')
+            raise UnsafeCompletionEvidence('Native Maestro guardian termination is unproven')
     elif command.get("returncode") != 0:
         raise CompletionEvidenceError("ADE command returned %r" % command.get("returncode"))
     history_name = command.get("history_name")
@@ -243,14 +260,14 @@ def _validate_rdb_identity(workspace, command, parsed, history_name):
         raise CompletionEvidenceError("the bound ADE RDB is missing")
     if (command.get('schema_version') == _contract_text('crescendo.maestro_baseline.v1') and
             (not command.get('rdb_path') or os.path.abspath(path) != os.path.abspath(command['rdb_path']))):
-        raise CompletionEvidenceError('Native Run RDB differs from the bound history path')
+        raise UnsafeCompletionEvidence('Native Run RDB differs from the bound history path')
     relative = _artifact_reference(path, workspace, "ADE RDB")
     info = os.lstat(path)
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-        raise CompletionEvidenceError("ADE RDB is not a regular unique history file")
+        raise UnsafeCompletionEvidence("ADE RDB is not a regular unique history file")
     expected_name = history_name + ".rdb"
     if os.path.basename(path) != expected_name:
-        raise CompletionEvidenceError(
+        raise UnsafeCompletionEvidence(
             "ADE RDB history mismatch: expected %s, found %s" % (expected_name, os.path.basename(path))
         )
     started_epoch = command.get("started_epoch")
@@ -277,6 +294,11 @@ def _completed_point_statuses(setup, parsed, point_map, native_corner_identity=N
     missing_tests = sorted(name for name, rows in by_test.items() if not rows)
     if missing_tests:
         raise CompletionEvidenceError("ADE RDB is missing completed points for test(s): %s" % ", ".join(missing_tests))
+    expected_points = parsed.get("expected_native_points")
+    if expected_points is not None:
+        missing = set(expected_points) - {(row["test_name"], row["pointID"]) for row in statuses}
+        if missing:
+            raise CompletionEvidenceError("ADE RDB is missing native status for point(s): %s" % sorted(missing))
     expected_corners = set(_enabled_corner_names(setup))
     results = []
     for test_name in expected_tests:
@@ -291,8 +313,9 @@ def _completed_point_statuses(setup, parsed, point_map, native_corner_identity=N
                     completed_status = False
                 if not completed_status:
                     raise CompletionEvidenceError(
-                        "ADE point %s/%s has non-complete statusCode=%r" % (
+                        "ADE point %s/%s has non-complete statusCode=%r: %s" % (
                             test_name, status.get("pointID"), status_code,
+                            status.get("status_message") or "no native status message",
                         )
                     )
             elif message not in _DONE_MESSAGES:
@@ -302,6 +325,9 @@ def _completed_point_statuses(setup, parsed, point_map, native_corner_identity=N
                     )
                 )
             point = point_map.get(status.get("pointID"), {})
+            if not point:
+                raise CompletionEvidenceError("ADE RDB is missing point identity for %s/%s" %
+                                              (test_name, status.get("pointID")))
             corner = normalize_corner_name(point.get("corner_name"))
             observed_corners.add(corner)
             result = {
@@ -316,7 +342,7 @@ def _completed_point_statuses(setup, parsed, point_map, native_corner_identity=N
             if physical_test is not None:
                 expected = (parsed.get("candidate_test_name_map") or {}).get(physical_test)
                 if expected != test_name:
-                    raise CompletionEvidenceError("candidate physical test identity mismatch")
+                    raise UnsafeCompletionEvidence("candidate physical test identity mismatch")
                 result["artifact_test"] = physical_test
             results.append(result)
         if native_corner_identity is None and expected_corners and not expected_corners.issubset(observed_corners):
@@ -424,7 +450,7 @@ def _validate_native_effective_scope(setup, statuses, parsed, snapshot):
                                       (all_differences[:4] or all_sweeps[:4]))
 
 
-def _validate_outputs(setup, parsed, status_rows, required_output_keys=None):
+def _validate_outputs(setup, parsed, status_rows, required_output_keys=None, measurement_failures=()):
     output_map = parsed.get("output_map") or {}
     expected = sorted(set(required_output_keys if required_output_keys is not None else _expected_output_keys(setup)))
     missing = [key for key in expected if key not in output_map]
@@ -433,6 +459,7 @@ def _validate_outputs(setup, parsed, status_rows, required_output_keys=None):
     points_by_test = {}
     for status in status_rows:
         points_by_test.setdefault(status["test"], set()).add(status["point_id"])
+    failed_points = {(row["output"], row["point_id"]) for row in measurement_failures}
     summaries = []
     for key in expected:
         output = output_map[key]
@@ -441,7 +468,7 @@ def _validate_outputs(setup, parsed, status_rows, required_output_keys=None):
         for value in output.get("values", []):
             if value.get("point_id") is not None:
                 observed.add(value["point_id"])
-            if value.get("error"):
+            if value.get("error") and (key, value.get("point_id")) not in failed_points:
                 errors.append(str(value["error"]))
         test_name = output.get("test")
         missing_points = sorted(points_by_test.get(test_name, set()) - observed)
@@ -562,22 +589,27 @@ def _prepare_native_point_identity(workspace, setup, command, history_name, stat
         test = tests[status["test"]]
         artifact_test = status.get("artifact_test") or status["test"]
         if not isinstance(artifact_test, str) or artifact_test in (".", "..") or os.path.basename(artifact_test) != artifact_test:
-            raise CompletionEvidenceError("unsafe physical test identity for native corner proof")
+            raise UnsafeCompletionEvidence("unsafe physical test identity for native corner proof")
         history_root = command.get("results_dir") if (command.get("backend") or workspace.get("setup_backend")) == "adexl" else _history_root(workspace, test, history_name)
         if not history_root:
             raise UnsupportedCompletionEvidence("native corner netlist history is unavailable")
         directory = os.path.join(history_root, str(status["point_id"]), artifact_test, "netlist")
         path = os.path.join(directory, _contract_text("input.scs"))
         _artifact_reference(path, workspace, "native corner netlist")
-        info = os.lstat(path)
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > MAX_NETLIST_BYTES:
-            raise UnsupportedCompletionEvidence("native corner netlist is not a bounded regular file: %s" % path)
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            raise UnsupportedCompletionEvidence("native corner netlist is missing: %s" % path)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise UnsafeCompletionEvidence("native corner netlist is not a unique regular file: %s" % path)
+        if info.st_size > MAX_NETLIST_BYTES:
+            raise UnsupportedCompletionEvidence("native corner netlist exceeds qualification bound: %s" % path)
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
         with native_log_read_scope(path):
             descriptor = os.open(path, flags)
             with os.fdopen(descriptor, "rb") as stream:
                 if not os.path.samestat(info, os.fstat(stream.fileno())):
-                    raise CompletionEvidenceError("native corner netlist changed during open")
+                    raise UnsafeCompletionEvidence("native corner netlist changed during open")
                 text = stream.read(MAX_NETLIST_BYTES + 1)
         if len(text) > MAX_NETLIST_BYTES:
             raise UnsupportedCompletionEvidence("native corner netlist exceeds qualification bound")
@@ -750,6 +782,8 @@ def _alps_native_receipt(workspace, command, psf_dir):
 def _baseline_history_protocol(command, candidate_root, history_name):
     """Qualify an actual owned Maestro Run/Wait/Close transcript, not a CLI receipt."""
     import math
+    from .native_baseline import NativeBaselineError, native_attempt_control
+
     record = command.get('native_baseline')
     if command.get('schema_version') != _contract_text('crescendo.maestro_baseline.v1') or not isinstance(record, dict):
         raise UnsupportedCompletionEvidence('Native Run protocol evidence is unavailable')
@@ -760,40 +794,44 @@ def _baseline_history_protocol(command, candidate_root, history_name):
             record.get('history_name') != history_name or record.get('run_id') != command.get('run_id') or
             not isinstance(record.get('run_id'), str) or not record.get('run_id') or
             record.get('native_session_closed') is not True or record.get('local_cleanup_proven') is not True):
-        raise CompletionEvidenceError('Native Run identity, history or cleanup identity is unproven')
+        raise UnsafeCompletionEvidence('Native Run identity, history or cleanup identity is unproven')
     started, finished = record.get('started_epoch'), record.get('finished_epoch')
     if (isinstance(started, bool) or isinstance(finished, bool) or
             not isinstance(started, (int, float)) or not isinstance(finished, (int, float)) or
             not math.isfinite(started) or not math.isfinite(finished) or started <= 0 or finished < started or
             command.get('started_epoch') != started or command.get('finished_epoch') != finished):
-        raise CompletionEvidenceError('Native Run timestamps are invalid')
+        raise UnsafeCompletionEvidence('Native Run timestamps are invalid')
     nonce, path = record.get('nonce'), record.get('protocol_path')
+    try:
+        control = native_attempt_control(os.path.abspath(candidate_root), record.get('startup_attempt', 1))
+    except NativeBaselineError as error:
+        raise UnsafeCompletionEvidence(str(error))
     if (not isinstance(nonce, str) or not re.fullmatch(r'[a-f0-9]{32}', nonce) or
-            not isinstance(path, str) or os.path.abspath(path) != os.path.join(os.path.abspath(candidate_root), 'native_baseline', 'native_baseline_protocol.tsv')):
-        raise CompletionEvidenceError('Native Run protocol path or nonce is invalid')
+            not isinstance(path, str) or os.path.abspath(path) != os.path.join(control, 'native_baseline_protocol.tsv')):
+        raise UnsafeCompletionEvidence('Native Run protocol path or nonce is invalid')
     _relative_artifact(path, os.path.abspath(candidate_root), 'Native Run protocol')
     try:
         info = os.lstat(path)
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 1024 * 1024 or info.st_mtime + 2 < started:
-            raise CompletionEvidenceError('Native Run protocol is not a fresh owned regular file')
+            raise UnsafeCompletionEvidence('Native Run protocol is not a fresh owned regular file')
         descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
         with os.fdopen(descriptor, 'rb') as stream:
             if not os.path.samestat(info, os.fstat(stream.fileno())):
-                raise CompletionEvidenceError('Native Run protocol changed during open')
+                raise UnsafeCompletionEvidence('Native Run protocol changed during open')
             raw = stream.read(1024 * 1024 + 1)
     except OSError as error:
         raise UnsupportedCompletionEvidence('Native Run protocol could not be read: %s' % error)
     if len(raw) > 1024 * 1024 or hashlib.sha256(raw).hexdigest() != record.get('protocol_sha256'):
-        raise CompletionEvidenceError('Native Run protocol hash differs')
+        raise UnsafeCompletionEvidence('Native Run protocol hash differs')
     try:
         rows = [line.split('\t') for line in raw.decode('utf-8').splitlines()]
     except UnicodeError:
         raise CompletionEvidenceError('Native Run protocol encoding is invalid')
     if any(len(row) != 3 or row[0] != nonce for row in rows):
-        raise CompletionEvidenceError('Native Run protocol record identity differs')
+        raise UnsafeCompletionEvidence('Native Run protocol record identity differs')
     observed = [{'state': row[1], 'value': row[2], 'sequence': index} for index, row in enumerate(rows)]
     if observed != record.get('records'):
-        raise CompletionEvidenceError('Native Run protocol records differ')
+        raise UnsafeCompletionEvidence('Native Run protocol records differ')
     required = ['RUN_BEGIN', 'RUN_ID', 'SIM_DONE', 'WAIT_RETURN', 'HISTORY', 'CLOSED']
     selected = [row for row in observed if row['state'] in required]
     if ([row['state'] for row in selected] != required or
@@ -817,7 +855,7 @@ def _validate_psf(workspace, setup, command, history_name, status_rows, candidat
             )
         _relative_artifact(adexl_results_dir, workspace_root, "ADE XL point-results directory")
         if os.path.basename(os.path.normpath(adexl_results_dir)) != history_name:
-            raise CompletionEvidenceError(
+            raise UnsafeCompletionEvidence(
                 "ADE XL point-results history does not match the completed RDB"
             )
     artifacts = []
@@ -830,7 +868,7 @@ def _validate_psf(workspace, setup, command, history_name, status_rows, candidat
         artifact_test = status.get("artifact_test") or status["test"]
         if (not isinstance(artifact_test, str) or artifact_test in (".", "..")
                 or os.path.basename(artifact_test) != artifact_test):
-            raise CompletionEvidenceError("unsafe physical test identity")
+            raise UnsafeCompletionEvidence("unsafe physical test identity")
         history_root = (
             adexl_results_dir if backend == "adexl"
             else _history_root(workspace, test, history_name)
@@ -897,9 +935,149 @@ def _validate_psf(workspace, setup, command, history_name, status_rows, candidat
     return artifacts
 
 
+_RDB_EVALUATION_ERROR = re.compile(
+    r"^Evaluation Error:\s*-+\s*(?:\*Error\*\s+Evaluating expression\b|"
+    r"Expression returned nil\.[ \t]*$)", re.MULTILINE)
+_TEMP_ADE_DIR_ERROR = re.compile(r"^(?:\\e )?\*Error\* Could not create directory: (/.+)\.$")
+
+
+def _native_measurements(parsed, statuses, output_keys):
+    """Accept explicit Calculator result errors for exact completed points."""
+    from .output_status import point_status
+
+    required = set(output_keys)
+    corners = {(row["test"], row["point_id"]): row["corner"] for row in statuses}
+    results, failures = {}, []
+    for key, output in (parsed.get("output_map") or {}).items():
+        test = output.get("test")
+        for value in output.get("values", ()):
+            point = (test, value["point_id"])
+            if point not in corners or value.get("corner") != corners[point]:
+                continue
+            identity = (key, point[1])
+            if identity in results:
+                raise UnsafeCompletionEvidence("Duplicate Native Run output point for %s/%s" % identity)
+            results[identity] = value
+            error = value.get("error")
+            if (key in required and point_status(value) == "evaluation_failed"
+                    and value.get("value") in (None, "") and value.get("numeric") is None
+                    and isinstance(error, str) and _RDB_EVALUATION_ERROR.match(error)):
+                failures.append({"output": key, "test": test, "point_id": point[1], "corner": corners[point],
+                                 "expression": output.get("expression"), "first_error": error})
+    return results, failures
+
+
+def _owned_temp_ade_error(row, rdb_path):
+    match = _TEMP_ADE_DIR_ERROR.fullmatch(row["message"])
+    if not match:
+        return False
+    path = match.group(1)
+    parent = os.path.dirname(rdb_path)
+    relative = os.path.relpath(path, parent).split(os.sep)
+    return (os.path.normpath(path) == path and len(relative) >= 3
+            and re.fullmatch(r"\.tmpADEDir_[A-Za-z0-9_.-]+", relative[0]) is not None
+            and relative[1] == "simulation")
+
+
+def _native_completion_diagnostics(command, parsed, statuses, diagnostics, worker,
+                                   measurement_output_keys=()):
+    """Qualify diagnostics against this candidate's already validated point set."""
+    from .native_diagnostics import library_init_console_proofs, ocean_tool_error, related_library_init
+    from .output_status import scalar_status
+
+    points = {(row.get("artifact_test") or row["test"], row["point_id"]) for row in statuses}
+    all_points = set(command.get("native_batch_points") or points)
+
+    def applies(row):
+        identity = (row.get("test"), row.get("point_id"))
+        return (identity not in all_points or identity in points or
+                row.get("history_name", command["history_name"]) != command["history_name"])
+
+    proofs = library_init_console_proofs(diagnostics, exact=True)
+    warnings = list(diagnostics.get("library_init_warnings") or [])
+    errors = list(diagnostics.get("completion_errors", diagnostics.get("errors")) or [])
+    if diagnostics.get("first_simulator_tool_error") and not errors:
+        errors.append(diagnostics["first_simulator_tool_error"])
+    for log in worker.get("logs", ()):
+        warnings.extend(row for row in log["warnings"] if applies(row))
+        errors.extend(row for row in log["errors"] if applies(row))
+    complete_scan = (diagnostics.get("console_scope") == "owned_full_logs" and diagnostics.get("scan_complete")
+                     and worker.get("ok", True) and all(log.get("scan_complete", True) for log in worker.get("logs", ())))
+    native_spectre = (command.get("schema_version") == _contract_text("crescendo.maestro_baseline.v1")
+                      and command["execution_simulator"] == "spectre")
+    fatal, teardown_warnings, failures = [], [], []
+    results, failures = _native_measurements(parsed, statuses, measurement_output_keys) if native_spectre else ({}, [])
+    failed_points = {(row["output"], row["point_id"]) for row in failures}
+    for row in errors:
+        if not applies(row):
+            continue
+        name = row.get("evaluation_output")
+        point_id = row.get("point_id")
+        point_test = row.get("test")
+        if (native_spectre and complete_scan and name and (point_test, point_id) in points
+                and row["evaluation_test"] == point_test
+                and row["evaluation_point_id"] in (None, point_id)):
+            logical_test = (parsed.get("candidate_test_name_map") or {}).get(point_test, point_test)
+            identity = (logical_test + "::" + name, point_id)
+            if row.get("after_point_teardown"):
+                result = results.get(identity)
+                if result and scalar_status(result.get("value"), result.get("error")) == "available":
+                    teardown_warnings.append(dict(row, output=identity[0]))
+                    continue
+            elif row["evaluation_point_id"] == point_id and identity in failed_points:
+                continue
+        fatal.append(row)
+    if fatal:
+        primary = fatal[0]
+        error_type = CompletionEvidenceError
+        if (native_spectre and complete_scan and not failures and
+                all(_owned_temp_ade_error(row, parsed["path"]) for row in fatal)):
+            error_type = NativeTemporaryDirectoryError
+        raise error_type("%s:%s: %s" %
+            (primary["console_source"], primary["console_line"], primary["message"]))
+    if not complete_scan:
+        raise CompletionEvidenceError("Owned Native Run diagnostic scan is incomplete")
+    if (any(row.get("category") == "library_init" for row in warnings)
+            and (not statuses or not diagnostics.get("required_marker_seen"))):
+        raise CompletionEvidenceError("Library initialization error without Native Run RETURN and completed points")
+    if not diagnostics.get("required_marker_seen"):
+        proofs = {}
+
+    # A note attached to a real result may echo a native error verbatim.
+    # Reclassify only an entire message and preserve the original on the warning.
+    for status in statuses:
+        text = status.get("status")
+        if isinstance(text, str) and text.strip().lower() not in _DONE_MESSAGES:
+            tool = ocean_tool_error(text, (command["execution_simulator"],))
+            warning = related_library_init(text, parsed["path"], 1, proofs)
+            if warning is not None and "\n" not in text:
+                warnings.append(dict(warning, source="rdb", test=status["test"], point_id=status["point_id"], rdb_field="testStatus"))
+            elif tool is not None and tool["severity"] == "WARN":
+                warnings.append(dict(tool, source="rdb", console_source=parsed["path"], console_line=1,
+                                     test=status["test"], point_id=status["point_id"], rdb_field="testStatus"))
+            elif re.match(r"\s*(?:\*Error\*|ERROR\s*\(|Simulation Error:)", text, re.I) or tool is not None:
+                raise CompletionEvidenceError(text)
+    for key, output in (parsed.get("output_map") or {}).items():
+        for value in output.get("values", ()):
+            text = value.get("error")
+            if not isinstance(text, str):
+                continue
+            warning = related_library_init(text, parsed["path"], 1, proofs)
+            tool = ocean_tool_error(text, (command["execution_simulator"],))
+            if tool is not None and tool["severity"] == "WARN":
+                warning = dict(tool, console_source=parsed["path"], console_line=1)
+            status = scalar_status(value.get("value", value.get("numeric")))
+            if warning is None or "\n" in text or status != "available":
+                continue
+            warnings.append(dict(warning, source="rdb", output=key, point_id=value["point_id"],
+                                 rdb_field="resultValue"))
+            value.update(error=None, first_error=None, output_status=status)
+    return warnings, failures, teardown_warnings
+
+
 def validate_candidate_completion(workspace, candidate_root, command, parsed, setup=None, output_path=None,
                                   required_output_keys=None, config=None, native_parameter_reader=None,
-                                  reader_deadline=None, reader_cancel_check=None):
+                                  reader_deadline=None, reader_cancel_check=None, native_diagnostics=None, native_worker_diagnostics=None):
     setup = setup or workspace.get("setup") or {}
     from .simulators import selected_simulator
     simulator = selected_simulator(config)
@@ -912,6 +1090,8 @@ def validate_candidate_completion(workspace, candidate_root, command, parsed, se
     history_name = _validate_command(command)
     if command.get('schema_version') == _contract_text('crescendo.maestro_baseline.v1'):
         _baseline_history_protocol(command, candidate_root, history_name)
+    if native_diagnostics is not None and not parsed.get("points"):
+        raise CompletionEvidenceError("Native Run RDB did not record physical point identities")
     point_map = _point_map(parsed)
     rdb = _validate_rdb_identity(workspace, command, parsed, history_name)
     native_identity = command.get("native_corner_identity", workspace.get("native_corner_identity"))
@@ -933,8 +1113,17 @@ def validate_candidate_completion(workspace, candidate_root, command, parsed, se
                               parsed['native_effective_scope'])
     if simulator == "alps" and native_identity is None:
         point_identity_loader(statuses)
-    outputs = _validate_outputs(setup, parsed, statuses, required_output_keys=required_output_keys)
-    psf = _validate_psf(workspace, setup, command, history_name, statuses, candidate_root=candidate_root)
+    warnings, failures, teardown_warnings = [], [], []
+    psf = None
+    if native_diagnostics is not None:
+        # Solver failures take priority over a Calculator or temp-directory message.
+        psf = _validate_psf(workspace, setup, command, history_name, statuses, candidate_root=candidate_root)
+        warnings, failures, teardown_warnings = _native_completion_diagnostics(
+            command, parsed, statuses, native_diagnostics, native_worker_diagnostics or {},
+            measurement_output_keys=(required_output_keys if required_output_keys is not None else _expected_output_keys(setup)))
+    outputs = _validate_outputs(setup, parsed, statuses, required_output_keys=required_output_keys, measurement_failures=failures)
+    if psf is None:
+        psf = _validate_psf(workspace, setup, command, history_name, statuses, candidate_root=candidate_root)
     backend = command.get("backend") or workspace.get("setup_backend") or "maestro"
     evidence = {
         "schema_version": _contract_text("crescendo.completion_evidence.v1"),
@@ -955,6 +1144,15 @@ def validate_candidate_completion(workspace, candidate_root, command, parsed, se
         "native_parameter_readback_verified": simulator == "alps" and all(row.get("native_parameter_readback_verified") is True for row in psf),
         "spectre_runs": psf if simulator == "spectre" else [],
     }
+    if failures:
+        evidence["measurement_failures"] = failures
+    if teardown_warnings:
+        evidence["measurement_teardown_warnings"] = teardown_warnings
+    if warnings:
+        evidence["library_init_warnings"] = [row for row in warnings if row.get("category") == "library_init"]
+        tool_warnings = [row for row in warnings if row.get("category") != "library_init"]
+        if tool_warnings:
+            evidence["ocean_tool_warnings"] = tool_warnings
     if parsed.get("native_corner_coverage"):
         evidence["native_corner_coverage"] = parsed["native_corner_coverage"]
     if parsed.get('native_effective_scope'):
@@ -963,6 +1161,6 @@ def validate_candidate_completion(workspace, candidate_root, command, parsed, se
         evidence["candidate_test_name_map"] = dict(parsed["candidate_test_name_map"])
     path = output_path or os.path.join(candidate_root, _contract_text("completion_evidence.json"))
     if is_under(path, workspace["root"]):
-        raise CompletionEvidenceError("completion evidence must survive outside the disposable workspace")
+        raise UnsafeCompletionEvidence("completion evidence must survive outside the disposable workspace")
     atomic_write_json(path, evidence)
     return evidence

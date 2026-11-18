@@ -56,14 +56,15 @@ class PrivateSuiteServiceMixin(object):
             result.append(self._suite_row(row))
         return {'suites': result, 'deleted_suites': deleted, 'warnings': []}
 
-    def _suite_reference_for_id(self, suite_id):
+    def _suite_reference_for_id(self, suite_id, include_recycled=False):
         if not isinstance(suite_id, str) or not re.match(r'^[a-f0-9]{32}$', suite_id):
             raise ValueError('Invalid working-copy identifier')
         if suite_id in self.setup_private_sessions:
             return self.setup_private_sessions[suite_id]
         rows = sessions.list_setup_private_sessions(self.config)
         found = next((row for row in rows if row.get('suite_id') == suite_id), None)
-        if not found or found.get('status') in ('unavailable', 'deleted'):
+        recycled = include_recycled and found and found.get('status') == 'deleted' and found.get('recycle_root')
+        if not found or (found.get('status') in ('unavailable', 'deleted') and not recycled):
             raise ValueError('working copy is unavailable: %s' % (', '.join((found or {}).get('warnings') or []) or suite_id))
         return found
 
@@ -349,9 +350,15 @@ class PrivateSuiteServiceMixin(object):
         self._begin_lifecycle_operation('delete a working copy', exclusive=True)
         try:
             self._require_idle_setup_resources('delete a working copy')
-            reference = self._obtain_suite(suite_id, for_delete=True)
-            result = sessions.delete_setup_private_session(reference)
-            if not result.get('cleanup_proven'):
+            reference = self._suite_reference_for_id(suite_id, include_recycled=True)
+            from .suite_quarantine import recycle
+            owner, state, workspace = sessions._read_suite(reference, deep=False, require_snapshot=False)
+            if sessions._quarantine(owner) or (state.get('unsafe') and state.get('status') != 'delete_incomplete'):
+                result = recycle(owner)
+            else:
+                reference = self._obtain_suite(suite_id, for_delete=True)
+                result = sessions.delete_setup_private_session(reference)
+            if not result.get('cleanup_proven') and not result.get('recycled'):
                 self._invalidate_suite_authority(suite_id)
                 error = RuntimeError('Suite deletion is incomplete; retained members: %s' % result)
                 error.private_suite_invalidated = True
@@ -362,8 +369,9 @@ class PrivateSuiteServiceMixin(object):
                     if (value.get('setup_private_session') or {}).get('session_id') != suite_id}
                 self.inspections = {key: value for key, value in self.inspections.items()
                     if ((value.get('preview') or {}).get('setup_private_session') or {}).get('session_id') != suite_id}
-            return dict(result, warnings=[], retained_metadata_root=reference['root'],
-                        retention_note='Working views deleted; configuration, history and audit metadata retained')
+            return dict(result, warnings=result.get('warnings', []), retained_metadata_root=result.get('retained_metadata_root', reference['root']),
+                        retention_note=('Suite recycled; inspect the receipt for retained live views' if result.get('recycled') else
+                                        'Working views deleted; configuration, history and audit metadata retained'))
         finally:
             self._end_lifecycle_operation(exclusive=True)
 
@@ -422,6 +430,7 @@ class PrivateSuiteServiceMixin(object):
             prepared['job_policy'] = copy.deepcopy(setup.get('baseline_job_policy', incoming.get('job_policy')))
             if setup.get('save_options') and isinstance(prepared['job_policy'], dict):
                 prepared['job_policy']['save_options'] = copy.deepcopy(setup['save_options'])
+            compact_catalogue = old.get('schema_version') == _contract_text('crescendo.prepared.v2')
             if plan.get('requires_hierarchy'):
                 from .hierarchy import probe_hierarchy, cell_scope_records
                 self._set_activity('suite_hierarchy', 'Checking changed Test design and selected cells')
@@ -436,13 +445,18 @@ class PrivateSuiteServiceMixin(object):
                     'settings': {'cells': saved}, 'selection': {'provided': True}}, choices)
                 selected = [row for row in choices if row.get('scope_id') in match['scope_ids']]
                 if selected:
-                    hierarchy = probe_hierarchy(setup, source_config, max_depth=32, selected_cell_paths=selected)
+                    hierarchy = probe_hierarchy(setup, source_config, max_depth=32, selected_cell_paths=selected,
+                                                **({} if compact_catalogue else {"candidate_only": False}))
                 prepared['hierarchy'] = hierarchy
                 prepared['cell_selection'] = {'scopes': selected, 'scope_ids': [row['scope_id'] for row in selected]}
                 prepared['suite_selection_required'] = not bool(selected)
                 if not selected:
                     plan.setdefault('warnings', []).append('Previous selected cells no longer match this Test design. Select cells in Setup; all settings remain available.')
-            prepared['parameters'] = parameter_catalog(setup, prepared['hierarchy'])
+            from .prepared_store import catalogue_hierarchy, compact_catalog
+            catalog_source = prepared['hierarchy'] if plan.get('requires_hierarchy') else catalogue_hierarchy(prepared)
+            prepared['parameters'] = parameter_catalog(setup, catalog_source)
+            if compact_catalogue:
+                compact_catalog(prepared)
             prepared['outputs'] = output_catalog(setup)
             prepared['source_identity'] = source_design_identity(setup, prepared['hierarchy'], config=self.config)
             if plan.get('requires_hierarchy') or set(sections).intersection(('other_settings', 'test_settings', 'corners')):

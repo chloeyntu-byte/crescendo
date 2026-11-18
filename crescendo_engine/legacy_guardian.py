@@ -1738,7 +1738,7 @@ def inspect_legacy_guardian_attempt(attempt_root, expected_workspace_root=None,
 
 def quiesce_legacy_guardian_attempt(attempt_root, expected_workspace_root=None,
                                     timeout_seconds=30.0, terminate_owned=False,
-                                    expected_token_identity=None):
+                                    expected_token_identity=None, poll_live_identity_conflict=False):
     deadline = time.monotonic() + max(0.0, float(timeout_seconds))
     termination_requested = False
     while True:
@@ -1751,7 +1751,12 @@ def quiesce_legacy_guardian_attempt(attempt_root, expected_workspace_root=None,
         orphan_recovery = False
         if inspection.get("state") == "ambiguous":
             reason = inspection.get("reason") or ""
-            if "final cleanup proof is unavailable" not in reason:
+            # An owned stdin EOF may already have told the guardian to stop.
+            # Ocean launch wrappers can exec a different command before exit.
+            # Observe the final receipt without granting signal authority.
+            waiting_on_exec = (poll_live_identity_conflict and not terminate_owned and
+                               reason == "live PID identity does not match persisted ownership")
+            if not waiting_on_exec and "final cleanup proof is unavailable" not in reason:
                 return inspection
             orphan_recovery = bool(terminate_owned and not termination_requested)
         elif inspection.get("recovery_in_progress"):

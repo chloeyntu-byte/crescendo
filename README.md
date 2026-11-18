@@ -6,6 +6,24 @@ Crescendo is a guided circuit optimizer that runs inside Cadence Maestro. Pick t
 
 ![Crescendo run dashboard (synthetic demo data)](docs/screenshots/dashboard.png)
 
+## See it in action
+
+All images below are the real Crescendo window driven by the bundled demo service (synthetic data, no Cadence calls).
+
+**Two objectives: the Pareto front advances generation by generation.** Every generation is simulated as a batch; the orange line is the current front of feasible designs, and clicking any point jumps to that candidate.
+
+![Two-objective Pareto front advancing over generations (synthetic demo data)](docs/screenshots/pareto-2d-generations.gif)
+
+**Three objectives: a 3D front you can rotate.** Runs with exactly three objectives get an interactive 3D view: drag to rotate, scroll to zoom, and an optional translucent surface over the front. Colours run from early to late generations, so you can watch the population close in on the front. The pairwise projections stay available below it. See [the 3D Pareto view](docs/PARETO_3D.md).
+
+![Three-objective front forming over generations (synthetic demo data)](docs/screenshots/pareto-3d-generations.gif)
+
+![Rotating the three-objective front (synthetic demo data)](docs/screenshots/pareto-3d-rotate.gif)
+
+**Keep the design you picked.** On the Results page, **Persist as schematic_<optname>** writes one completed candidate into new `schematic_<run name>` views of the cells it changed. Existing views are never overwritten, every value is read back before it is reported, and a copyable report lists each cell, instance, parameter, old value, new value and unit.
+
+![Persist report listing the parameters written to the new schematic views (synthetic demo data)](docs/screenshots/persist-report.png)
+
 ## What it does
 
 - **Six-step workflow**: Design → Parameters → Goals → Run → Results → Trade-offs, shown as the left-hand navigation with a tick for each finished step.
@@ -13,6 +31,9 @@ Crescendo is a guided circuit optimizer that runs inside Cadence Maestro. Pick t
 - **Search**: NSGA-II (automatic for two or more objectives), differential evolution and Bayesian optimization; per-corner objectives and constraints with `max` / `mean` aggregation.
 - **Execution**: Spectre or ALPS, locally or on a batch cluster; a working copy of the Maestro setup is used for every run, and a checkpoint is written after every candidate so runs can be stopped and resumed.
 - **Live results**: KPI tiles, best-so-far convergence per objective, a candidate table, Pareto plots that jump to a candidate on click, CSV and full-dataset export. **Timing details...** shows generation and selected-candidate phases, with solver evidence, coverage and parallel limits explained in the [execution timing guide](docs/EXECUTION_TIMING.md).
+- **Whole-generation batching**: a generation of candidates is evaluated in one native run instead of one run per candidate. On a local matched sample (3 generations × 6 candidates × 2 corners) this went from 433 s to 101 s (4.3×) with identical objective values; your speed-up depends on your design, simulator and cluster.
+- **Persist a result**: write the chosen candidate into new `schematic_<run name>` views and get a report of every parameter written; the original schematic is not modified.
+- **Three-objective 3D view**: rotate, zoom and inspect the front of three-objective runs.
 - **Large projects**: on a synthetic project with 4,000 blocks and 50,726 parameters the parameter tree renders without freezing the window for more than 74 ms.
 
 ## Requirements
@@ -41,7 +62,7 @@ The demo service generates synthetic op-amp-like metrics (a seeded, analytic two
    ```
 
    Optionally point the engine at your model root before that line: `setShellEnvVar("PDK=/path/to/model_root")`.
-3. Restart Virtuoso and open **Maestro → Plug-in → Open Crescendo Optimizer** (or the **Crescendo** menu when the Plug-in menu is unavailable).
+3. Restart Virtuoso and open a Maestro window. If your installation integrates Crescendo into the **Plug-in** menu, choose **Plug-in → Open Crescendo Optimizer**. Otherwise choose **Crescendo → Open Crescendo Optimizer** from the Maestro window’s menu bar.
 
 Crescendo reads the Maestro window it was opened from. Tools, model directories and simulators are detected from that window's environment and can be overridden in **Settings → EDA** (Pro mode).
 
@@ -57,7 +78,7 @@ Pro execution settings include the following resource controls, frozen in each n
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `native_candidate_batching` | `generation` for new configurations | One owned native Run per generation; `serial` runs candidates individually. Existing configurations without this key and old checkpoints retain serial behavior. Qualified Template Netlist runs continue to materialize directly. |
+| `native_candidate_batching` | `generation` for new runs | One owned native Run per generation. Select `serial` to run candidates individually. Resume follows the checkpoint, with serial behavior for checkpoints missing the key. Qualified Template Netlist runs continue to materialize directly. |
 | `local_solver_max_jobs` | `1` | Explicit Local solver slots; effective concurrency also obeys Global and Test limits. |
 | `measurement_jobs` | `null`, automatic `min(2, G)` | Local reader workers; explicit values are capped by Global capacity `G`. |
 | `progress_flush_interval_seconds` | `0.5` | Minimum display snapshot interval; terminal events, ownership and checkpoint acknowledgements remain immediate. |

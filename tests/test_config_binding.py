@@ -1,6 +1,7 @@
 from __future__ import print_function
 import copy,json,os,shutil,tempfile,unittest
-from crescendo_engine.config_binding import config_designs,private_config_plan,config_binding_lines,validate_config_binding_records
+from crescendo_engine.config_binding import (CONFIG_DEFAULT_LIST_MAX_BYTES, config_designs, private_config_plan,
+                                               config_binding_lines, validate_config_binding_records)
 from crescendo_engine.workspace import build_occurrence_clone_plan,write_parameter_snapshot,write_schematic_patch,config_dependency_identity,source_design_identity,_hierarchy_libraries,_source_fingerprint_scopes
 from crescendo_engine.persistent_maestro import _candidate_rows,_clone_lines,_snapshot_lines,_patch_lines,_pristine_cell_plan
 
@@ -39,10 +40,61 @@ class ConfigBindingTest(unittest.TestCase):
             self.assertIn('hdbSaveACopy',s);self.assertIn('hdbOpen("CFG" "TBconfig" "config_alt" "w")',s)
             self.assertIn('hdbBind(crescConfigPath "DUT" "%s" "symbol" "I1" t t nil)'%clones[0]['clone_cell'],s)
             self.assertIn('hdbIsAtStopPoint',s);self.assertIn('hdbSetObjBindRule',s)
-            self.assertIn('hdbSetDefaultStopListString(crescPrivateConfig "spectre")',s)
-            d['config_bindings'][1]['resolved_view']='schematic_alt'
-            mixed_lines,_=config_binding_lines(w,clones,os.path.join(root,'records'))
-            self.assertIn('hdbSetDefaultStopListString(crescPrivateConfig "cr_config_stop_sentinel")','\n'.join(mixed_lines))
+            self.assertIn('hdbGetDefaultViewListString(crescSourceConfig)', s)
+            self.assertIn('hdbGetDefaultStopListString(crescSourceConfig)', s)
+            self.assertIn('hdbSetDefaultStopListString(crescPrivateConfig crescDefaultStopList)', s)
+            self.assertEqual(plan[0]['fallback_stop_list'], 'spectre')
+            d['config_bindings'][1]['resolved_view'] = 'schematic_alt'
+            _, mixed_plan = config_binding_lines(w, clones, os.path.join(root, 'records'))
+            self.assertEqual(mixed_plan[0]['fallback_stop_list'], 'cr_config_stop_sentinel')
+
+    def test_long_working_view_names_only_appear_in_explicit_rules_and_native_readback(self):
+        with tempfile.TemporaryDirectory() as root:
+            workspace, _, design = fixture(root)
+            base, leaf = design['config_bindings']
+            design['config_bindings'] = [leaf]
+            leaf.update(hierarchy_path='/V0', parent_path='/', name='V0', resolved_view='veriloga')
+            clones = []
+            for index in range(320):
+                name = 'X%d' % index
+                path = '/' + name
+                view = 'working_' + 'x' * 66 + str(index)
+                design['config_bindings'].append(dict(base, name=name, hierarchy_path=path))
+                clones.append(dict(design_library='CFG', design_cell='TBconfig', design_view='config_alt',
+                                   occurrence_path=path, clone_library='DUT', clone_cell='actual_sub',
+                                   target_view=view, same_library_view=True))
+            lines, plans = config_binding_lines(workspace, clones, root + '/records')
+            plan = plans[0]
+            self.assertEqual(plan['fallback_view_list'], 'spectre veriloga schematic_alt')
+            self.assertEqual(plan['fallback_stop_list'], 'veriloga')
+            self.assertGreater(sum(len(row['target_view']) + 1 for row in clones), 20000)
+            self.assertTrue(all(len(plan[key].encode('utf-8')) <= CONFIG_DEFAULT_LIST_MAX_BYTES
+                                for key in ('fallback_view_list', 'fallback_stop_list')))
+            text = '\n'.join(lines)
+            self.assertEqual(text.count("list('hdbcBindingRule "), 321)
+            self.assertEqual(text.count('crescConfigBound = hdbBind('), 321)
+            self.assertEqual(text.count('caddr(crescConfigBound) crescConfigStopped)'), 321)
+            self.assertEqual(text.count("list('hdbcStopRule t)"), 1)
+            list_lines = [line for line in lines if 'List =' in line or 'SetDefault' in line]
+            self.assertTrue(all('working_' not in line for line in list_lines))
+            for clone in clones:
+                self.assertIn(clone['target_view'], text)
+            with self.assertRaisesRegex(ValueError, 'lacks bindings for optimized occurrences: /absent'):
+                private_config_plan(workspace, clones + [dict(clones[0], occurrence_path='/absent')])
+
+    def test_plain_top_uses_native_simulator_and_hdl_settings(self):
+        with tempfile.TemporaryDirectory() as root:
+            workspace, _, design = fixture(root)
+            design.update(generated_config=True, config_dependencies=[])
+            workspace['setup'] = {'tests': [{'simulator': 'alps', 'switch_views': ['alps', 'ahdl']}]}
+            design['config_bindings'][1]['resolved_view'] = 'ahdl'
+            lines, plans = config_binding_lines(workspace, [], root + '/records')
+            plan = plans[0]
+            self.assertIsNone(plan['source_config'])
+            self.assertNotIn('crescSourceConfig = hdbOpen', '\n'.join(lines))
+            self.assertEqual(plan['fallback_view_list'], 'alps ahdl spectre veriloga schematic_alt')
+            self.assertEqual(plan['fallback_stop_list'], 'ahdl')
+
     def test_ignored_bookkeeping_is_not_materialized(self):
         with tempfile.TemporaryDirectory() as root:
             w,p,d=fixture(root);d['config_bindings'].append(dict(d['config_bindings'][0],hierarchy_path='/PIN',name='PIN',netlister_ignored=True))
@@ -56,18 +108,66 @@ class ConfigBindingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             w,p,d=fixture(root);d['config_bindings'][0]['stop']=True
             with self.assertRaises(ValueError):private_config_plan(w,[])
-    def test_config_evidence_exact_and_incomplete_rejected(self):
+    def write_records(self, plan, path, source_views, source_stops, views, stops):
+        config = tuple(plan['config'])
+        rows = [('CONFIG_TOP', config + tuple(plan['top'])),
+                ('CONFIG_DEFAULTS', config + (source_views, source_stops, views, stops))]
+        rows += [('CONFIG_BINDING', config + (node['hierarchy_path'],) + node['target'] + (node['stop'],))
+                 for node in plan['bindings']]
+        with open(path, 'w', encoding='utf-8') as stream:
+            for kind, values in rows:
+                tokens = ['t' if v is True else 'nil' if v is False else json.dumps(v, ensure_ascii=False)
+                          for v in values]
+                stream.write(kind + '\t' + '\t'.join(tokens) + '\n')
+
+    def test_source_lists_are_independently_inherited_or_defaulted_and_verified(self):
         with tempfile.TemporaryDirectory() as root:
-            w,p,d=fixture(root);plan=private_config_plan(w,[]);path=os.path.join(root,'records');rows=[]
-            for item in plan:
-                rows.append('CONFIG_TOP\t'+'\t'.join(json.dumps(v) for v in item['config']+item['top']))
-                for node in item['bindings']:
-                    rows.append('CONFIG_BINDING\t'+'\t'.join(json.dumps(v) for v in item['config']+(node['hierarchy_path'],)+node['target'])+'\t'+('t' if node['stop'] else 'nil'))
-            with open(path,'w') as stream:stream.write('\n'.join(rows)+'\n')
-            self.assertEqual(validate_config_binding_records(plan,path)['bindings'],2)
-            self.assertEqual(validate_config_binding_records(json.loads(json.dumps(plan)),path)['bindings'],2)
-            with open(path,'w') as stream:stream.write(rows[0]+'\n')
-            with self.assertRaises(ValueError):validate_config_binding_records(plan,path)
+            workspace, _, _ = fixture(root)
+            plan = private_config_plan(workspace, [])[0]
+            path = os.path.join(root, 'records')
+            for source_views, source_stops in [('spectre veriloga schematic_alt', 'spectre veriloga'),
+                                               ('spectre schematic_alt', False),
+                                               (False, 'spectre veriloga'), ('', '')]:
+                with self.subTest(source_views=source_views, source_stops=source_stops):
+                    views = source_views or plan['fallback_view_list']
+                    stops = source_stops or plan['fallback_stop_list']
+                    self.write_records(plan, path, source_views, source_stops, views, stops)
+                    result = validate_config_binding_records(json.loads(json.dumps([plan])), path)
+                    self.assertEqual(result['bindings'], 2)
+                    self.assertEqual(result['default_lists'][0]['view_list'], views)
+                    self.assertEqual(result['default_lists'][0]['stop_list'], stops)
+            self.write_records(plan, path, False, False, 'wrong', plan['fallback_stop_list'])
+            with self.assertRaisesRegex(ValueError, 'persisted viewlist differs'):
+                validate_config_binding_records([plan], path)
+            with open(path, 'w') as stream:
+                stream.write('CONFIG_TOP\t"CFG"\t"TBconfig"\t"config_alt"\t"DUT"\t"actual_top"\t"schematic_alt"\n')
+            with self.assertRaisesRegex(ValueError, 'evidence does not match observed graph and defaults'):
+                validate_config_binding_records([plan], path)
+
+    def test_length_guard_counts_utf8_and_checks_both_lists_before_open_for_write(self):
+        with tempfile.TemporaryDirectory() as root:
+            workspace, _, design = fixture(root)
+            path = root + '/records'
+            lines, plans = config_binding_lines(workspace, [], path)
+            plan = plans[0]
+            text = '\n'.join(lines)
+            for title, var in (('viewlist', 'crescDefaultViewList'), ('stoplist', 'crescDefaultStopList')):
+                check = 'when(strlen(%s) > %d error(' % (var, CONFIG_DEFAULT_LIST_MAX_BYTES)
+                self.assertLess(text.index(check), text.index('crescPrivateConfig = hdbOpen'))
+                exact = chr(233) * (CONFIG_DEFAULT_LIST_MAX_BYTES // 2)
+                for value, size in [(exact, 3500), (exact + 'x', 3501)]:
+                    views = value if title == 'viewlist' else plan['fallback_view_list']
+                    stops = value if title == 'stoplist' else plan['fallback_stop_list']
+                    self.write_records(plan, path, views, stops, views, stops)
+                    if size == CONFIG_DEFAULT_LIST_MAX_BYTES:
+                        self.assertEqual(validate_config_binding_records([plan], path)['bindings'], 2)
+                    else:
+                        with self.assertRaisesRegex(ValueError, r'%s is %d bytes \(limit 3500 bytes\)' % (title, size)):
+                            validate_config_binding_records([plan], path)
+            design['resolved_top']['view'] = 'x' * CONFIG_DEFAULT_LIST_MAX_BYTES
+            with self.assertRaisesRegex(ValueError, 'viewlist is 3517 bytes'):
+                config_binding_lines(workspace, [], path)
+
     def test_persistent_rows_snapshots_and_pristine_use_actual_view(self):
         with tempfile.TemporaryDirectory() as root:
             w,p,d=fixture(root);clone=build_occurrence_clone_plan(w,[p],{'p':2e-6});lookup={('CFG','TBconfig','config_alt','/I1'):clone[0]}

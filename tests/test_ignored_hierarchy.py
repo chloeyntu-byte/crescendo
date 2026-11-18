@@ -67,7 +67,7 @@ class IgnoredHierarchyTests(unittest.TestCase):
 
     def test_probe_skips_ignored_child_and_cdf_in_both_scan_modes(self):
         skill = probe_skill('USER', 'TB', 'schematic', '/private/records', 32)
-        self.assertIn('childExists = !ignored && crescProbeMasterSchematic', skill)
+        self.assertIn('plainView = if(ignored then nil else crescProbePlainView(', skill)
         self.assertIn('when(!ignored && crescProbeParameterScope(instPath)', skill)
         self.assertIn('when(!ignored && !crescCellsOnly && crescScoped', skill)
         self.assertIn('master~>cellViewType ignored ignoreReason', skill)

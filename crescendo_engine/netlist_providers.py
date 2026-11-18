@@ -18,6 +18,8 @@ import time
 from crescendo_engine.runtime import bind_text
 _contract_text = bind_text()
 
+from .design_variables import native_parameter
+from .preparation_timing import stage, preparation_stage
 from .candidate_timing import measure
 from .execution_commands import (build_solver_command_plan, normalize_execution_commands,
                                  submission_cpu_hint)
@@ -54,6 +56,8 @@ def validate_provider_request(prepared, parameters, config, spec=None, source_mo
         raise PrivateNetlistUnsupported("unknown Template Netlist source mode")
     from .test_selection import selection_plan, effective_setup
     setup = effective_setup(prepared.get("setup") or {}, selection_plan(prepared.get("setup") or {}, spec))
+    from .design_variables import require_no_corner_conflicts
+    require_no_corner_conflicts(setup, parameters)
     variable_scope = require_unique_run_variables(setup, action="generate working SCS", multiplicity_only=True)
     if (setup.get("backend") or "maestro") != "maestro":
         raise PrivateNetlistUnsupported("the common CLI netlist producer currently requires a saved Maestro setup")
@@ -61,7 +65,7 @@ def validate_provider_request(prepared, parameters, config, spec=None, source_mo
         raise PrivateNetlistUnsupported("selected parameter identities are missing or duplicated")
     if any(not row.get("parameter_id") for row in parameters):
         raise PrivateNetlistUnsupported("selected parameter identity is missing")
-    if any(row.get("backend", "schematic") != "schematic" for row in parameters):
+    if any(not native_parameter(row) for row in parameters):
         raise PrivateNetlistUnsupported("test-scoped design-variable optimization has no qualified common CLI netlist adapter")
     simulators = {(test.get("simulator") or "spectre") for test in setup.get("tests") or [] if test.get("enabled", True)}
     if not simulators:
@@ -352,6 +356,7 @@ def _freeze_generated_dependencies(text, task, config, mutable_roots, cancel_che
     return result, files
 
 
+@stage('model_dependency_freeze')
 def _freeze_task(task, config, capture, commands, resource_cpu, spec, candidate_root, mutable_roots=None, cancel_check=None):
     # Both producers use root/tasks/<id>. The common point-commit cleanup gate
     # must not need a separate native-capture layout or a broader deletion rule.
@@ -414,7 +419,9 @@ def _freeze_task(task, config, capture, commands, resource_cpu, spec, candidate_
     for row in task["template_files"]:
         row["sha256"] = _digest(row["path"])
     task["artifact_sha256"] = {row["path"]: row["sha256"] for row in task["template_files"]}
-    task["netlist_sha256"] = _digest(task["netlist_path"])
+    # Reuse only this pass's freshly read hash; never a prior capture hash.
+    task["netlist_sha256"] = (task["artifact_sha256"][task["netlist_path"]]
+        if task["netlist_path"] in task["artifact_sha256"] else _digest(task["netlist_path"]))
     task["metadata_files"] = [row["path"] for row in task["template_files"] if row.get("metadata")]
     task.pop("template_files", None)
     # native_cwd remains provenance: dependencies can still live below the
@@ -488,7 +495,7 @@ def _prepare_maestro_netlists(prepared, parameters, values, config, root, candid
     capture_options = {"private_config_initialized":True} if initialized and session_workspace is None else {}
     if allow_effective_adjustment:
         capture_options["allow_effective_adjustment"] = True
-    with measure(phases, "native_capture"):
+    with preparation_stage("native_batch_capture"), measure(phases, "native_capture"):
         phase = _capture_phase(workspace, parameters, values, {}, {}, config, os.path.join(root, "numeric"),
                                emit_clones=not initialized, symbolic=False, cancel_check=cancel_check,
                                progress_callback=progress_callback, verify_numeric_application=True, **capture_options)
@@ -618,10 +625,11 @@ def prepare_maestro_netlists_batch(prepared, parameters, config, root, plan, spe
     write_session_reference(root, prepared['setup_private_session'])
     atomic_write_json(os.path.join(root, _contract_text('batch_manifest.json')), plan)
     with borrow_setup_private_session(prepared, config, root, cancel_check) as workspace:
-        phase = _capture_phase(workspace, parameters, plan['rows'][0]['values'], {}, {}, config,
-            os.path.join(root, 'numeric'), emit_clones=False, symbolic=False,
-            private_config_initialized=False, verify_numeric_application=True,
-            cancel_check=cancel_check, progress_callback=progress_callback, batch_plan=plan)
+        with preparation_stage('native_batch_capture'):
+            phase = _capture_phase(workspace, parameters, plan['rows'][0]['values'], {}, {}, config,
+                os.path.join(root, 'numeric'), emit_clones=False, symbolic=False,
+                private_config_initialized=False, verify_numeric_application=True,
+                cancel_check=cancel_check, progress_callback=progress_callback, batch_plan=plan)
         proof = reconcile_preparation(root, request_cancel=False)
         if not proof.get('cleanup_proven'):
             raise PrivateNetlistError('Batch capture termination is unproven')

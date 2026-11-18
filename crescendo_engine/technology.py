@@ -86,7 +86,18 @@ def technology_probe_skill(manifest):
         library = str(row.get("library") or "")
         expected = row.get("technology_library")
         lines.extend([
-            _contract_text('  crescTechLib = ddGetObj("%s")') % _skill_quote(library),
+            # Workers also execute this private startup before netlisting. Save
+            # enough frames to distinguish a caught libInit error from a failure
+            # in our generated code, and close the scope only after ddGetObj returns.
+            _contract_text("  let((crescTechSavedStacktrace)"),
+            _contract_text("    crescTechSavedStacktrace = status(stacktrace)"),
+            "    unwindProtect(progn(",
+            _contract_text('      printf("CRESCENDO_NATIVE_RUN_STAGE LibraryLookup BEGIN\\n")'),
+            _contract_text("      sstatus(stacktrace max(16 crescTechSavedStacktrace))"),
+            _contract_text('      crescTechLib = ddGetObj("%s")') % _skill_quote(library),
+            _contract_text('      printf("CRESCENDO_NATIVE_RUN_STAGE LibraryLookup RETURN\\n")'),
+            _contract_text("    ) sstatus(stacktrace crescTechSavedStacktrace))"),
+            "  )",
             _contract_text("  crescTechFile = nil"),
             _contract_text("  crescActualTechLib = nil"),
             _contract_text("  crescActualTechPath = nil"),

@@ -154,6 +154,21 @@ class BaselineLoopTests(unittest.TestCase):
     def test_cancelled_run_publishes_proven_native_shutdown(self):
         self._check_loop('stop')
 
+    def test_exhausted_startup_crash_only_fails_its_candidate(self):
+        self._check_loop('startup_crash')
+
+    def test_unproven_startup_crash_aborts_before_next_candidate(self):
+        self._check_loop('startup_cleanup_timeout')
+
+    def test_completion_evidence_failure_only_fails_its_candidate(self):
+        self._check_loop('completion')
+
+    def test_completion_evidence_ownership_failure_aborts_before_next_candidate(self):
+        self._check_loop('completion_ownership')
+
+    def test_completion_evidence_cleanup_failure_aborts_before_next_candidate(self):
+        self._check_loop('completion_cleanup')
+
     def _check_loop(self, fault=None):
         import copy
         from crescendo_engine import runner
@@ -183,7 +198,21 @@ class BaselineLoopTests(unittest.TestCase):
             module = types.ModuleType('crescendo_engine.native_baseline')
             def evaluate(candidate_id, values, parameters, active_spec, active_prepared, active_config, candidate_root, **kwargs):
                 calls.append((candidate_id, active_spec['execution_backend']))
-                if fault:
+                if fault and len(calls) == 1:
+                    if fault.startswith('startup_'):
+                        proven = fault == 'startup_crash'
+                        failure = RuntimeError('Native Ocean startup crash: cdsCrashReport: command not found')
+                        failure.detail = {'failure_stage': 'native_startup_crash', 'cleanup_pending': not proven,
+                                          'native_baseline': {'cleanup_proven': proven}}
+                        raise failure
+                    if fault.startswith('completion'):
+                        from crescendo_engine.completion import CompletionEvidenceError, UnsafeCompletionEvidence
+                        kind = UnsafeCompletionEvidence if fault == 'completion_ownership' else CompletionEvidenceError
+                        proven = fault != 'completion_cleanup'
+                        failure = kind('candidate point completion not proven')
+                        failure.detail = {'failure_stage': 'native_completion_evidence', 'cleanup_pending': not proven,
+                                          'native_baseline': {'cleanup_proven': proven}}
+                        raise failure
                     if fault == 'stop':
                         with open(os.path.join(root, 'run', 'STOP'), 'w') as stream:
                             stream.write('stop')
@@ -198,6 +227,12 @@ class BaselineLoopTests(unittest.TestCase):
             reconciled = []
             def reconcile(root, **kwargs):
                 reconciled.append(root)
+                if fault and fault in ('startup_crash', 'startup_cleanup_timeout', 'completion_cleanup') and root.endswith('g000_c0000'):
+                    proven = fault == 'startup_crash'
+                    return {'launch_attempted': True, 'submission_intent': False,
+                            'cleanup_proven': proven, 'native_not_submitted': proven,
+                            'local_cleanup': {'state': 'dead' if proven else 'ambiguous',
+                                              'termination_proof': {'ok': proven}}}
                 return {'launch_attempted': True, 'cleanup_proven': True, 'native_session_closed': True,
                         'native_stop': {'requested': fault == 'stop', 'remote_stop_proven': fault == 'stop'},
                         'local_cleanup': {'state': 'dead', 'termination_proof': {'ok': True}}}
@@ -205,8 +240,11 @@ class BaselineLoopTests(unittest.TestCase):
             with mock.patch.dict(sys.modules, {'crescendo_engine.native_baseline': module}), \
                     mock.patch.object(runner, '_reverify_prepared_external_environment', return_value={'ok': True}), \
                     mock.patch.object(runner, 'PrivateNetlistOptimizer') as cli:
-                if fault == 'failure':
-                    with self.assertRaisesRegex(RuntimeError, 'native output missing'):
+                if fault in ('failure', 'startup_cleanup_timeout', 'completion_ownership', 'completion_cleanup'):
+                    message = ('native output missing' if fault == 'failure' else
+                               'owned simulation cleanup was not proven' if fault in ('startup_cleanup_timeout', 'completion_cleanup') else
+                               'candidate point completion not proven')
+                    with self.assertRaisesRegex(RuntimeError, message):
                         runner.run_optimization(spec, config, prepared=prepared, run_root=os.path.join(root, 'run'))
                     result = None
                 else:
@@ -214,7 +252,8 @@ class BaselineLoopTests(unittest.TestCase):
             cli.assert_not_called()
             if result:
                 self.assertEqual(result['state'], 'stopped' if fault == 'stop' else 'completed')
-            self.assertEqual(len(calls), 1 if fault else 2)
+            expected_count = 3 if fault in ('startup_crash', 'completion') else 1 if fault else 2
+            self.assertEqual(len(calls), expected_count)
             self.assertTrue(all(backend == 'maestro_baseline' for _, backend in calls))
             status = load_json(os.path.join(root, 'run', 'status.json'))
             self.assertEqual(status['effective_parallel_jobs'], 1)
@@ -222,10 +261,17 @@ class BaselineLoopTests(unittest.TestCase):
             self.assertEqual(status['execution_protocol'], 'crescendo.maestro_baseline.v1')
             from crescendo_engine.shutdown_evidence import shutdown_proven
             shutdown = load_json(os.path.join(root, 'run', 'worker_shutdown.json'))
-            self.assertTrue(shutdown_proven(shutdown))
-            self.assertEqual(len(reconciled), 1 if fault else 2)
+            self.assertEqual(shutdown_proven(shutdown), fault not in ('startup_cleanup_timeout', 'completion_cleanup'))
+            self.assertEqual(len(reconciled), expected_count)
             self.assertFalse(status['final_cleanup']['raw_deleted'])
-            self.assertEqual(status['final_cleanup']['root_index']['count'], 1 if fault else 2)
+            self.assertEqual(status['final_cleanup']['root_index']['count'], expected_count)
+            if fault in ('startup_crash', 'completion'):
+                self.assertEqual(status['infrastructure_failed_candidates'], 1)
+                self.assertEqual(status['completed_candidates'], 2)
+                failed = load_json(os.path.join(root, 'run', 'candidates', 'g000_c0000', 'candidate.json'))
+                self.assertEqual(failed['status'], 'infrastructure_failed')
+                self.assertIn('cdsCrashReport: command not found' if fault == 'startup_crash' else
+                              'candidate point completion not proven', failed['error'])
             if fault == 'failure':
                 self.assertEqual(status['state'], 'failed')
                 self.assertIn('native output missing', status['primary_failure']['message'])
@@ -235,6 +281,47 @@ class BaselineLoopTests(unittest.TestCase):
                 if not fault:
                     self.assertTrue(os.path.isfile(os.path.join(candidate_root, 'completion_evidence.json')))
                 proof = load_json(os.path.join(candidate_root, 'raw_cleanup_proof.json'))
-                self.assertTrue(proof['ok'])
+                self.assertEqual(proof['ok'], fault not in ('startup_cleanup_timeout', 'completion_cleanup'))
                 self.assertFalse(proof['raw_deleted'])
 
+
+
+class NativeDirectoryRetryTests(unittest.TestCase):
+    def test_bounded_retries_use_unique_owned_requests_and_respect_stop_and_proof(self):
+        from crescendo_engine.completion import NativeTemporaryDirectoryError
+        from crescendo_engine.runner import _native_candidate_result
+
+        error = NativeTemporaryDirectoryError("owned temp directory failure")
+        error.detail = {"cleanup_pending": False, "source_guard": {"ok": True},
+                        "native_stop": {"requested": False},
+                        "native_baseline": {"cleanup_proven": True, "native_session_closed": True}}
+        with tempfile.TemporaryDirectory() as root:
+            existing = os.path.join(root, "candidates", "g000_c0000")
+            for budget, cancel, proven, expected in ((1, False, True, 2), (0, False, True, 1),
+                                                      (1, True, True, 1), (1, False, False, 1)):
+                error.detail["native_baseline"]["cleanup_proven"] = proven
+                owned = {existing}
+                with self.subTest(budget=budget, cancel=cancel, proven=proven), mock.patch(
+                        'crescendo_engine.native_baseline.evaluate_native_baseline', side_effect=error) as evaluate:
+                    with self.assertRaises(NativeTemporaryDirectoryError):
+                        _native_candidate_result("g000_c0000", {}, [], {}, {}, {}, existing,
+                                                 lambda: cancel, owned, None, budget)
+                    roots = [call[0][6] for call in evaluate.call_args_list]
+                    self.assertEqual(len(roots), expected)
+                    self.assertEqual(len(set(roots)), expected)
+                    self.assertEqual(set(roots), owned)
+                    self.assertTrue(all(os.path.dirname(path) == os.path.dirname(existing) for path in roots))
+
+    def test_native_retry_configuration_freezes_only_on_new_or_explicit_runs(self):
+        from crescendo_engine.runner import _freeze_native_directory_retries
+
+        config = {"runtime": {"native_directory_retries": 0}}
+        fresh, old, frozen = {}, {}, {"native_directory_retries": 2}
+        _freeze_native_directory_retries(fresh, config, resuming=False)
+        _freeze_native_directory_retries(old, config, resuming=True)
+        _freeze_native_directory_retries(frozen, config, resuming=True)
+        self.assertEqual(fresh["native_directory_retries"], 0)
+        self.assertNotIn("native_directory_retries", old)
+        self.assertEqual(frozen["native_directory_retries"], 2)
+        with self.assertRaisesRegex(ValueError, "native_directory_retries"):
+            _freeze_native_directory_retries({"native_directory_retries": 1.5}, config, resuming=False)

@@ -23,6 +23,7 @@ import xml.etree.ElementTree as ET
 from crescendo_engine.runtime import bind_text
 _contract_text = bind_text()
 
+from . import catalog_json, prepared_store
 from .diagnostic_timing import timing_tick, elapsed_seconds, phase_seconds
 from .utils import atomic_write_json, atomic_write_text, ensure_dir
 from .private_view_access import PrivateViewBusy, check_private_view_edit_locks, write_private_views, restore_private_views
@@ -47,7 +48,7 @@ def _load(path, max_bytes=4 * 1024 * 1024):
     with os.fdopen(descriptor, "r") as stream:
         if not os.path.samestat(before, os.fstat(stream.fileno())):
             raise ValueError("Working-copy setup identity changed while opening")
-        return json.load(stream)
+        return catalog_json.load(stream)
 
 
 def _owner(reference):
@@ -71,6 +72,7 @@ def _owner(reference):
 
 
 QUARANTINE = _contract_text("suite_quarantine.json")
+RECYCLE = _contract_text("suite_recycle.json")
 
 
 def detach_setup_private_session(reference, reason):
@@ -96,6 +98,8 @@ def _quarantine(owner):
     with _REGISTRY_LOCK:
         in_memory = owner["session_id"] in _QUARANTINED
     path = os.path.join(owner["root"], QUARANTINE)
+    if os.path.lexists(os.path.join(owner["root"], RECYCLE)):
+        return {"reason": "suite recycled; live members retained as evidence"}
     if not os.path.lexists(path):
         return {"reason": "in-process isolation; durable record unavailable"} if in_memory else None
     document = _load(path)
@@ -333,7 +337,7 @@ def _read_suite(reference, deep=True, require_snapshot=True, allow_missing=False
         if require_snapshot:
             path = os.path.join(owner["root"], "prepared-" + snapshot_hash + ".json")
             try:
-                snapshot = _load(path, max_bytes=128 * 1024 * 1024)
+                snapshot = prepared_store.resolve(_load(path, max_bytes=1024 * 1024 * 1024))
             except (OSError, ValueError) as error:
                 raise ValueError(_contract_text("CRESCENDO-SUITE-SNAPSHOT: Working copy snapshot unavailable or invalid: ") + str(error))
             if _snapshot_hash(snapshot) != snapshot_hash:
@@ -371,6 +375,7 @@ def list_setup_private_sessions(config):
         if counts.get(row.get("suite_id"), 0) > 1:
             row["status"] = "unavailable"
             row["can_load"] = row["can_delete"] = False
+            row.setdefault("blocked_reasons", []).append({"code": "marker_mismatch", "message": "Duplicate suite identifier across storage roots."})
             row.setdefault("warnings", []).append(_contract_text("CRESCENDO-SUITE-RECOVERY: Duplicate suite identifier across storage roots"))
     return result
 
@@ -385,6 +390,19 @@ def _list_setup_private_base(base):
         root = os.path.join(base, token)
         try:
             owner = _owner(_load(os.path.join(root, OWNER)))
+            from .suite_quarantine import verify, recycle, RECYCLE
+            recycled = os.path.join(root, RECYCLE)
+            if os.path.lexists(recycled):
+                # Resolve journaled renames before publishing a deleted row.
+                # This also runs during service startup and every list refresh.
+                receipt = recycle(owner)
+                result.append(dict(owner, suite_id=token, status="deleted", can_load=False,
+                                   can_delete=False, can_recover=False,
+                                   blocked_reasons=receipt.get("blocked_reasons", []),
+                                   warnings=receipt.get("warnings", []),
+                                   recycle_complete=receipt.get("complete") is True,
+                                   recycle_root=receipt.get("recycle_root")))
+                continue
             index_path = os.path.join(root, _contract_text("suite_index.json"))
             item = None
             if (not os.path.lexists(os.path.join(root, _contract_text("suite_metadata_commit.json")))
@@ -403,10 +421,12 @@ def _list_setup_private_base(base):
             if item is None:
                 owner, state, workspace = _read_suite(owner, deep=False, require_snapshot=False)
                 item = _suite_summary(owner, state, workspace)
-            quarantine = _quarantine(owner)
-            if quarantine:
-                item.update(status="quarantined", can_load=False, can_delete=False, can_recover=False)
-                item.setdefault("warnings", []).append(_contract_text("CRESCENDO-SUITE-RECOVERY: Isolated suite; ") + str(quarantine.get("reason") or "recovery required"))
+            # Old cached summaries must not hide current isolation evidence.
+            if _quarantine(owner) or item.get("status") in ("unsafe", "quarantined"):
+                verify(owner)
+                owner, state, workspace = _read_suite(owner, deep=False, require_snapshot=False)
+                item = _suite_summary(owner, state, workspace)
+            item.setdefault("blocked_reasons", [])
             try:
                 lease = _acquire_lease(root)
                 _release_lease(lease)
@@ -417,7 +437,9 @@ def _list_setup_private_base(base):
                     item["can_recover_reason"] = ("Suite lease is still held; release it after native work stops, then reopen to recover.")
             result.append(item)
         except (OSError, ValueError, KeyError, TypeError) as error:
-            result.append({"suite_id": token, "root": root, "status": "unavailable", "warnings": [str(error)]})
+            result.append({"suite_id": token, "root": root, "status": "unavailable", "warnings": [str(error)],
+                           "can_load": False, "can_delete": False, "can_recover": False,
+                           "blocked_reasons": [{"code": "marker_mismatch", "message": str(error)}]})
     return result
 
 
@@ -425,7 +447,7 @@ def _suite_summary(owner, state, workspace):
     token = owner["session_id"]
     item = dict(owner, suite_id=token, label=state.get("label") or "Suite " + token[:8],
                 status=state.get("status"), views=copy.deepcopy(workspace.get("same_library_registry") or []),
-                warnings=[], busy=False)
+                warnings=[], blocked_reasons=[], busy=False)
     setup = workspace.get("setup") or {}
     source = setup.get("source") or {}
     selection = state.get("applied_selection") or {}
@@ -445,15 +467,27 @@ def _suite_summary(owner, state, workspace):
     stages = _pending_creation_stages(owner, workspace)
     if stages:
         item.update(status="recovery_required", can_load=False, can_delete=False, can_recover=False)
+        item["blocked_reasons"].append({"code": "recovery_pending", "message": "Incomplete creation staging is retained."})
         item["warnings"].append(_contract_text("CRESCENDO-SUITE-RECOVERY: Incomplete creation staging retained: ") + ", ".join(stages))
     if state.get("refresh_pending"):
         item["status"] = "recovery_required"
+        item["blocked_reasons"].append({"code": "recovery_pending", "message": "Interrupted refresh requires explicit recovery."})
     if state.get("unsafe") or state.get("refresh_pending"):
         item["warnings"].append(_contract_text("CRESCENDO-SUITE-RECOVERY: Suite has unresolved native or refresh state"))
+    if _quarantine(owner) or (state.get("unsafe") and state.get("status") != "delete_incomplete"):
+        from .suite_quarantine import assess
+        assessment = assess(owner, state, workspace)
+        item.update(status="quarantined", can_load=False, can_delete=True, can_recover=False,
+                    delete_policy="preserve_evidence", blocked_reasons=assessment["blocked_reasons"])
+        item["warnings"].append("Isolated suite: deletion preserves evidence and retains locked or active views.")
     return item
 
 def reopen_setup_private_session(reference, config, for_delete=False):
     owner = _owner(reference)
+    from .suite_quarantine import verify, RECYCLE
+    if os.path.lexists(os.path.join(owner["root"], RECYCLE)):
+        raise ValueError("Working copy has been recycled")
+    verify(owner)
     if _quarantine(owner):
         raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Suite is isolated; retained for recovery"))
     lease = _acquire_lease(owner["root"])
@@ -571,7 +605,7 @@ def _backup_legacy_metadata_once(owner, workspace, allow_missing_snapshot=False)
         if not os.path.lexists(snapshot_path) and allow_missing_snapshot:
             snapshot = None
         else:
-            snapshot = _load(snapshot_path, max_bytes=128 * 1024 * 1024)
+            snapshot = prepared_store.resolve(_load(snapshot_path, max_bytes=1024 * 1024 * 1024))
             if _snapshot_hash(snapshot) != snapshot_hash:
                 raise ValueError(_contract_text("CRESCENDO-SUITE-RECOVERY: Legacy snapshot identity changed"))
     elif isinstance(prior_state.get("prepared"), dict):
@@ -582,7 +616,7 @@ def _backup_legacy_metadata_once(owner, workspace, allow_missing_snapshot=False)
     fd, tmp = tempfile.mkstemp(prefix=".suite-legacy-backup-", suffix=".tmp", dir=owner["root"])
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump(backup, stream, ensure_ascii=True, sort_keys=True)
+            stream.writelines(catalog_json.chunks(backup))
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
@@ -599,8 +633,7 @@ def _backup_legacy_metadata_once(owner, workspace, allow_missing_snapshot=False)
 
 
 def _snapshot_hash(snapshot):
-    payload = json.dumps(snapshot, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    return catalog_json.digest(snapshot)
 
 
 class _PrivateSession(object):
@@ -647,7 +680,7 @@ class _PrivateSession(object):
         if snapshot_hash and not self.deletion_only:
             snapshot_path = os.path.join(self.owner["root"], "prepared-" + snapshot_hash + ".json")
             if not os.path.exists(snapshot_path):
-                atomic_write_json(snapshot_path, self.prepared)
+                prepared_store.write(snapshot_path, self.prepared)
         self.stored_prepared_hash = snapshot_hash
         state = {
             "schema_version": SCHEMA, "session_id": self.owner["session_id"],
@@ -822,6 +855,8 @@ class _PrivateSession(object):
             _contract_text('printf("CRESCENDO_SETUP_PRIVATE_BINDING_DONE\\n")')]
         script, ready = os.path.join(control, "setup.il"), os.path.join(control, "ready")
         body.insert(0, _contract_text('crescReady=outfile("%s") when(crescReady close(crescReady))') % _skill_quote(ready))
+        body.insert(0, 'sstatus(stacktrace 16)')
+        body.insert(1, _contract_text('printf("CRESCENDO_SETUP_PRIVATE_BINDING_BEGIN\\n")'))
         lines, generation = bounded_skill_body_lines(body, _contract_text("crescSetupPrivateResult"))
         lines.append(_contract_text('if(crescSetupPrivateResult then exit(0) else exit(1))'))
         atomic_write_text(script, "\n".join(lines) + "\n")
@@ -833,11 +868,24 @@ class _PrivateSession(object):
             timeout_seconds=float(config.get("runtime", {}).get("command_timeout_seconds", 180)),
             control_root=control, token="setup-private-" + uuid.uuid4().hex,
             cancel_check=cancel_check, command_runner=guarded)
+        from .native_diagnostics import skill_command_diagnostics, log_ocean_tool_warnings, recorded_ocean_warnings
+        simulators = tuple(sorted({(row.get("simulator") or "spectre") for row in workspace["setup"].get("tests") or []
+                                   if row.get("enabled", True)}))
+        skill = skill_command_diagnostics(command, script, owned_root=control, simulators=simulators)
+        warnings = recorded_ocean_warnings(skill)
+        log_ocean_tool_warnings(config, control, warnings)
+        if warnings or skill.get("first_simulator_tool_error"):
+            command["skill"] = skill
         atomic_write_json(os.path.join(control, _contract_text("command.json")), command)
         if (command.get("returncode") != 0 or command.get("timed_out") or command.get("cancelled")
                 or command.get("termination_failed") or command.get("guardian_cleanup", {}).get("state") != "dead"):
             self.unsafe = command.get("guardian_cleanup", {}).get("state") != "dead"
+            message = (skill.get("first_error") or {}).get("message") or ""
+            if " bytes (limit " in message and (" viewlist is " in message or " stoplist is " in message):
+                raise RuntimeError(message)
             raise RuntimeError("Working-copy setup binding failed; inspect " + os.path.join(control, "ocean.stdout"))
+        if skill.get("first_simulator_tool_error"):
+            raise RuntimeError(skill["first_error"]["message"])
         if selected_plan:
             workspace["_native_execution_selection_applied"] = selected_plan
         verification = validate_schematic_application(plan)
@@ -858,6 +906,7 @@ class _PrivateSession(object):
         self.binding_plan = copy.deepcopy(plan["config_binding_plan"])
         self.binding_verification = {"ok": True, "records": records,
             "config_records": plan["config_verification_path"], "command_root": control,
+            "default_lists": (verification.get("config_verification") or {}).get("default_lists", []),
             "native_run_invoked": False, "solver_invocations": 0,
             "evidence_scope": "last_saved_native_readback_snapshot"}
         self.view_fingerprints = self.view_identity()
@@ -927,6 +976,7 @@ class _PrivateSession(object):
         workspace["setup"] = copy.deepcopy(prepared["setup"])
         workspace.pop("native_parameter_paths", None)
         workspace.pop("native_parameter_last_values", None)
+        workspace.pop("native_design_variable_last_values", None)
         workspace.pop("_native_corner_selection_applied", None)
         workspace.pop("_native_execution_selection_applied", None)
         workspace.pop(_contract_text("_cr_selected_corners"), None)
@@ -1028,6 +1078,11 @@ def _require_matching_test(controller, prepared):
         raise ValueError("Working-copy setup session belongs to a different or unqualified Test; Load and Inspect again")
 
 
+def _optimizable_schematic_parameters(prepared):
+    return [copy.deepcopy(row) for row in prepared.get("parameters") or []
+            if row.get("backend", "schematic") == "schematic" and row.get("optimizable")]
+
+
 def apply_setup_private_cells(reference, prepared, config, cancel_check=None):
     controller = _controller(reference)
     if controller.deletion_only:
@@ -1043,8 +1098,7 @@ def apply_setup_private_cells(reference, prepared, config, cancel_check=None):
         controller.persist()
         with controller.writable_views():
             reset_started = True
-            parameters = [copy.deepcopy(row) for row in prepared.get("parameters") or []
-                          if row.get("backend", "schematic") == "schematic" and row.get("optimizable")]
+            parameters = _optimizable_schematic_parameters(prepared)
             controller.reset_maestro(prepared, config)
             # Install the requested snapshot before native readback so the
             # freshly qualified masks survive publication and persistence.
@@ -1118,6 +1172,25 @@ def borrow_setup_private_session(prepared, config, root, cancel_check=None,
             body_error = None
             try:
                 controller.reset_maestro(prepared, config)
+                if (controller.workspace.get("config_designs")
+                        and not (controller.binding_verification or {}).get("default_lists")):
+                    # Older suites verified bindings but allowed long default lists.
+                    # Reuse only their owned views after fresh native bind/readback.
+                    controller.status = "applying"
+                    controller.persist()
+                    try:
+                        applied = set(controller.applied_selection.get("parameter_ids") or [])
+                        parameters = [row for row in _optimizable_schematic_parameters(controller.prepared)
+                                      if row["parameter_id"] in applied]
+                        if len(parameters) != len(applied):
+                            raise ValueError("Working-copy applied parameter identity changed; Apply Selected Cells again")
+                        controller._native_bind(parameters, config, cancel_check)
+                    except BaseException:
+                        controller.status = "failed"
+                        controller.persist()
+                        raise
+                    controller.status = "ready"
+                    controller.persist()
                 if phase_timings is not None:
                     phase_timings["shared_setup"] = phase_seconds(elapsed_seconds(acquired_at),
                         boundary="owned Maestro suite identity, writable views and reset", completed=True)
@@ -1595,7 +1668,11 @@ def recover_setup_private_session(reference, config):
         _release_lease(lease)
 
 def delete_setup_private_session(reference, timeout_seconds=12):
-    """Delete exactly registered views after proving all owned writers stopped."""
+    """Delete exact stopped views, or recycle an isolated suite with evidence."""
+    owner, state, workspace = _read_suite(reference, deep=False, require_snapshot=False)
+    if _quarantine(owner) or (state.get("unsafe") and state.get("status") != "delete_incomplete"):
+        from .suite_quarantine import recycle
+        return recycle(owner)
     controller = _controller(reference)
     if _quarantine(controller.owner):
         raise RuntimeError(_contract_text("CRESCENDO-SUITE-RECOVERY: Suite is isolated"))

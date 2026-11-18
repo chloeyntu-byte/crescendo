@@ -35,6 +35,17 @@ class I18nEnDataTest(unittest.TestCase):
         for original, display in expected.items():
             self.assertEqual(tr(original), display)
 
+    def test_selection_notice_matches_runtime_wording(self):
+        from crescendo.i18n import tr
+        from crescendo_engine.variable_selection_notice import variable_selection_notice
+        chinese = ("已选 51 个变量。变量较多时，Template Netlist 的参考捕获在部分环境中可能导致 Virtuoso 意外退出。"
+                   "如果遇到这种情况，请减少选中的变量，或改用 Maestro Netlist 或 Native Run。")
+        self.assertEqual(tr(chinese), variable_selection_notice("private_netlist", 51))
+        chinese = ("已选 51 个变量。变量较多时，每代耗时和达到收敛所需的代数都可能明显增加。"
+                   "建议先收窄变量选择范围。")
+        for mode in ("maestro_baseline", "maestro_netlist"):
+            self.assertEqual(tr(chinese), variable_selection_notice(mode, 51))
+
     def test_keys_contain_cjk(self):
         for zh, en in i18n_en_data.PAIRS:
             self.assertTrue(CJK.search(zh), zh)

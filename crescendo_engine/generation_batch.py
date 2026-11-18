@@ -6,12 +6,16 @@ logical inputs share a physical row only under the deterministic qualification.
 import copy
 import hashlib
 import json
+import math
 import os
+import sys
 import uuid
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_EVEN, localcontext
 
 from crescendo_engine.runtime import bind_text
 _contract_text = bind_text()
 
+from .config import DEFAULTS
 from .utils import atomic_write_json
 
 SCHEMA = _contract_text('crescendo.generation_batch.v1')
@@ -45,7 +49,8 @@ def freeze_batching(spec, config, resuming=False):
         # continuation schema or silently migrate the saved checkpoint.
         return 'serial'
     if value is None:
-        value = 'serial' if resuming else (config.get('runtime') or {}).get('native_candidate_batching', 'serial')
+        value = (config.get('runtime') or {}).get(
+            'native_candidate_batching', DEFAULTS['runtime']['native_candidate_batching'])
     if value not in ('serial', 'generation'):
         raise ValueError('native_candidate_batching must be serial or generation')
     spec['native_candidate_batching'] = value
@@ -58,6 +63,153 @@ def freeze_batching(spec, config, resuming=False):
         spec.setdefault('native_batching_protocol', expected)
     validate_batching_protocol(spec)
     return value if generation_batching_enabled(spec) else 'serial'
+
+
+# IC618 expands Device Parameter sets to seven significant decimal digits.
+# Leave one guard digit for the native parametric set and point netlister.
+_NATIVE_RUN_DIGITS = 6
+_NATIVE_RUN_FORMAT = ".%dg" % _NATIVE_RUN_DIGITS
+
+
+def _round_significant(number, rounding=ROUND_HALF_EVEN):
+    if not number:
+        return Decimal(0)
+    unit = Decimal((0, (1,), number.adjusted() - _NATIVE_RUN_DIGITS + 1))
+    return number.quantize(unit, rounding=rounding)
+
+
+class NativeRunValueUnsupported(BatchUnsupported):
+    """Precision failure with the values needed to explain a serial fallback."""
+
+    def __init__(self, reason, variable, original, normalized=None, **details):
+        key = variable['parameter_id']
+        super().__init__(reason + ': ' + key)
+        if isinstance(original, float) and not math.isfinite(original):
+            original = repr(original)
+        self.details = dict(details, parameter_id=key, original_value=original,
+                            normalized_value=None if normalized is None else str(normalized),
+                            reason=str(self))
+
+
+def _native_grid_value(number, variable, step):
+    lower = Decimal(str(variable['minimum']))
+    upper = Decimal(str(variable['maximum']))
+    origin = variable.get('grid_origin')
+    origin = lower if origin is None else Decimal(str(origin))
+    grid_inputs = (lower, upper, origin, number, step)
+    with localcontext() as context:
+        # Keep subtraction, the grid index and multiplication exact even
+        # when the step and grid origin have very different magnitudes.
+        context.prec = max(context.prec, max(x.adjusted() for x in grid_inputs)
+                           - min(x.as_tuple().exponent for x in grid_inputs) + 8)
+        index = ((number - origin) / step).to_integral_value(rounding=ROUND_HALF_EVEN)
+        canonical = origin + index * step
+        # The optimizer constructs points with float multiplication and
+        # addition relative to the lower bound. Allow their arithmetic error
+        # while keeping the tolerance small compared with a grid interval.
+        tolerance = min(step / 8, 4 * Decimal(str(sys.float_info.epsilon))
+                        * max(abs(number), abs(lower), abs(number - lower)))
+        on_grid = (abs(number - canonical) <= tolerance
+                   and lower - tolerance <= canonical <= upper + tolerance)
+    return canonical, on_grid
+
+
+def _native_run_value(original, variable, quantize, linked_coordinate):
+    from .hierarchy import parse_physical_number
+    from .optimizers import _decode
+
+    number = parse_physical_number(original)
+    if number is None:
+        raise NativeRunValueUnsupported('Native batch value is not finite numeric', variable, original)
+    kind = variable.get('value_type', 'float')
+    step = variable.get('step')
+    continuous = kind == 'float' and step is None
+    if quantize and continuous and linked_coordinate is not None:
+        number = _decode(linked_coordinate, variable)
+    decimal_value = Decimal(str(number))
+
+    if kind == 'integer' or (kind == 'float' and step is not None):
+        canonical, on_grid = _native_grid_value(decimal_value, variable, Decimal(str(1 if step is None else step)))
+        if not on_grid:
+            raise NativeRunValueUnsupported('Native batch fixed candidate value is outside its grid',
+                                            variable, original, canonical)
+        rounded = _round_significant(canonical)
+        if rounded != canonical:
+            raise NativeRunValueUnsupported('Native batch fixed grid value requires more than six significant digits',
+                                            variable, original, canonical, rounded_value=str(rounded))
+        if quantize:
+            return int(canonical) if kind == 'integer' else float(canonical)
+        if canonical != decimal_value:
+            raise NativeRunValueUnsupported('Native batch would change a fixed candidate value',
+                                            variable, original, canonical)
+        return original
+
+    rounded = _round_significant(decimal_value)
+    if continuous:
+        lower = Decimal(str(variable['minimum']))
+        upper = Decimal(str(variable['maximum']))
+        if rounded < lower:
+            rounded = _round_significant(lower, ROUND_CEILING)
+        elif rounded > upper:
+            rounded = _round_significant(upper, ROUND_FLOOR)
+        if not lower <= rounded <= upper:
+            raise NativeRunValueUnsupported('No representable Native batch value within bounds',
+                                            variable, original, rounded)
+        if quantize:
+            return float(rounded)
+    if rounded != decimal_value:
+        raise NativeRunValueUnsupported('Native batch would change a fixed candidate value',
+                                        variable, original, rounded)
+    return original
+
+
+def native_run_values(values, variables, quantize=False, allow_partial=False):
+    """Qualify a Native Run row or prepare a new proposal for its frozen plan."""
+    from .optimizers import _encode, validate_candidate_values
+
+    result = dict(values)
+    linked_coordinates, linked_groups = {}, {}
+    failed_groups = set()
+    for variable in variables:
+        key = variable['parameter_id']
+        group = variable.get('link_group')
+        if group:
+            linked_groups.setdefault(group, []).append(variable)
+        try:
+            result[key] = _native_run_value(values[key], variable, quantize, linked_coordinates.get(group))
+        except NativeRunValueUnsupported:
+            if not allow_partial:
+                raise
+            if group:
+                failed_groups.add(group)
+            continue
+        if (quantize and group and group not in linked_coordinates
+                and variable.get('value_type', 'float') == 'float' and variable.get('step') is None):
+            linked_coordinates[group] = _encode(result[key], variable)
+
+    for group, members in linked_groups.items():
+        group_values = {member['parameter_id']: result[member['parameter_id']] for member in members}
+        if group not in failed_groups:
+            try:
+                validate_candidate_values(group_values, members)
+                continue
+            except ValueError as error:
+                if not allow_partial:
+                    anchor = next((member for member in members if member.get('step') is None), members[0])
+                    key = anchor['parameter_id']
+                    raise NativeRunValueUnsupported('Native batch cannot preserve linked values: ' + str(error),
+                                                    anchor, values[key], result[key], link_group=group,
+                                                    linked_values=group_values)
+        # A linked group must keep a shared coordinate in both batch and
+        # scalar execution, even when only one member failed quantization.
+        result.update((key, values[key]) for key in group_values)
+    return result
+
+
+def _native_run_values_match(expected, actual):
+    from .hierarchy import parse_physical_number
+    expected_number = parse_physical_number(expected)
+    return expected_number is not None and expected_number == parse_physical_number(actual)
 
 
 def build_generation_plan(generation, pending, parameters, identity):
@@ -74,7 +226,6 @@ def build_generation_plan(generation, pending, parameters, identity):
             number = parse_physical_number(values[key])
             if number is None:
                 raise BatchUnsupported('Candidate column is not numeric')
-            import math
             if not math.isfinite(number):
                 raise BatchUnsupported('Candidate column is not finite')
             normalized.append(number)
@@ -133,7 +284,7 @@ def build_native_columns(plan, parameter_rows):
     if len(paths) != len(plan['parameter_ids']) or len(set(paths)) != len(paths):
         raise BatchUnsupported('Native parameter columns are ambiguous')
     columns = []
-    for key, path in zip(plan['parameter_ids'], paths):
+    for index, (key, path) in enumerate(zip(plan['parameter_ids'], paths)):
         # Reuse the scalar validator; the only new syntax is a space-separated
         # column of independently validated finite scalar inputs.
         values = []
@@ -141,10 +292,31 @@ def build_native_columns(plan, parameter_rows):
             item = next(r for r in parameter_rows if r['parameter_id'] == key)
             item = dict(item, value=row['values'][key])
             from .native_maestro_parameters import _number
-            values.append(_number(item['value']))
-        columns.append({'parameter_id': key, 'path': path, 'values': values, 'text': ' '.join(values)})
+            if plan.get('native_run_exact_values'):
+                values.append(format(row['normalized'][index], _NATIVE_RUN_FORMAT))
+            else:
+                values.append(_number(item['value']))
+        column = {'parameter_id': key, 'path': path, 'values': values, 'text': ' '.join(values)}
+        if item.get("source_kind") in ("global", "top"):
+            column["source_kind"] = item["source_kind"]
+            plan["design_variables_protocol"] = _contract_text("crescendo.design_variables.v1")
+        columns.append(column)
     if not columns or len(set(len(c['values']) for c in columns)) != 1:
         raise BatchUnsupported('Native columns must have equal lengths')
+    if any(c.get("source_kind") in ("global", "top") for c in columns):
+        # IC618 separates variable and device parameter sets. Bind each mixed
+        # device axis to an exact owned Global symbol, then zip all Globals.
+        for column in columns:
+            column["axis_kind"] = "global"
+            if column.get("source_kind") not in ("global", "top"):
+                column["native_device_path"] = column["path"]
+                column["path"] = _contract_text("CRESCENDO_NL_BATCH_") + hashlib.sha256(column["parameter_id"].encode("utf-8")).hexdigest()[:16]
+    if len(columns) == 1 and columns[0].get("axis_kind") == "global":
+        # IC618 rejects one-member sets at Run. A constant owned companion
+        # supplies the second member without adding an optimizer dimension.
+        zeros = ["0"] * len(plan["rows"])
+        columns.append(dict(parameter_id="$native_set_companion", path=_contract_text("CRESCENDO_NL_BATCH_COMPANION"),
+            source_kind="global", axis_kind="global", auxiliary=True, values=zeros, text=" ".join(zeros)))
     plan['columns'] = columns
     plan['owned_fingerprint'] = hashlib.sha256(json.dumps(columns, sort_keys=True).encode('utf-8')).hexdigest()
     return columns
@@ -183,8 +355,9 @@ def parse_native_rows(path):
     return rows
 
 
-def map_native_points(plan, run_id, history, parsed, native_rows):
+def map_native_points(plan, run_id, history, parsed, native_rows, allow_missing_status=False):
     from .workspace import _physical_values_match
+    values_match = _native_run_values_match if plan.get('native_run_exact_values') else _physical_values_match
     if not history or run_id is None:
         raise ValueError('Exact native run/history missing')
     points = {p['pointID']: p for p in parsed['points']}
@@ -195,7 +368,7 @@ def map_native_points(plan, run_id, history, parsed, native_rows):
     for native in native_rows:
         conditions = native['conditions']
         matches = [r for r in plan['rows'] if all(c['path'] in conditions and
-                   _physical_values_match(r['values'][c['parameter_id']], conditions[c['path']]) for c in plan['columns'])]
+                   values_match(r['values'][c['parameter_id']], conditions[c['path']]) for c in plan['columns'] if not c.get('auxiliary'))]
         if len(matches) != 1:
             raise ValueError('Native design conditions have no unique physical candidate row')
         # Native resultsDir is authoritative; directory number is independently
@@ -209,20 +382,27 @@ def map_native_points(plan, run_id, history, parsed, native_rows):
         if not p or str(p['designPointNumber']) != str(native['design_point']) or p['corner_name'] != native['corner']:
             raise ValueError('Native/RDB design, corner or resultsDir identity differs')
         key = (point_id, native['test'])
-        if key not in statuses or key in seen:
+        if key in seen or (key not in statuses and not allow_missing_status):
             raise ValueError('Native physical point absent or duplicated')
         seen.add(key)
         for column in plan['columns']:
-            stem, prop = column['path'].rsplit('/', 1)
-            name = stem + '.' + prop
+            if column.get('auxiliary'):
+                if not values_match(0, conditions.get(column['path'])):
+                    raise ValueError('Native set companion condition differs')
+                continue
+            if column.get("axis_kind") == "global":
+                name = column["path"]
+            else:
+                stem, prop = column['path'].rsplit('/', 1)
+                name = stem + '.' + prop
             corner_params = native['corner_parameters']
-            if name not in corner_params or not _physical_values_match(matches[0]['values'][column['parameter_id']], corner_params[name]):
+            if name not in corner_params or not values_match(matches[0]['values'][column['parameter_id']], corner_params[name]):
                 raise ValueError('Native RDB corner device parameter differs')
         row_id = matches[0]['row_id']
         record = dict(native, point_id=point_id, batch_epoch=plan['batch_epoch'], run_id=run_id, history=history)
         record['physical_id'] = json.dumps([plan['batch_epoch'], run_id, history, native['design_point'], native['test'], native['corner'], directory])
         mapped.setdefault(row_id, []).append(record)
-    if seen != set(statuses) or set(mapped) != {r['row_id'] for r in plan['rows']}:
+    if not set(statuses).issubset(seen) or set(mapped) != {r['row_id'] for r in plan['rows']}:
         raise ValueError('Missing or extra native batch points')
     plan['candidate_to_physical'] = {c['candidate_id']: [p['physical_id'] for p in mapped[c['row_id']]] for c in plan['candidates']}
     plan['physical_to_candidates'] = {}
@@ -254,6 +434,9 @@ class HistoryReferences(object):
 
 
 def native_batch_skill_lines(batch, scalar_plan, path):
+    if any(c.get("source_kind") in ("global", "top") for c in batch["columns"]):
+        from .design_variable_native import batch_lines
+        return batch_lines(batch, scalar_plan, path)
     from .native_baseline import _quote as q
     paths = [c['path'] for c in batch['columns']]
     entries = ' '.join('list(%s %s)' % (q(c['path']), q(c['text'])) for c in batch['columns'])
@@ -346,20 +529,6 @@ def native_point_export_lines(path):
         _contract_text('fprintf(crBatchOut "END\\n") close(crBatchOut)'),
         'maeCloseResults()',
     ]
-
-
-def batch_parameter_reader(requests, config, root, driver, cancel_check):
-    from .native_point_parameters import read_point_parameters
-    values = read_point_parameters(requests, config, root, native_session=driver, cancel_check=cancel_check) if any(r['names'] for r in requests) else [{} for r in requests]
-    def reader(subset):
-        result = []
-        for request in subset:
-            matches = [i for i, r in enumerate(requests) if r == request]
-            if len(matches) != 1:
-                raise ValueError('Final batch parameter request differs from exact readback')
-            result.append(copy.deepcopy(values[matches[0]]))
-        return result
-    return reader
 
 
 def native_batch_policy(policy):

@@ -69,14 +69,25 @@ class ResourceSettingsTests(unittest.TestCase):
         spec = {}
         freeze_execution_settings(spec, copy.deepcopy(config))
         self.assertEqual(spec["reader_protocol"], READER_BATCH)
+        self.assertEqual(spec["native_candidate_batching"], "generation")
         from crescendo_engine.config import DEFAULTS
         fresh_cli = {}
         freeze_execution_settings(fresh_cli, copy.deepcopy(DEFAULTS))
         self.assertEqual(fresh_cli['native_batch_schema'], 'crescendo.generation_batch.v1')
         self.assertEqual(fresh_cli['native_candidate_batching'], 'generation')
         self.assertEqual(spec["local_solver_max_jobs"], 5)
-        resumed = {}
-        freeze_execution_settings(resumed, copy.deepcopy(config), resuming=True)
+        from crescendo_engine.generation_batch import generation_batching_enabled
+        from tests.test_resume_preflight_hardening import _mock_checkpoint
+        from crescendo_engine.runner import validate_checkpoint_integrity
+        with tempfile.TemporaryDirectory() as root:
+            checkpoint = _mock_checkpoint(root)
+            self.assertEqual(validate_checkpoint_integrity(checkpoint), [])
+            original = copy.deepcopy(checkpoint)
+            resumed = dict(checkpoint["spec"])
+            resume_config = copy.deepcopy(DEFAULTS)
+            freeze_execution_settings(resumed, resume_config, resuming=True)
+            self.assertEqual(checkpoint, original)
+        self.assertFalse(generation_batching_enabled(resumed))
         self.assertEqual(resumed["reader_protocol"], READER_SERIAL)
         self.assertNotIn('native_candidate_batching', resumed)
         self.assertNotIn('native_batch_schema', resumed)
@@ -85,6 +96,11 @@ class ResourceSettingsTests(unittest.TestCase):
         frozen = dict(spec)
         freeze_execution_settings(frozen, {}, resuming=True)
         self.assertEqual(frozen, spec)
+        for resuming in (False, True):
+            serial = {"native_candidate_batching": "serial"}
+            freeze_execution_settings(serial, copy.deepcopy(DEFAULTS), resuming=resuming)
+            self.assertEqual(serial["native_candidate_batching"], "serial")
+            self.assertNotIn("native_batch_schema", serial)
         for key in ("local_solver_max_jobs", "measurement_jobs", "progress_flush_interval_seconds"):
             for value in (True, -1, float("inf")):
                 with self.assertRaises(ValueError):

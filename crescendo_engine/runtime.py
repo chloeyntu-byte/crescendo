@@ -4,6 +4,7 @@ Initialize before importing engine consumers. Descriptors carry no import paths
 or executable code; only the application's explicit startup may register code.
 """
 import collections
+import functools
 import hashlib
 import json
 import os
@@ -311,6 +312,7 @@ def text(value):
                 'CR_': d['symbol_prefix'].upper(), 'cr_': d['symbol_prefix']}[key]
     compiled = re.compile(pattern)
 
+    @functools.lru_cache(maxsize=4096)
     def resolve(source):
         if (source not in replacements and
                 re.fullmatch(r'[A-Za-z0-9_.-]+\.crescendo', source)):

@@ -16,13 +16,13 @@ _SCHEMA_VERSION = _contract_text("crescendo.prepared_freshness.v1")
 
 
 def _canonical_fingerprint(payload):
-    encoded = json.dumps(
-        payload, separators=(",", ":"), sort_keys=True,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    from .catalog_json import digest
+    return digest(payload)
 
 
 def _loaded_identity(prepared, components=False):
+    if prepared.get("schema_version") == _contract_text("crescendo.prepared_gui_summary.v1"):
+        raise ValueError("GUI catalogue summary is not an execution prepared object")
     payload = {
         "schema_version": _contract_text("crescendo.loaded_design_identity.v1"),
         "setup": prepared.get("setup"),

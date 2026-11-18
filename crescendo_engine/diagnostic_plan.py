@@ -54,8 +54,20 @@ def freeze_plan(spec, baseline):
         add(values)
     if len(unique) < total:
         axes = []
-        for variable in variables:
-            if variable.get('value_type') == 'enum':
+        linked = any(row.get("link_group") for row in variables)
+        dimensions = generator._dimensions if linked else variables
+        for variable in dimensions:
+            if linked and variable.get('value_type') == 'enum':
+                # Enumerate each independent choice exactly once in unit space.
+                # Repeated decoded choices can exhaust the bounded product
+                # before it reaches all legal combinations.
+                axis = [index / float(len(variable['choices']) - 1)
+                        for index in range(min(total, len(variable['choices'])))]
+            elif linked:
+                count = min(total, variable["step_count"] + 1) if variable.get("step") is not None else total
+                divisor = variable["step_count"] if variable.get("step") is not None else max(1, total - 1)
+                axis = [index / float(divisor) for index in range(count)]
+            elif variable.get('value_type') == 'enum':
                 axis = variable['choices'][:total]
             elif variable.get('step') is not None:
                 axis = [variable['minimum'] + index * variable['step']
@@ -65,7 +77,8 @@ def freeze_plan(spec, baseline):
                         for index in range(total)]
             axes.append(axis)
         for values in itertools.islice(itertools.product(*axes), total):
-            add(dict((var['parameter_id'], value) for var, value in zip(variables, values)))
+            add(generator._decode_vector(values) if linked else
+                dict((var['parameter_id'], value) for var, value in zip(variables, values)))
             if len(unique) >= total:
                 break
     rows = [{'generation': index // shape['samples_per_generation'],
@@ -89,3 +102,36 @@ def validate_plan(plan, variables, generations, population):
             raise ValueError('environment_test frozen plan values must be numeric parameter mappings')
         result.append(dict(row, values=validate_candidate_values(row['values'], variables)))
     return result
+
+
+def project_frozen_inputs(spec, variables):
+    """Project validated diagnostic inputs onto qualified surviving dimensions.
+
+    Preserve order and retained values, even if projection creates repeats.
+    Check the original digests before issuing identities for the projection.
+    """
+    marker = copy.deepcopy(spec['environment_test'])
+    original = validate_variables(spec['variables'])
+    keep = {row['parameter_id'] for row in variables}
+    if not keep.issubset({row['parameter_id'] for row in original}):
+        raise ValueError('Diagnostic projection cannot introduce dimensions')
+    if 'frozen_candidate' in marker:
+        values = validate_candidate_values(marker['frozen_candidate'], original)
+        if any(isinstance(value, bool) for value in marker['frozen_candidate'].values()):
+            raise ValueError('Diagnostic candidate values cannot be booleans')
+        if marker.get('frozen_candidate_sha256') not in (None, digest(values)):
+            raise ValueError('Diagnostic candidate digest mismatch before projection')
+        marker['frozen_candidate'] = validate_candidate_values(
+            {key: value for key, value in values.items() if key in keep}, variables)
+        marker['frozen_candidate_sha256'] = digest(marker['frozen_candidate'])
+    if 'frozen_plan' in marker:
+        plan = validate_plan(marker['frozen_plan'], original, spec['generations'], spec['population'])
+        if marker.get('frozen_plan_sha256') not in (None, digest(plan)):
+            raise ValueError('Diagnostic plan digest mismatch before projection')
+        if 'frozen_candidate' in spec['environment_test'] and plan[0]['values'] != spec['environment_test']['frozen_candidate']:
+            raise ValueError('Diagnostic first candidate mismatch before projection')
+        for row in plan:
+            row['values'] = {key: value for key, value in row['values'].items() if key in keep}
+        marker['frozen_plan'] = validate_plan(plan, variables, spec['generations'], spec['population'])
+        marker['frozen_plan_sha256'] = digest(marker['frozen_plan'])
+    return marker

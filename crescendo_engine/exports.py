@@ -101,7 +101,7 @@ def _display_generation(value):
         return value
 
 
-def write_candidates_csv(candidates, stream, variable_labels=None):
+def write_candidates_csv(candidates, stream, variable_labels=None, variables=None):
     variable_labels = dict(variable_labels or {})
     variable_names, objective_names, constraint_names = _collect_columns(candidates, variable_labels)
     objective_labels = _labels_for_metrics(objective_names)
@@ -114,6 +114,9 @@ def write_candidates_csv(candidates, stream, variable_labels=None):
     include_actual = any(candidate.get("execution_backend") in ("maestro_netlist", "private_netlist") for candidate in candidates)
     if include_actual:
         headers.extend("actual_variable:%s" % label for label in display_variable_labels)
+    link_groups = dict((row["parameter_id"], row["link_group"]) for row in variables or [] if row.get("link_group"))
+    linked_names = [name for name in variable_names if name in link_groups]
+    headers.extend("link_group:%s" % name for name in linked_names)
     writer = csv.writer(stream, lineterminator="\n")
     writer.writerow(headers)
     for candidate in candidates:
@@ -136,6 +139,7 @@ def write_candidates_csv(candidates, stream, variable_labels=None):
             completion = candidate.get("completion_evidence") or candidate.get("completion") or {}
             actual = completion.get("parameters") or {} if completion.get("ok") else {}
             row.extend(actual.get(name) for name in variable_names)
+        row.extend(link_groups[name] for name in linked_names)
         writer.writerow([_text(value) for value in row])
     return {
         "rows": len(candidates),
@@ -144,13 +148,13 @@ def write_candidates_csv(candidates, stream, variable_labels=None):
     }
 
 
-def candidates_csv_text(candidates, variable_labels=None):
+def candidates_csv_text(candidates, variable_labels=None, variables=None):
     stream = io.StringIO()
-    write_candidates_csv(candidates, stream, variable_labels=variable_labels)
+    write_candidates_csv(candidates, stream, variable_labels=variable_labels, variables=variables)
     return stream.getvalue()
 
 
-def export_candidates_csv(candidates, path, variable_labels=None):
+def export_candidates_csv(candidates, path, variable_labels=None, variables=None):
     target = os.path.abspath(os.path.expanduser(path))
     parent = os.path.dirname(target)
     if parent and not os.path.isdir(parent):
@@ -158,7 +162,7 @@ def export_candidates_csv(candidates, path, variable_labels=None):
     temporary = target + ".tmp"
     try:
         with io.open(temporary, "w", encoding="utf-8", newline="") as stream:
-            summary = write_candidates_csv(candidates, stream, variable_labels=variable_labels)
+            summary = write_candidates_csv(candidates, stream, variable_labels=variable_labels, variables=variables)
         os.replace(temporary, target)
     finally:
         if os.path.exists(temporary):

@@ -26,9 +26,10 @@ except ImportError:
     import tkSimpleDialog as simpledialog
     import ttk
 
+from .pareto_3d import Pareto3DPlot, triple_points
 from .gui_activity import ActivityJournal
 from .diagnostic_plan import diagnostic_shape
-from .gui_timing import candidate_timing_lines, generation_timing_lines, seconds_text
+from .gui_timing import candidate_timing_lines, generation_timing_lines, seconds_text, observe_setup_action
 from .ui_gates import merge_gate_progress, setup_gate_progress
 from .gui_state import (
     ALGORITHM_FIELDS,
@@ -60,6 +61,7 @@ from .gui_state import (
 from .multiobjective import build_objective_presentation, resolve_algorithm_policy
 from .storage_errors import format_task_error, is_storage_full_error
 from .job_policy import job_policy_fingerprint, normalize_job_overrides, job_timeout_policy, job_input_defaults, JOB_TIMEOUT_PROPERTIES
+from .config import DEFAULTS
 from .execution_commands import normalize_execution_commands, DEFAULT_SOLVER_TEMPLATES
 from .utils import atomic_write_json, utc_timestamp
 from .diagnosis_catalog import describe_check, format_section, read_section, worker_error_text
@@ -69,7 +71,7 @@ from .unified_configuration import (
     read_configuration, save_configuration, read_last_configuration, save_last_configuration, configuration_revision,
 )
 from .settings_state import (
-    build_settings_state, match_settings_state, read_settings_state,
+    build_settings_state, match_settings_state, read_settings_state, settings_snapshot_context,
     save_settings_state, settings_state_directory, last_settings_path,
     save_last_settings_state, read_last_settings_state,
 )
@@ -460,9 +462,16 @@ class CornerPicker(ttk.Button):
         self._updated()
 
     def _updated(self):
-        count = len(self.selected())
-        text = ('All corners ({})'.format(count) if count and count == len(self.corners) else
-                '{} corner{}'.format(count, '' if count == 1 else 's') if count else 'No corners')
+        selected = self.selected()
+        count = len(selected)
+        if count == 1:
+            text = selected[0]
+        elif count and count == len(self.corners):
+            text = 'All corners ({})'.format(count)
+        elif count:
+            text = '{} corners'.format(count)
+        else:
+            text = 'No corners'
         self.label_var.set(text)
         if self.changed: self.changed()
 
@@ -1033,7 +1042,15 @@ class OptimizerGui(object):
         from .diagnostic_actions import DiagnosticActions
         self.diagnostic_extensions = DiagnosticActions(self, diagnostic_actions)
         self.root = root
+        # Only the native, fresh service is engine-owned. Injected service
+        # implementations and preloaded services preserve their caller lifecycle.
+        from .server import OptimizerService
+        if type(service) is OptimizerService:
+            service.enable_gui_process()
         self.service = service
+        from .gui_timing import GuiHeartbeat
+        self.diagnostic_heartbeat = GuiHeartbeat(root)
+        service.diagnostic_gui_observer = self.diagnostic_heartbeat
         self.launch_context = copy.deepcopy(launch_context) if launch_context else None
         self.active_launch_context = copy.deepcopy(self.launch_context)
         self.active_setup_path = ((self.launch_context or {}).get("source") or {}).get("setup_path")
@@ -1762,6 +1779,7 @@ class OptimizerGui(object):
         self.test_combo = ttk.Combobox(test_card, textvariable=self.test_choice_var, values=(), state="disabled")
         self.test_combo.pack(fill="x")
         self.test_combo.bind("<<ComboboxSelected>>", self._test_selected)
+        self._build_instance_path_controls(test_card)
 
         cell_card = self._card(parent)
         ttk.Label(cell_card, text="Cell Hierarchy", style="CardTitle.TLabel").pack(anchor="w")
@@ -1806,6 +1824,97 @@ class OptimizerGui(object):
         self.settings_status_var = tk.StringVar(value="配置可随时保存；加载成功后直接运行，无需重新设置各页。")
         self.config_message_var = self.settings_status_var
         ttk.Label(config_card, textvariable=self.settings_status_var, style="CardMuted.TLabel", wraplength=950).pack(anchor="w", pady=(6, 0))
+
+    def _build_instance_path_controls(self, parent):
+        self.instance_path_controls = ttk.Frame(parent, style="Card.TFrame")
+        self.instance_path_controls.pack(fill="x", pady=(8, 0))
+        self.manual_instance_paths_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(self.instance_path_controls, text="Skip hierarchy discovery; enter instance paths",
+                        variable=self.manual_instance_paths_var).pack(side="left")
+        self.enter_instance_paths_button = ttk.Button(self.instance_path_controls,
+            text="Enter instance paths…", command=self.enter_instance_paths)
+        self.enter_instance_paths_button.pack(side="right")
+
+    def _uses_manual_instance_paths(self):
+        variable = getattr(self, "manual_instance_paths_var", None)
+        pro = getattr(self, "pro_mode_var", None)
+        return bool(variable and variable.get() and (pro is None or pro.get()))
+
+    def enter_instance_paths(self):
+        reason = self._setup_reload_block_reason()
+        if reason:
+            self._set_error(reason)
+            return
+        name = self.test_choice_var.get()
+        catalog_id = self.test_inspection_id
+        if not name or not catalog_id:
+            self._set_error("Load and Inspect, then choose one Test before entering paths.")
+            return
+        if not callable(getattr(self.service, "inspect_instance_paths", None)):
+            self._set_error("This service does not support instance path inspection.")
+            return
+        self.manual_instance_paths_var.set(True)
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Enter instance paths…")
+        dialog.transient(self.root)
+        ttk.Label(dialog, text="One absolute path per line, optionally prefixed by lib/cell/view.\n"
+            "Exact OA names such as /I0/IARR<3>/M1 are supported. Ranges <a:b>,\n"
+            "wildcards, square brackets and escaped names are unsupported.", justify="left").pack(
+                fill="x", padx=14, pady=10)
+        entry = tk.Text(dialog, height=9, width=80, wrap="none")
+        entry.pack(fill="both", expand=True, padx=14)
+        output = tk.Text(dialog, height=9, width=80, wrap="word", state="disabled")
+        output.pack(fill="both", expand=True, padx=14, pady=10)
+        def set_output(text):
+            if output.winfo_exists():
+                output.configure(state="normal")
+                output.delete("1.0", "end")
+                output.insert("1.0", text)
+                output.configure(state="disabled")
+        def validate():
+            if self._setup_reload_block_reason():
+                return
+            text = entry.get("1.0", "end-1c")
+            epoch = self.test_load_epoch
+            self._invalidate_prepared("Resolving instance paths; previous preparation is retired.", preserve_edits=True)
+            self.setup_loading = True
+            self._set_setup_controls(False)
+            validate_button.configure(state="disabled")
+            set_output("Resolving requested branches…")
+            def current():
+                return not self.closing and epoch == self.test_load_epoch and catalog_id == self.test_inspection_id
+            def finish():
+                self.setup_loading = False
+                self._set_setup_controls(True)
+                if validate_button.winfo_exists():
+                    validate_button.configure(state="normal")
+            def loaded(payload):
+                if not current(): return
+                finish()
+                token, preview = payload
+                validation = preview.get("instance_path_validation") or {}
+                lines = ["Line {}: {} — {}".format(row["line"], "OK" if row.get("valid") else "ERROR",
+                    row.get("hierarchy_path") if row.get("valid") else row.get("reason"))
+                    for row in validation.get("lines") or []]
+                if token:
+                    self.selected_test = name
+                    self._set_cell_inspection(token, preview)
+                    self.selected_cell_scope_ids = set(row["scope_id"] for row in validation.get("scopes") or [])
+                    self._render_cell_scopes()
+                    self._update_cell_selection_state()
+                    lines.append("Valid paths selected. Use Apply Selected Cells to inspect their parameters.")
+                else:
+                    lines.append("No valid paths; enter at least one exact occurrence.")
+                set_output("\n".join(lines))
+            def failed(error):
+                if not current(): return
+                finish()
+                set_output(str(error))
+            self.tasks.submit(lambda: self.service.inspect_instance_paths(catalog_id, name, text), loaded, failed)
+        validate_button = ttk.Button(dialog, text="Validate and select valid paths", command=validate)
+        validate_button.pack(pady=(0, 10))
+        entry.focus_set()
+        return dialog
 
     def _build_parameters_page(self, parent):
         self._page_heading(
@@ -1854,14 +1963,16 @@ class OptimizerGui(object):
         self.range_status_var = tk.StringVar(value="Static and optional PDK callback validation have not run.")
         ttk.Label(validation, textvariable=self.range_status_var, style="CardMuted.TLabel", wraplength=550).pack(side="left", padx=10, fill="x", expand=True)
 
+        self._build_variable_selection_notice(parent)
+        self._build_parameter_link_controls(parent)
         tree_card = self._card(parent, padding=(8, 8))
-        columns = ("current", "minimum", "maximum", "unit", "scale", "validation")
-        self.parameter_tree = FastTreeview(tree_card, columns=columns, show="tree headings", selectmode="browse", height=22)
+        columns = ("current", "minimum", "maximum", "unit", "scale", "validation", "link_group")
+        self.parameter_tree = FastTreeview(tree_card, columns=columns, show="tree headings", selectmode="extended", height=22)
         headings = {
             "#0": "Hierarchy / Parameter", "current": "Current", "minimum": "Minimum",
-            "maximum": "Maximum", "unit": "Unit", "scale": "Scale", "validation": "PDK Validation",
+            "maximum": "Maximum", "unit": "Unit", "scale": "Scale", "validation": "PDK Validation", "link_group": "联动组",
         }
-        widths = {"#0": 430, "current": 120, "minimum": 100, "maximum": 100, "unit": 55, "scale": 70, "validation": 210}
+        widths = {"#0": 430, "current": 120, "minimum": 100, "maximum": 100, "unit": 55, "scale": 70, "validation": 210, "link_group": 100}
         for column, heading in headings.items():
             self.parameter_tree.heading(column, text=heading)
             self.parameter_tree.column(column, width=widths[column], stretch=column in ("#0", "validation"))
@@ -1883,6 +1994,33 @@ class OptimizerGui(object):
         ).grid(row=2, column=0, sticky="w", pady=(6, 0))
         self.parameter_summary_var = tk.StringVar(value="No hierarchy loaded.")
         ttk.Label(parent, textvariable=self.parameter_summary_var, style="Muted.TLabel").pack(anchor="w", padx=24, pady=(0, 10))
+
+    def _build_variable_selection_notice(self, parent):
+        container = ttk.Frame(parent, style="Page.TFrame")
+        container.pack(fill="x", padx=28)
+        self.variable_selection_notice_label = tk.Label(
+            container, background=PANEL, foreground=TEXT, highlightbackground=WARNING,
+            highlightthickness=1, anchor="w", justify="left", wraplength=680, padx=12, pady=8,
+        )
+
+    def _refresh_variable_selection_notice(self, *_args):
+        backend = getattr(self, "execution_backend_var", None)
+        label = getattr(self, "variable_selection_notice_label", None)
+        if backend is None or label is None or self.closing:
+            return
+        message = ""
+        if self.prepared_id:
+            from .design_variables import native_parameter
+            from .variable_selection_notice import variable_selection_notice
+            count = sum(1 for key, config in self.parameter_configs.items()
+                        if config.get("selected") and key in self.parameter_by_id
+                        and native_parameter(self.parameter_by_id[key]))
+            message = variable_selection_notice(backend.get(), count)
+        if message:
+            label.configure(text=message)
+            label.pack(fill="x", pady=(0, 8))
+        else:
+            label.pack_forget()
 
     def _build_metrics_page(self, parent):
         self._page_heading(
@@ -2094,10 +2232,13 @@ class OptimizerGui(object):
 
     def _restore_execution_resources(self, values):
         values = dict(values)
-        values.setdefault('native_candidate_batching', 'serial')
+        values.setdefault('solver_transient_retries', 2)
+        values.setdefault('solver_transient_last_retry_single_core', False)
         for key, variable in getattr(self, "execution_resource_vars", {}).items():
             if key in values:
-                variable.set("" if values[key] is None else str(values[key]))
+                variable.set(values[key] if key == "solver_transient_last_retry_single_core" else "" if values[key] is None else str(values[key]))
+            elif key == "native_candidate_batching" and not variable.get():
+                variable.set(DEFAULTS["runtime"][key])
 
     def _build_execution_resources_card(self, parent):
         card = self._card(parent)
@@ -2109,18 +2250,25 @@ class OptimizerGui(object):
         runtime = (getattr(self.service, "config", {}) or {}).get("runtime") or {}
         self.execution_resource_vars = {}
         for index, (key, label, default) in enumerate((
-                ("native_candidate_batching", "Native candidate batching", "generation"),
+                ("native_candidate_batching", "Native candidate batching", DEFAULTS["runtime"]["native_candidate_batching"]),
                 ("local_solver_max_jobs", "Local solver jobs", 1),
                 ("measurement_jobs", "Reader jobs (blank uses min(2, G))", None),
-                ("progress_flush_interval_seconds", "Progress flush interval (seconds)", 0.5)), 1):
+                ("progress_flush_interval_seconds", "Progress flush interval (seconds)", 0.5),
+                ("solver_transient_retries", "瞬态崩溃重试次数（0 为关闭）", 2),
+                ("solver_transient_last_retry_single_core", "最后一次重试使用单核（仅 Local）", False)), 1):
             value = runtime.get(key, default)
-            variable = tk.StringVar(value="" if value is None else str(value))
+            variable = (tk.BooleanVar(value=value) if key == "solver_transient_last_retry_single_core"
+                        else tk.StringVar(value="" if value is None else str(value)))
             self.execution_resource_vars[key] = variable
             ttk.Label(card, text=label).grid(row=index, column=0, sticky="w", padx=(0, 12), pady=4)
-            if key == "native_candidate_batching":
+            if key == "solver_transient_last_retry_single_core":
+                ttk.Checkbutton(card, variable=variable).grid(row=index, column=1, sticky="w", pady=4)
+            elif key == "native_candidate_batching":
                 ttk.Combobox(card, textvariable=variable, values=("serial", "generation"), state="readonly", width=12).grid(row=index, column=1, sticky="w", pady=4)
             else:
                 ttk.Entry(card, textvariable=variable, width=12).grid(row=index, column=1, sticky="w", pady=4)
+        ttk.Label(card, text="单核选项会使整次求解使用单核，可能降低求解速度；Cluster 模式忽略。",
+                  style="Help.TLabel", wraplength=950).grid(row=7, column=0, columnspan=2, sticky="w", pady=4)
         if hasattr(self, "_advanced"):
             self._advanced(card)
 
@@ -2291,6 +2439,20 @@ class OptimizerGui(object):
         ttk.Label(size_row, text="每模式总个体数", style="Help.TLabel").pack(side="left")
         self.diagnostic_total_entry = ttk.Entry(size_row, textvariable=self.diagnostic_total_var, width=5)
         self.diagnostic_total_entry.pack(side="left", padx=4)
+        detail_row = ttk.Frame(card, style="Card.TFrame")
+        detail_row.pack(fill="x", pady=(6, 0))
+        runtime = (getattr(self.service, "config", {}) or {}).get("runtime") or {}
+        self.diagnostic_log_detail_var = tk.StringVar(value=runtime.get("diagnostic_log_detail", "compact"))
+        self.diagnostic_log_examples_var = tk.StringVar(value=str(runtime.get("diagnostic_log_examples", 3)))
+        ttk.Label(detail_row, text="诊断日志详略", style="Help.TLabel").pack(side="left")
+        self.diagnostic_log_detail_combo = ttk.Combobox(detail_row, textvariable=self.diagnostic_log_detail_var,
+                                                       values=("compact", "full"), state="readonly", width=10)
+        self.diagnostic_log_detail_combo.pack(side="left", padx=8)
+        ttk.Label(detail_row, text="每项检查示例数（0–20）", style="Help.TLabel").pack(side="left")
+        self.diagnostic_log_examples_entry = ttk.Entry(detail_row, textvariable=self.diagnostic_log_examples_var, width=4)
+        self.diagnostic_log_examples_entry.pack(side="left", padx=8)
+        if hasattr(self, "_advanced"):
+            self._advanced(detail_row)
         self.diagnostic_size_var = tk.StringVar(value="")
         for variable in (self.diagnostic_generations_var, self.diagnostic_total_var):
             variable.trace_add("write", lambda *_: self._update_diagnostic_size())
@@ -2578,6 +2740,13 @@ class OptimizerGui(object):
     def _collect_environment_test_spec(self, range_report=None):
         """Snapshot current inputs without applying optimization population rules."""
         spec, _ = self._diagnostic_size_spec()
+        from .diagnostic_log import report_options, validate_examples
+        detail = getattr(self, "diagnostic_log_detail_var", None)
+        examples = getattr(self, "diagnostic_log_examples_var", None)
+        options = {"diagnostic_log_detail": detail.get() if detail else "compact",
+                   "diagnostic_log_examples": validate_examples(examples.get(), allow_text=True) if examples else 3}
+        report_options({}, options)
+        spec.update(options)
         spec.update({"evaluator": "real", "variables": [], "objectives": [], "constraints": [],
                 "candidate_timeout_seconds": 600.0, "ui_input_warnings": []})
         spec["simulator"] = (getattr(self, "_cli_simulator_draft", "spectre")
@@ -2909,6 +3078,10 @@ class OptimizerGui(object):
             label = primary.get("message") or primary.get("failure_stage") or first.get("first_cause_layer")
             if label:
                 summary_text += " · {}: {}".format(str(first.get("simulator") or "").upper(), _compact_diagnostic(label, 120))
+        if (payload.get("sidecar_integrity") or {}).get("status") == "FAIL":
+            summary_text += " · 证据完整性告警：附属文件校验失败，诊断结论保持不变。"
+            self._activity_event("证据完整性告警：附属文件校验失败，诊断结论保持不变。", "WARN",
+                                 key="diagnostic-sidecar-integrity")
         state_names = {"queued": "等待诊断", "starting": "正在启动", "running": "诊断中", "cancelling": "正在停止", "stopping": "正在停止", "completed": "诊断完成", "failed": "诊断发现问题", "cancelled": "诊断已停止", "stopped": "诊断已停止"}
         self.environment_test_status_var.set("{} · {}".format(state_names.get(self.environment_test_state, self.environment_test_state), summary_text or "正在收集检查结果…"))
         ladder = getattr(self, "environment_test_ladder_var", None)
@@ -3219,11 +3392,11 @@ class OptimizerGui(object):
         detail_header.pack(fill="x")
         ttk.Label(detail_header, text="Candidate Diagnostics & Variables", style="CardTitle.TLabel").pack(side="left")
         self.optimized_schematic_button = ttk.Button(
-            detail_header, text="Generate Optimized Schematic Cellviews",
+            detail_header, text=self._optimized_schematic_text("持久化为 schematic_<optname>"),
             command=self.generate_optimized_schematic, state="disabled",
         )
         self.optimized_schematic_button.pack(side="right")
-        self.optimized_schematic_status_var = tk.StringVar(value="Select a completed real candidate after optimization stops.")
+        self.optimized_schematic_status_var = tk.StringVar(value=self._optimized_schematic_text("请选择单个已完成的候选。"))
         ttk.Label(detail, textvariable=self.optimized_schematic_status_var, style="CardMuted.TLabel",
                   wraplength=950, justify="left").pack(fill="x", pady=(6, 0))
         self.candidate_detail = tk.Text(
@@ -3273,6 +3446,7 @@ class OptimizerGui(object):
         ttk.Label(engine, text="Netlist Source / Simulator", style="CardTitle.TLabel").grid(
             row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
         self.execution_backend_var = tk.StringVar(value="auto")
+        self.execution_backend_var.trace("w", self._refresh_variable_selection_notice)
         mode_choices = ttk.Frame(engine, style="Card.TFrame")
         mode_choices.grid(row=1, column=0, columnspan=2, sticky="w")
         for mode_text, mode_value in (("Maestro Netlist", "auto"),
@@ -4105,6 +4279,7 @@ class OptimizerGui(object):
         if path:
             self.setup_path_var.set(path)
 
+    @observe_setup_action("load")
     def load_setup(self, initialize_validation=None):
         reason = self._setup_reload_block_reason()
         if reason:
@@ -4235,7 +4410,7 @@ class OptimizerGui(object):
             self._write_launch_state("prepare_failed", error="{}: {}".format(error.__class__.__name__, error))
             self._task_error("Load ADE Setup")(error)
 
-        self.tasks.submit(load, loaded, failed)
+        self._submit_setup_observed("load", load, loaded, failed)
 
     def _set_test_catalog(self, inspection_id, preview, auto_select=True):
         self._invalidate_prepared("Select one Test to inspect its hierarchy.")
@@ -4280,6 +4455,9 @@ class OptimizerGui(object):
         self.progress_revision = 0; self.progress_inflight = False; self.objective_presentation = {}
         self.render_results(); self.render_pareto()
         self.execution_selection_panel.set_setup({})
+        if self._uses_manual_instance_paths():
+            self._set_status("Test selected. Use Enter instance paths to inspect only requested branches.")
+            return
         self.setup_loading = True
         self._set_setup_controls(False)
         self.test_combo.configure(state="disabled")
@@ -4455,12 +4633,18 @@ class OptimizerGui(object):
                     lines.append("当前不可删除。")
                 if row.get("status") == "deleted":
                     lines.append("已删除记录：下列是原私有视图位置；配置、历史和审计资料按保留策略留下。")
+                if row.get("recycle_root"):
+                    lines.append("Recycle receipt: " + os.path.join(row["recycle_root"], "receipt.json"))
                 if row.get("can_recover"):
                     lines.append("可尝试恢复中断更新；执行时仍核验归属、停止状态和备份。")
                 elif row.get("can_recover_reason"):
                     lines.append(str(row["can_recover_reason"]))
                 for member in row.get("members") or []:
                     lines.append("{}: {}/{}/{}\n    {}".format(member.get("role", "view"), member.get("library", ""), member.get("cell", ""), member.get("view", ""), member.get("path", "")))
+                lines.extend("{}: {}".format(x.get("code", "unknown"), x.get("message", ""))
+                             for x in row.get("blocked_reasons") or [])
+                if row.get("delete_policy") == "preserve_evidence":
+                    lines.append("Delete preserves evidence; locked or active views remain in place.")
                 lines.extend(str(x) for x in row.get("warnings") or [])
                 detail.insert("1.0", "\n".join(lines))
         tree.bind("<<TreeviewSelect>>", show)
@@ -4574,7 +4758,10 @@ class OptimizerGui(object):
             if row and row.get("can_delete") is False:
                 status.configure(text="此套件目前不能删除；请查看成员详情和警告。")
                 return
-            if not row or not messagebox.askyesno("删除套件", "删除套件 {} 及其私有成员？".format(row.get("name") or row["id"]), parent=window):
+            prompt = ("Recycle suite {} and preserve evidence? Locked or active views remain in place.".format(row.get("name") or row["id"])
+                      if row and row.get("delete_policy") == "preserve_evidence" else
+                      "删除套件 {} 及其私有成员？".format((row or {}).get("name") or (row or {}).get("id")))
+            if not row or not messagebox.askyesno("删除套件", prompt, parent=window):
                 return
             def done(payload):
                 warnings = payload.get("warnings") or []
@@ -4584,7 +4771,9 @@ class OptimizerGui(object):
                     self._clear_cell_inspection()
                     self._invalidate_prepared("私有套件已删除；请选择或创建其他套件。")
                     self.active_private_suite = None
-                refresh(note="私有视图已删除；历史和审计资料保留在 " + str(payload.get("retained_metadata_root") or row.get("root", "")))
+                refresh(note=("Recycled; retained views: %s; receipt: %s" % (
+                    ", ".join(payload.get("retained") or []), payload.get("recycle_root")) if payload.get("recycled") else
+                    "私有视图已删除；历史和审计资料保留在 " + str(payload.get("retained_metadata_root") or row.get("root", ""))))
             run(lambda: self.service.delete_private_suite(row["id"]), done, row["id"])
         def recover():
             row = require_selection()
@@ -4753,6 +4942,7 @@ class OptimizerGui(object):
         self._render_cell_scopes()
         self._update_cell_selection_state()
 
+    @observe_setup_action("apply")
     def apply_selected_cells(self):
         reason = self._setup_reload_block_reason()
         if reason:
@@ -4824,12 +5014,37 @@ class OptimizerGui(object):
             self._update_cell_selection_state()
             self._finish_eda_revalidation(str(error))
             self._task_error("Apply Selected Cells")(error)
-        self.tasks.submit(lambda: self._cache_prepared_defaults(self.service.prepare_cells(inspection_id, scope_ids)), loaded, failed)
+        self._submit_setup_observed("apply", lambda: self._cache_prepared_defaults(self.service.prepare_cells(inspection_id, scope_ids)), loaded, failed)
+
+    def _submit_setup_observed(self, name, work, done, failed):
+        observer = getattr(self, "diagnostic_heartbeat", None)
+        if observer is None or observer.closed:
+            return self.tasks.submit(work, done, failed)
+        with observer.lock:
+            if name not in observer.active:
+                observer.begin(name)
+            observer.active[name]["submitted"] = True
+        def completed(value):
+            try:
+                return done(value)
+            finally:
+                observer.end(name)
+        def errored(error):
+            try:
+                return failed(error)
+            finally:
+                observer.end(name)
+        try:
+            return self.tasks.submit(work, completed, errored)
+        except Exception:
+            observer.end(name)
+            raise
 
     def _cache_prepared_defaults(self, payload):
         prepared = payload[1]
         parameters = [row for row in prepared.get("parameters") or [] if row.get("optimizable")]
-        self._prepared_defaults = (prepared, parameter_defaults(parameters, initial_parameter_config))
+        evidence = settings_snapshot_context({'parameter_by_id': dict((row['parameter_id'], row) for row in parameters)})['parameter_by_id']
+        self._prepared_defaults = (prepared, parameter_defaults(parameters, initial_parameter_config), evidence)
         return payload
 
     def _set_prepared(self, prepared_id, prepared, matched_ui_state=None):
@@ -4861,6 +5076,9 @@ class OptimizerGui(object):
         cached_defaults = getattr(self, "_prepared_defaults", None)
         self.parameter_configs = (cached_defaults[1] if cached_defaults is not None and cached_defaults[0] is prepared
                                   else parameter_defaults(parameters, initial_parameter_config))
+        self._refresh_variable_selection_notice()
+        self._settings_evidence_cache = (id(prepared), cached_defaults[2]) if (
+            cached_defaults is not None and cached_defaults[0] is prepared and len(cached_defaults) > 2) else None
         self._prepared_defaults = None
         self.parameter_open_items_by_view = {"hierarchy": set(), "name": set()}
         self.parameter_views_rendered = set()
@@ -4954,7 +5172,7 @@ class OptimizerGui(object):
         """Match the new catalogue before replacing the visible editable draft."""
         self._stash_eda_edit_draft()
         document = copy.deepcopy(self.pending_settings_state)
-        context = snapshot_copy(self._settings_context(prepared_override=payload[1]))
+        context = self._settings_snapshot_context(prepared_override=payload[1])
         inspection_id = self.cell_inspection_id
         selection_epoch = self.setup_selection_epoch
         prepared_epoch = self.prepared_epoch
@@ -5016,6 +5234,7 @@ class OptimizerGui(object):
         self.pending_parameter_click = None
         self.pending_parameter_click_job = None
         self.prepared_id = None
+        self._refresh_variable_selection_notice()
         if getattr(self, "_baseline_mode_active", False):
             self._update_command_mode()
         if not preserve_edits:
@@ -5208,6 +5427,10 @@ class OptimizerGui(object):
             root = prune(root)
             if root:
                 forest.append(root)
+        design_rows = [row for row in catalog.values() if row.get("source_kind") in ("global", "top")]
+        if design_rows:
+            forest.insert(0, {"id": "design-variables", "path": "$design_variables", "name": "Design variables",
+                "kind": "cell", "library": "", "master_cell": "", "parameters": design_rows, "children": []})
         if not forest and catalog:
             root = {
                 "id": "flat:/", "path": "/", "name": "Optimizable Parameters",
@@ -5280,7 +5503,8 @@ class OptimizerGui(object):
     def _parameter_tree_key(self):
         return (getattr(self, "prepared_epoch", 0), id(self.prepared), id(self.parameter_by_id),
                 len(self.parameter_by_id), self.parameter_view_var.get(),
-                self.parameter_filter_var.get().strip().lower())
+                self.parameter_filter_var.get().strip().lower(),
+                bool(self.pro_mode_var.get()) if hasattr(self, "pro_mode_var") else True)
 
     def _remember_parameter_tree(self, key):
         self._parameter_tree_cache[key] = {
@@ -5351,6 +5575,8 @@ class OptimizerGui(object):
         open_items = set(self.parameter_open_items_by_view.get(view, set()))
         first_render = view not in self.parameter_views_rendered
         prepared, catalog = self.prepared, self.parameter_by_id
+        if hasattr(self, "pro_mode_var") and not self.pro_mode_var.get():
+            catalog = {key: row for key, row in catalog.items() if row.get("source_kind") not in ("global", "top")}
         self.parameter_summary_var.set("Preparing {} parameter rows...".format(len(catalog)))
 
         def matches(parameter):
@@ -5478,7 +5704,7 @@ class OptimizerGui(object):
                         config = self.parameter_configs[parameter_id]
                         marker = self._selection_marker(int(bool(config.get("selected"))), 1)
                         values = (value.get("current_value", ""), config.get("minimum", ""), config.get("maximum", ""),
-                                  config.get("unit", ""), config.get("scale", "linear"), self._parameter_validation_text(parameter_id))
+                                  config.get("unit", ""), config.get("scale", "linear"), self._parameter_validation_text(parameter_id), config.get("link_group", ""))
                         self.parameter_tree.insert(parent, "end", iid=identity, text="{} {}".format(marker, label), values=values, tags=("parameter",))
                         self.parameter_items[parameter_id] = identity
                         self.parameter_item_labels[parameter_id] = label
@@ -5488,13 +5714,13 @@ class OptimizerGui(object):
                         selected = sum(bool(self.parameter_configs.get(key, {}).get("selected")) for key in parameter_ids)
                         marker = self._selection_marker(selected, len(parameter_ids))
                         self.parameter_tree.insert(parent, "end", iid=identity, text="{} {}".format(marker, label),
-                                                   values=("", "", "", "", "", "{}/{} selected".format(selected, len(parameter_ids))),
+                                                   values=("", "", "", "", "", "{}/{} selected".format(selected, len(parameter_ids)), ""),
                                                    open=(self.parameter_forced_open if self.parameter_forced_open is not None else
                                                          identity in open_items or (first_render and root)))
                         self.node_parameters[identity] = parameter_ids
                         self.node_item_labels[identity] = label
                         self._parameter_row_state[identity] = ("{} {}".format(marker, label),
-                            ("", "", "", "", "", "{}/{} selected".format(selected, len(parameter_ids))))
+                            ("", "", "", "", "", "{}/{} selected".format(selected, len(parameter_ids)), ""))
                     if time.monotonic() - started >= 0.035:
                         break
                 self.parameter_render_job = self.root.after(1, insert_chunk)
@@ -5523,6 +5749,7 @@ class OptimizerGui(object):
             "{} parameters selected".format(selected) if self.prepared else "No setup loaded"
         )
         self._refresh_algorithm_defaults(force=False)
+        self._refresh_variable_selection_notice()
         if not refresh_items:
             return
 
@@ -5535,13 +5762,13 @@ class OptimizerGui(object):
                 label = self.parameter_item_labels.get(parameter_id, parameter_id)
                 parameter = self.parameter_by_id.get(parameter_id, {})
                 values = (parameter.get("current_value", ""), config.get("minimum", ""), config.get("maximum", ""),
-                          config.get("unit", ""), config.get("scale", "linear"), self._parameter_validation_text(parameter_id))
+                          config.get("unit", ""), config.get("scale", "linear"), self._parameter_validation_text(parameter_id), config.get("link_group", ""))
                 yield item, "{} {}".format(marker, label), values
             for item, parameter_ids in list(self.node_parameters.items()):
                 selected_count = sum(bool(self.parameter_configs.get(key, {}).get("selected")) for key in parameter_ids)
                 marker = self._selection_marker(selected_count, len(parameter_ids))
                 label = self.node_item_labels.get(item, item)
-                yield item, "{} {}".format(marker, label), ("", "", "", "", "", "{}/{} selected".format(selected_count, len(parameter_ids)))
+                yield item, "{} {}".format(marker, label), ("", "", "", "", "", "{}/{} selected".format(selected_count, len(parameter_ids)), "")
         iterator = updates()
         large = len(self.parameter_items) + len(self.node_parameters) > 512
 
@@ -5599,10 +5826,60 @@ class OptimizerGui(object):
                 return parameter_id
         return None
 
+    def _build_parameter_link_controls(self, parent):
+        controls = self._card(parent, padding=(12, 8))
+        self.parameter_link_controls = controls
+        self.parameter_link_button = ttk.Button(controls, text="联动所选行…", command=self.link_selected_parameters)
+        self.parameter_link_button.pack(side="left")
+        self.parameter_unlink_button = ttk.Button(controls, text="取消所选行联动", command=self.unlink_selected_parameters)
+        self.parameter_unlink_button.pack(side="left", padx=6)
+        ttk.Label(controls, text="按 Ctrl 或 Shift 选中多行；同组参数按各自范围同步变化。",
+                  style="CardMuted.TLabel", wraplength=440).pack(side="left", padx=8)
+        if hasattr(self, "_advanced"):
+            self._advanced(controls)
+
+    def _highlighted_parameter_ids(self):
+        highlighted = set(self.parameter_tree.selection())
+        return [key for key, item in self.parameter_items.items() if item in highlighted]
+
+    def link_selected_parameters(self):
+        identifiers = self._highlighted_parameter_ids()
+        if len(identifiers) < 2:
+            self._set_error("请至少选中两个参数行。")
+            return
+        group = simpledialog.askstring("联动组", "输入联动组名称：", parent=self.root)
+        if group is None:
+            return
+        group = group.strip()
+        if not group:
+            self._set_error("联动组名称不能为空。")
+            return
+        proposals = {}
+        for key, config in self.parameter_configs.items():
+            if key in identifiers or config.get("link_group") == group:
+                proposals[key] = dict(config, selected=True, link_group=group)
+        report = validate_variable_configs(list(self.parameter_by_id.values()), proposals)
+        if report["issues"]:
+            self._set_error("; ".join(row["message"] for row in report["issues"]))
+            return
+        for key in identifiers:
+            self.parameter_configs[key]["link_group"] = group
+            self._mark_range_dirty(key)
+        self._refresh_parameter_selection_display()
+
+    def unlink_selected_parameters(self):
+        for key in self._highlighted_parameter_ids():
+            self.parameter_configs[key].pop("link_group", None)
+            self._mark_range_dirty(key)
+        self._refresh_parameter_selection_display()
+
     def _parameter_single_click(self, event):
         item = self.parameter_tree.identify_row(event.y)
         column = self.parameter_tree.identify_column(event.x)
         if not item:
+            return
+        if getattr(event, "state", 0) & 5:
+            # Let Tk implement Ctrl/Shift multi-row highlighting for linking.
             return
         self.parameter_tree.selection_set(item)
         self.parameter_tree.focus(item)
@@ -6198,6 +6475,15 @@ class OptimizerGui(object):
                         if prepared_override is not None else self._corner_names()),
         }
 
+    def _settings_snapshot_context(self, prepared_override=None):
+        catalog = prepared_override if prepared_override is not None else self.prepared
+        cached = getattr(self, '_settings_evidence_cache', None)
+        pending = getattr(self, '_prepared_defaults', None)
+        evidence = cached[1] if cached is not None and cached[0] == id(catalog) else None
+        if pending is not None and pending[0] is catalog and len(pending) > 2:
+            evidence = pending[2]
+        return settings_snapshot_context(self._settings_context(prepared_override), parameter_evidence=evidence)
+
     @staticmethod
     def _raw_metric_settings(row):
         value = {"output_key": row.output_var.get(), "aggregation": row.aggregation_var.get(),
@@ -6209,8 +6495,11 @@ class OptimizerGui(object):
         return value
 
     def _snapshot_ui_state(self):
-        context, parameter_configs = snapshot_copy((self._settings_context(), self.parameter_configs))
+        context = self._settings_snapshot_context()
+        parameter_configs = snapshot_copy(self.parameter_configs)
         optimization = {
+            "diagnostic_log_detail": self.diagnostic_log_detail_var.get() if hasattr(self, "diagnostic_log_detail_var") else "compact",
+            "diagnostic_log_examples": self.diagnostic_log_examples_var.get() if hasattr(self, "diagnostic_log_examples_var") else "3",
             "diagnostic_generations": self.diagnostic_generations_var.get() if hasattr(self, "diagnostic_generations_var") else "2",
             "diagnostic_total_candidates": self.diagnostic_total_var.get() if hasattr(self, "diagnostic_total_var") else "6",
             "algorithm": self.algorithm_var.get(), "generations": self.generations_var.get(),
@@ -6268,6 +6557,10 @@ class OptimizerGui(object):
                 draft[key] = widget.get("1.0", "end").rstrip("\n")
         if hasattr(self, "eda_policy_var"):
             draft["policy"] = self.eda_policy_var.get()
+        if (self.cell_inspection or {}).get("instance_path_validation") and self.selected_cell_scope_ids:
+            raw["instance_path_selection"] = {"schema_version": _contract_text("crescendo.instance_paths.v1"),
+                "scopes": [{"design": row["design"], "hierarchy_path": row["hierarchy_path"]}
+                    for key, row in self.cell_scopes.items() if key in self.selected_cell_scope_ids]}
         raw["environment_overrides"] = manual
         raw["environment_draft"] = draft
         return raw, context
@@ -6417,7 +6710,7 @@ class OptimizerGui(object):
         try:
             config = copy.deepcopy(getattr(self.service, "config", {}))
             launch = copy.deepcopy(self._active_context())
-            context = snapshot_copy(self._settings_context())
+            context = self._settings_snapshot_context()
             directory = settings_state_directory(config, launch)
             path = None if restore_last or suite_id else filedialog.askopenfilename(parent=self.root,
                 title="Load Configuration (including old State / Config)", initialdir=directory,
@@ -6671,7 +6964,7 @@ class OptimizerGui(object):
         prepared_epoch = self.prepared_epoch
         selection_epoch = self.setup_selection_epoch
         inspection_id = self.cell_inspection_id
-        context = snapshot_copy(self._settings_context())
+        context = self._settings_snapshot_context()
         def loaded(result):
             if (not self.closing and not self.setup_loading and not self.start_request_pending and
                     self.run_ui.state not in ("running", "stopping") and
@@ -6718,9 +7011,14 @@ class OptimizerGui(object):
         for identifier, values in parameters.items():
             config = self.parameter_configs.get(identifier)
             if config is not None:
+                if not preserve_existing:
+                    for field in ("step", "grid_origin", "link_group"):
+                        if field not in values:
+                            config.pop(field, None)
                 config.update(values)
         if parameters:
             self._mark_range_dirty()
+            self._refresh_variable_selection_notice()
             self.render_parameter_tree()
         objectives = application.get("objectives") or []
         constraints = application.get("constraints") or []
@@ -6744,7 +7042,9 @@ class OptimizerGui(object):
                 self.add_objective()
         optimization = application.get("optimization") or {}
         if getattr(self, "environment_test_state", None) not in ("starting", "queued", "running", "cancelling", "stopping"):
-            for key, name, default in (("diagnostic_generations", "diagnostic_generations_var", "2"),
+            for key, name, default in (("diagnostic_log_detail", "diagnostic_log_detail_var", "compact"),
+                                       ("diagnostic_log_examples", "diagnostic_log_examples_var", "3"),
+                                       ("diagnostic_generations", "diagnostic_generations_var", "2"),
                                        ("diagnostic_total_candidates", "diagnostic_total_var", "6")):
                 if hasattr(self, name):
                     getattr(self, name).set(optimization.get(key, default))
@@ -6840,6 +7140,11 @@ class OptimizerGui(object):
                 missing.append(parameter_id)
                 continue
             config["selected"] = True
+            for field in ("step", "grid_origin", "link_group"):
+                if field in variable:
+                    config[field] = variable[field]
+                else:
+                    config.pop(field, None)
             if config.get("value_type") == "integer":
                 config["minimum"] = str(int(round(float(variable["minimum"]))))
                 config["maximum"] = str(int(round(float(variable["maximum"]))))
@@ -7130,7 +7435,13 @@ class OptimizerGui(object):
                 self._live_candidate_map = mapping
                 self.live_candidates = sorted(mapping.values(), key=lambda row: (row.get("generation", -1), row.get("index", -1), row["candidate_id"]))
             self.progress_revision = progress.get("revision", 0)
+            previous_state = self.run_ui.state
             self.run_ui.update(status.get("state"))
+            cleanup = status.get("final_cleanup") or {}
+            export_cleanup = (run_id, cleanup.get("process_termination_proven") is False or
+                              cleanup.get("remote_stop_proven") is False)
+            changed = changed or self.run_ui.state != previous_state or export_cleanup != getattr(self, "_export_cleanup", None)
+            self._export_cleanup = export_cleanup
             presentation = progress.get("objective_presentation")
             self.objective_presentation = presentation or {}
             self.pareto_ids = set(self.objective_presentation.get("pareto_candidate_ids") or [])
@@ -7653,10 +7964,12 @@ class OptimizerGui(object):
             return
         rows = list(self._display_candidates()) if dataset is not None else None
         parameters = dict(self._display_parameters())
+        variables = copy.deepcopy((self._display_spec() or {}).get("variables") or [])
         def export():
             if rows is not None:
                 from .exports import candidates_csv_text
-                text = candidates_csv_text(rows, dict((key, parameter_label(value)) for key, value in parameters.items()))
+                text = candidates_csv_text(rows, dict((key, parameter_label(value)) for key, value in parameters.items()),
+                                           variables=variables)
             else:
                 text = self.service.candidates_csv(run_id)
             _write_text_file(path, text)
@@ -7769,6 +8082,8 @@ class OptimizerGui(object):
         selected = self.result_tree.selection()
         if selected:
             self.select_candidate(selected[0], navigate=False)
+        elif self.selected_candidate_id in self.result_tree.get_children(""):
+            self.select_candidate(None, navigate=False)
 
     def select_candidate(self, candidate_id, navigate=True):
         self.selected_candidate_id = candidate_id
@@ -7783,11 +8098,15 @@ class OptimizerGui(object):
     def _render_candidate_detail(self):
         row = next((item for item in self._display_candidates() if item.get("candidate_id") == self.selected_candidate_id), None)
         if hasattr(self, "optimized_schematic_button"):
-            enabled = bool(getattr(self, "display_dataset", None) is None and row and row.get("status") == "completed" and
-                           self.run_ui.state in ("completed", "stopped", "failed") and
-                           (self._display_spec() or {}).get("evaluator", "real") != "mock" and
-                           not getattr(self, "optimized_schematic_inflight", False))
-            self.optimized_schematic_button.configure(state="normal" if enabled else "disabled")
+            reason = self._optimized_schematic_disabled_reason(row)
+            self.optimized_schematic_button.configure(state="disabled" if reason else "normal")
+            identity = (self.run_ui.run_id, self.selected_candidate_id)
+            last_identity, last_message = getattr(self, "_optimized_schematic_last_status", (None, ""))
+            if not reason and last_identity == identity:
+                message = last_message
+            else:
+                message = self._optimized_schematic_text(reason) if reason else ""
+            self.optimized_schematic_status_var.set(message)
         lines = []
         if row:
             lines.append("Candidate: {}".format(row.get("candidate_id")))
@@ -7882,31 +8201,132 @@ class OptimizerGui(object):
         self.timing_details_window = window
         self.timing_details_text = text
 
-    def generate_optimized_schematic(self):
+    def _optimized_schematic_text(self, text):
+        return text
+
+    def _optimized_schematic_disabled_reason(self, row):
+        if getattr(self, "optimized_schematic_inflight", False):
+            return "正在写入所选候选的原理图视图。"
         if getattr(self, "display_dataset", None) is not None:
-            self._set_error("Loaded results cannot authorize native schematic export; select the original local run.")
+            return "请打开候选所属的本地优化运行。"
+        if not self.run_ui.run_id or not row:
+            return "请选择单个已完成的候选。"
+        if (self._display_spec() or {}).get("evaluator", "real") == "mock" or row.get("execution_backend") == "mock":
+            return "模拟候选无法持久化为原理图。"
+        if (self.run_ui.state not in ("completed", "stopped", "failed") or row.get("cleanup_pending") is True
+                or getattr(self, "_export_cleanup", None) == (self.run_ui.run_id, True)):
+            return "请等待优化停止并清理仿真进程。"
+        if row.get("status") != "completed":
+            return "仅可持久化已完成真实仿真的候选。"
+        return None
+
+    def _optimized_schematic_report(self, result):
+        text = self._optimized_schematic_text
+        missing = text("无已保存值")
+
+        def value(raw, unit):
+            if raw is None:
+                return missing
+            return "{} {}".format(raw, unit).rstrip()
+
+        lines = [text("候选 {}").format(result.get("candidate_id") or self.selected_candidate_id)]
+        reasons = {"existing_view": "同名视图已存在", "multiple_occurrences": "同一单元有多组实例值",
+                   "concurrent_view": "发布时发现同名视图"}
+        for view in result.get("views") or []:
+            lines.extend(["", "{}/{}".format(view["library"], view["cell"]),
+                          "  " + text("新视图 {}").format(view["view"])])
+            reason = reasons.get(view.get("view_name_reason"))
+            if reason:
+                lines.append("    " + text(reason))
+            for instance in view.get("instances") or []:
+                lines.append("    " + str(instance["instance"]))
+                for parameter in instance["parameters"]:
+                    unit = parameter["unit"]
+                    lines.append("      {}: {} → {}".format(
+                        parameter["parameter"], value(parameter["old_value"], unit),
+                        value(parameter["new_value"], unit)))
+        variables = result.get("design_variables_not_persisted") or []
+        if variables:
+            lines.extend(["", text("设计变量（未写入原理图，需在 Maestro/ADE 中设置）")])
+            for row in variables:
+                scope = ", ".join(item for item in (row.get("source_kind"), row.get("test")) if item)
+                lines.append("  {} = {} ({})".format(row["name"], value(row["value"], row["unit"]), scope))
+        locked = result.get("locked_device_parameters") or []
+        if locked:
+            lines.extend(["", text("被设计变量锁定的器件参数")])
+            for path, prop, name in sorted({(row["hierarchy_path"], row["property"], row["name"]) for row in locked}):
+                lines.append("  {}.{} ← {}".format(path, prop, name))
+        if result.get("failures"):
+            lines.extend(["", text("写入失败")])
+            for row in result["failures"]:
+                lines.append("  {}/{}/{} [{}] {}".format(row["library"], row["cell"],
+                             row.get("view") or row["requested_view"], row["phase"], row["reason"]))
+                if row.get("diagnostic_path"):
+                    lines.append("    " + row["diagnostic_path"])
+        if result.get("evidence_path"):
+            lines.extend(["", text("导出证据 {}").format(result["evidence_path"])])
+        return "\n".join(lines)
+
+    def show_optimized_schematic_result(self, result):
+        """Present the copyable result, including omitted controls and failed cells."""
+        text = self._optimized_schematic_text
+        report = self._optimized_schematic_report(result)
+        window = tk.Toplevel(self.root)
+        window.title(text("原理图写入清单"))
+        window.transient(self.root)
+        window.geometry("800x520")
+        window.minsize(480, 270)
+        body = ttk.Frame(window, padding=10)
+        body.pack(fill="both", expand=True)
+        output = tk.Text(body, wrap="word", undo=False, font=("TkFixedFont", 10))
+        scroll = ttk.Scrollbar(body, orient="vertical", command=output.yview)
+        output.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        output.pack(fill="both", expand=True)
+        output.insert("1.0", report)
+        output.configure(state="disabled")
+        buttons = ttk.Frame(window, padding=(10, 0, 10, 10))
+        buttons.pack(fill="x")
+
+        def copy_all():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(report)
+
+        ttk.Button(buttons, text=text("复制全部文本"), command=copy_all).pack(side="left")
+        ttk.Button(buttons, text=text("关闭清单"), command=window.destroy).pack(side="right")
+        self.optimized_schematic_result_window = window
+        self.optimized_schematic_result_text = output
+        return window
+
+    def generate_optimized_schematic(self):
+        row = next((item for item in self._display_candidates()
+                    if item.get("candidate_id") == self.selected_candidate_id), None)
+        if self._optimized_schematic_disabled_reason(row):
             return
-        run_id, candidate_id = self.run_ui.run_id, self.selected_candidate_id
-        if not run_id or not candidate_id or getattr(self, "optimized_schematic_inflight", False):
-            return
+        run_id, candidate_id = self.run_ui.run_id, row["candidate_id"]
+        identity = (run_id, candidate_id)
+        text = self._optimized_schematic_text
         self.optimized_schematic_inflight = True
-        self.optimized_schematic_button.configure(state="disabled")
-        self.optimized_schematic_status_var.set("Generating schematic views with the selected solution's actual values...")
+        self._render_candidate_detail()
+
+        def finish(message):
+            self.optimized_schematic_inflight = False
+            self._optimized_schematic_last_status = (identity, message)
+            self._render_candidate_detail()
 
         def generated(payload):
-            self.optimized_schematic_inflight = False
-            views = payload.get("views") or payload.get("groups") or []
-            labels = ["{}/{}/{}".format(row.get("library"), row.get("cell"), row.get("view") or row.get("target_view")) for row in views]
-            message = "Created: " + (", ".join(labels) if labels else str(payload.get("message") or "optimized schematic views"))
-            self.optimized_schematic_status_var.set(message)
+            labels = ["{}/{}/{}".format(view["library"], view["cell"], view["view"])
+                      for view in payload.get("views") or []]
+            message = text("已写入 {}").format(", ".join(labels)) if labels else text("已生成原理图写入清单。")
+            if payload.get("failures"):
+                message += " " + text("写入失败 {} 项。").format(len(payload["failures"]))
+            finish(message)
             self._set_status(message)
-            self._render_candidate_detail()
+            self.show_optimized_schematic_result(payload)
 
         def failed(error):
-            self.optimized_schematic_inflight = False
-            self.optimized_schematic_status_var.set("Schematic export failed: " + _compact_diagnostic(str(error), 200))
-            self._render_candidate_detail()
-            self._task_error("Generate Optimized Schematic")(error)
+            finish(text("原理图持久化失败 {}").format(_compact_diagnostic(str(error), 200)))
+            self._task_error(text("持久化原理图"))(error)
 
         getattr(self.tasks, "submit_export", self.tasks.submit)(
             lambda: self.service.generate_optimized_schematic(run_id, candidate_id), generated, failed,
@@ -7954,6 +8374,9 @@ class OptimizerGui(object):
                 objectives = self._collect_objectives()
             except Exception:
                 objectives = []
+        if len(objectives) != 3 and getattr(self, "pareto_3d", None) is not None:
+            self.pareto_3d.destroy()
+            self.pareto_3d = None
         if len(objectives) < 2:
             for child in self.pareto_container.winfo_children():
                 child.destroy()
@@ -7986,10 +8409,21 @@ class OptimizerGui(object):
         key = (objectives, pairs)
         reuse = key == getattr(self, "_pareto_plot_key", None)
         if not reuse:
+            if getattr(self, "pareto_3d", None) is not None:
+                self.pareto_3d.destroy()
+                self.pareto_3d = None
             for child in self.pareto_container.winfo_children():
                 child.destroy()
             self.pareto_plots = []
             self._pareto_plot_key = snapshot_copy(key)
+        if len(objectives) == 3:
+            if getattr(self, "pareto_3d", None) is None:
+                parent = getattr(self.pareto_container, "widget_parent", self.pareto_container)
+                self.pareto_3d = Pareto3DPlot(parent, self, objectives,
+                    auto_rotate=getattr(self, "pareto_auto_rotate", False),
+                    bounds=getattr(self, "pareto_3d_bounds", None))
+                self.pareto_3d.pack(fill="x", padx=8, pady=7)
+            self.pareto_3d.render(triple_points(self._display_candidates(), objectives, pareto_ids))
         for index, pair in enumerate(pairs):
             left_index = int(pair["x_index"])
             right_index = int(pair["y_index"])

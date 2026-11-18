@@ -1,0 +1,10 @@
+CRESCENDO_NATIVE_RUN_STAGE LibraryLookup BEGIN
+*Error* The default SKILL generic function has not been defined for the function "asiEnvGetVar".
+
+<<< Stack Trace >>>
+(... in asiEnvGetVar generic ...)
+loadi("/example/library/libInit.il")
+(... in _ddLoadLibInit ...)
+ddGetObj("example")
+CRESCENDO_NATIVE_RUN_STAGE LibraryLookup RETURN
+CRESCENDO_PRIVATE_NETLIST_CAPTURE_DONE

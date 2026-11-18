@@ -39,6 +39,21 @@ class CaptureWorkerLogDiscoveryTests(unittest.TestCase):
         self.assertEqual([row["path"] for row in result["logs"]], [path])
         self.assertEqual(result["logs"][0]["expected_wrapper_aftermath_error_count"], 1)
 
+    def test_unrelated_tool_warns_but_active_tool_fails_even_after_wrapper_boundary(self):
+        unrelated = r"\o ERROR (ADE-5066): Tool 'fooS' has not been registered."
+        active = r"\e ERROR (ADE-5067): Unable to initialize tool 'spectre'"
+        wrapped = (r"\o ERROR (ADE-5067): Unable to initialize tool 'fooS'; either tool class is not",
+                   r"\o         defined or tool is not registered.")
+        self.write_log("native", "\n".join((unrelated,) + wrapped +
+            ("Running simulation on testbench TB", active)))
+        result, _ = _capture_worker_logs(self.workspace, {}, simulators=("spectre",))
+        self.assertFalse(result["ok"])
+        log = result["logs"][0]
+        self.assertEqual(log["generation_error_count"], 1)
+        self.assertEqual(log["error_lines"][0]["text"], active)
+        self.assertEqual([warning["message"] for warning in log["ocean_tool_warnings"]],
+                         [unrelated, "\n".join(wrapped)])
+
     def test_linked_external_log_root_is_not_read(self):
         with tempfile.TemporaryDirectory() as outside:
             os.makedirs(os.path.join(outside, "logs0"))
@@ -71,6 +86,16 @@ class CaptureWorkerLogDiscoveryTests(unittest.TestCase):
         self.assertEqual(samples[0]['stage'], 'capture_wrapper_aftermath')
         self.assertFalse(samples[0]['primary_failure'])
         self.assertIn('run log has not been generated', samples[0]['message'])
+
+    def test_append_after_an_existing_simulation_boundary_keeps_aftermath_stage(self):
+        path = self.write_log('native', 'Running simulation on testbench TB\n')
+        _, before = _capture_worker_logs(self.workspace)
+        with open(path, 'a') as stream:
+            stream.write('ERROR (ADE-3036): intentional wrapper exit\n')
+        result, _ = _capture_worker_logs(self.workspace, before)
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['logs'][0]['expected_wrapper_aftermath_error_count'], 1)
+        self.assertEqual(result['expected_wrapper_aftermath_samples'][0]['line'], 2)
 
     def test_aftermath_sample_limit_applies_across_all_workers_and_messages_are_bounded(self):
         for user in ('a', 'b', 'c'):

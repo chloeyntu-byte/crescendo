@@ -50,13 +50,23 @@ def main(argv=None):
     parser.add_argument("--outputs", type=int, default=None)
     parser.add_argument("--corners", type=int, default=None)
     parser.add_argument("--generations", type=int, default=12, help="0 follows the GUI value")
-    parser.add_argument("--population", type=int, default=16, help="0 follows the GUI value")
+    parser.add_argument("--population", type=int, default=None, help="0 follows the GUI value")
     parser.add_argument("--seed", type=int, default=2045)
     parser.add_argument("--autoload", action="store_true", help="click Load and Inspect on start")
+    parser.add_argument("--three-objective", action="store_true",
+                        help="replay a deterministic synthetic gain/power/phase-margin surface")
+    parser.add_argument("--auto-rotate", action="store_true", help="rotate the 3D view slowly")
+    parser.add_argument("--export-3d", metavar="DIRECTORY", help="export PNG rotation frames and demo JSON")
+    parser.add_argument("--frames", type=int, default=48, help="rotation frames for --export-3d")
     parser.add_argument("--keep", action="store_true", help="keep the scratch directory")
     parser.add_argument("--ui", choices=("crescendo", "classic"), default="crescendo",
                         help="window class: the Crescendo window (default) or the engine's classic window")
     args = parser.parse_args(argv)
+
+    if args.export_3d:
+        from crescendo.demo_export import export_demo
+        return export_demo(args.export_3d, seed=args.seed, frames=args.frames,
+                           generations=args.generations or 12, population=args.population or 64)
 
     base, setup_path = prepare_environment()
     try:
@@ -69,13 +79,33 @@ def main(argv=None):
         service = DemoService(
             scale=args.scale, tests=args.tests, cells=args.cells, outputs=args.outputs,
             corners=args.corners, latency=args.latency, speed=args.speed,
-            generations=args.generations, population=args.population, seed=args.seed,
+            generations=args.generations, population=(args.population if args.population is not None else (64 if args.three_objective else 16)), seed=args.seed,
             workdir=os.path.join(base, "service"), config=config)
         original = gui.OptimizerGui.__init__
 
         def patched(self, root, service_object, *a, **k):
             original(self, root, service_object, *a, **k)
             self.setup_path_var.set(setup_path)
+            self.pareto_auto_rotate = args.auto_rotate
+            if args.three_objective:
+                from crescendo.demo_service import three_objective_dataset
+                document = service_object.three_objective_demo()
+                self.pareto_3d_bounds = document["axis_bounds"]
+
+                def advance(generation=0):
+                    if self.closing:
+                        return
+                    self.display_dataset = three_objective_dataset(document, generation)
+                    self.pareto_ids = set(document["frames"][generation]["pareto_ids"])
+                    self.render_results()
+                    self.render_pareto()
+                    if generation == 0:
+                        self.show_page("Pareto Trade-offs")
+                    self._set_status("Synthetic demo · Generation {} / {}".format(
+                        generation + 1, len(document["frames"])))
+                    if generation + 1 < len(document["frames"]):
+                        root.after(max(80, int(900 / max(0.01, args.speed))), advance, generation + 1)
+                root.after(400, advance)
             if args.autoload:
                 root.after(300, self.load_setup)
 

@@ -1,0 +1,17 @@
+> CRESCENDO_NATIVE_RUN_STAGE Run BEGIN
+ERROR (ADE-5066): Tool 'fooS' has not been registered.
+ERROR (ADE-5067): Unable to initialize tool 'fooS'; either tool class is not
+        defined or tool is not registered.
+*Error* The default SKILL generic function has not been defined for the function "asiEnvGetVar". Ensure that this function is called with the correct argument(s) (tool partition name).
+
+<<< Stack Trace >>>
+(... in asiEnvGetVar generic ...)
+(... in asiEnvSetVal ...)
+(... in asiSetEnvOptionVal generic ...)
+asiSetEnvOptionVal(asiGetTool('fooS) "modelPath" "/nonexistent")
+loadi("fixture_library/libInit.il")
+(... in unknown ...)
+(... in _axlTraverse ...)
+load("run.il")
+t
+CRESCENDO_NATIVE_RUN_STAGE Run RETURN

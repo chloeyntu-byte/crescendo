@@ -881,6 +881,8 @@ def format_ladder_summary(cases, source_simulator, cli_simulator, frozen_candida
         if reason:
             line += ' — ' + short(reason)
         lines.append(line)
+        if cause.get('advisory'):
+            lines.append(short(cause['advisory']))
         contexts = case_contexts if isinstance(case_contexts, dict) else {}
         if state in ('failed', 'fail', 'blocked'):
             observation = worker_error_text(contexts.get(case.get('case_id')))
@@ -1039,6 +1041,7 @@ def read_section(log_path, group_id, section_id, max_bytes=8 * 1024 * 1024):
             shared_context, primary_begin, primary_end = None, None, None
             primary_active, primary_latest = None, None
             copied_success = []
+            overview_causes, sidecar_manifest = {}, b''
             while True:
                 raw = stream.readline(min(1024 * 1024, max_bytes - read + 1))
                 if not raw:
@@ -1047,11 +1050,25 @@ def read_section(log_path, group_id, section_id, max_bytes=8 * 1024 * 1024):
                 if read > max_bytes or len(raw) >= 1024 * 1024 and not raw.endswith(b'\n'):
                     return None
                 line = raw.rstrip(b'\r\n')
+                if line.startswith(b'diagnostic_overview '):
+                    try:
+                        overview = json.loads(line[len(b'diagnostic_overview '):].decode('utf-8'))
+                        for case in overview.get('cases') or []:
+                            overview_causes[case['case_id']] = (case.get('first_cause') if 'first_cause' in case
+                                else overview_causes.get(case.get('first_cause_ref')))
+                    except (ValueError, TypeError, KeyError, AttributeError):
+                        pass
+                if line.startswith(b'sidecar_manifest '):
+                    sidecar_manifest = raw
                 if line.startswith(b'run_context '):
                     try:
                         shared = json.loads(line[len(b'run_context '):].decode('utf-8'))
                         if shared.get('scope') == group_id:
-                            shared_context = raw
+                            if group_id in overview_causes and (shared.get('context') or {}).get('evidence_ref'):
+                                shared['context']['first_cause'] = overview_causes[group_id]
+                                shared_context = ('run_context ' + _json(shared) + '\n').encode('utf-8')
+                            else:
+                                shared_context = raw
                             primary_marker = group_id + '/' + stage_section((shared.get('context') or {}).get('first_cause'))
                             primary_begin = ('=== SECTION BEGIN ' + primary_marker + ' ===').encode('utf-8')
                             primary_end = ('=== SECTION END ' + primary_marker + ' ===').encode('utf-8')
@@ -1095,7 +1112,7 @@ def read_section(log_path, group_id, section_id, max_bytes=8 * 1024 * 1024):
             if latest is not None and _contract_text('report_format crescendo.diagnosis.compact.v1').encode('utf-8') in latest:
                 # A copied section remains self-contained although the one
                 # physical report stores its shared context and first cause once.
-                prefix = shared_context or b''
+                prefix = (shared_context or b'') + sidecar_manifest
                 if primary_latest and primary_latest != latest:
                     prefix += primary_latest
                 latest = prefix + latest + ''.join(copied_success).encode('utf-8')

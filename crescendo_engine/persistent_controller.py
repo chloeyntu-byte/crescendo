@@ -705,6 +705,7 @@ class PersistentControllerProxy(object):
             requests_root = ensure_dir(os.path.join(self.epoch_root, "requests"))
             responses_root = ensure_dir(os.path.join(self.epoch_root, "responses"))
             bootstrap_path = os.path.join(self.epoch_root, _contract_text("bootstrap.json"))
+            from .prepared_store import reference as prepared_reference
             bootstrap = {
                 "schema_version": SCHEMA_VERSION,
                 "token": self.token,
@@ -720,7 +721,7 @@ class PersistentControllerProxy(object):
                 "launch_boot_id": self._launch_boot_id,
                 "liveness_lock_schema": LIVENESS_LOCK_SCHEMA,
                 "liveness_lock_path": self.liveness_lock_path,
-                "prepared": self.prepared,
+                "prepared": prepared_reference(self.prepared, root=self.run_root),
                 "selected": self.selected,
                 "config": self.config,
             }
@@ -1807,6 +1808,8 @@ def _controller_worker_config(bootstrap):
 def run_controller(bootstrap):
     if bootstrap.get("schema_version") != SCHEMA_VERSION:
         raise PersistentControllerError("unsupported controller bootstrap schema")
+    from .prepared_store import resolve as resolve_prepared
+    bootstrap = dict(bootstrap, prepared=resolve_prepared(bootstrap["prepared"]))
     _set_parent_death_signal(
         bootstrap["parent_pid"], bootstrap.get("parent_start_ticks"),
     )

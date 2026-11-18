@@ -87,7 +87,7 @@ def _clamp(value, low, high):
 class _Hierarchy(object):
     """Deterministic schematic hierarchy for one Test (cells, devices, parameters)."""
 
-    def __init__(self, service, test_index, test_name):
+    def __init__(self, service, test_index, test_name, parameter_paths=None):
         self.test_name = test_name
         self.tb_cell = "tb_" + test_name.lower()
         rng = random.Random(service.seed * 7919 + test_index * 104729)
@@ -137,12 +137,16 @@ class _Hierarchy(object):
                 path = node["path"].rstrip("/") + "/" + name
                 device = {"path": path, "cell_index": index, "name": name, "kind": kind,
                           "master": master, "depth": node["depth"] + 1}
-                device["params"] = self._parameters(device, rng)
+                materialize = parameter_paths is None or any(
+                    p == "/" or path == p or path.startswith(p + "/") for p in parameter_paths)
+                device["params"] = self._parameters(device, rng, materialize=materialize)
                 self.devices.append(device)
                 node["devices"].append(len(self.devices) - 1)
         self.parameter_count = sum(len(d["params"]) for d in self.devices)
         design = {"library": LIB, "cell": self.tb_cell, "view": "schematic"}
         self.design = design
+        self.path_index = dict((node["path"], i) for i, node in enumerate(self.cells))
+        self.device_path_index = dict((node["path"], i) for i, node in enumerate(self.devices))
         self.scope_rows = []
         self.scope_index = {}
         for index, node in enumerate(self.cells):
@@ -161,11 +165,14 @@ class _Hierarchy(object):
             self.scope_index[scope_id] = index
 
     @staticmethod
-    def _parameters(device, rng):
+    def _parameters(device, rng, materialize=True):
         kind, path = device["kind"], device["path"]
         rows = []
 
         def add(name, prompt, semantic, value, value_type):
+            # Random choices still advance identically, preserving fixture values.
+            if not materialize:
+                return
             if value_type == "integer":
                 text = str(int(value))
             else:
@@ -194,19 +201,22 @@ class _Hierarchy(object):
     def selection_payload(self, scope_ids):
         """Hierarchy / parameter payload for the selected scope subtrees."""
         selected = set(self.scope_index[s] for s in scope_ids if s in self.scope_index)
-        inside = [False] * len(self.cells)
-        for index, node in enumerate(self.cells):
-            inside[index] = index in selected or (node["parent"] is not None and inside[node["parent"]])
-        included = list(inside)
+        inside = set()
+        pending = list(selected)
+        while pending:
+            index = pending.pop()
+            if index in inside: continue
+            inside.add(index)
+            pending.extend(self.cells[index]["children"])
+        included = set(inside)
         for index in selected:
             parent = self.cells[index]["parent"]
-            while parent is not None and not included[parent]:
-                included[parent] = True
+            while parent is not None and parent not in included:
+                included.add(parent)
                 parent = self.cells[parent]["parent"]
         cells, instances, hier_params, parameters = [], [], [], []
-        for index, node in enumerate(self.cells):
-            if not included[index]:
-                continue
+        for index in sorted(included):
+            node = self.cells[index]
             cells.append({"hierarchy_path": node["path"], "library": LIB, "cell": node["cell"],
                           "view": "schematic", "depth": node["depth"]})
             if node["parent"] is not None:
@@ -214,7 +224,7 @@ class _Hierarchy(object):
                     "hierarchy_path": node["path"], "parent_path": self.cells[node["parent"]]["path"],
                     "name": node["name"], "kind": "hierarchical", "master_library": LIB,
                     "master_cell": node["cell"], "depth": node["depth"]})
-            if inside[index]:
+            if index in inside:
                 for device_index in node["devices"]:
                     device = self.devices[device_index]
                     instances.append({
@@ -344,6 +354,9 @@ class DemoService(object):
         for number in range(max(0, int(history_runs))):
             self._register_history(number)
         self._set_activity("idle", "Demo service ready", "complete")
+
+    def three_objective_demo(self):
+        return three_objective_demo(self.seed, self.generations or 12, self.population or 64)
 
     # ------------------------------------------------------------------ setup
     def _default_config(self):
@@ -666,6 +679,64 @@ class DemoService(object):
             self._inspections[inspection_id] = {"preview": preview, "test": test_name}
         return inspection_id, preview
 
+    def inspect_instance_paths(self, test_inspection_id, test_name, text, max_depth=32):
+        from crescendo_engine.hierarchy import parse_instance_paths
+        with self.lock:
+            catalog = self._catalogs.get(test_inspection_id)
+        if catalog is None:
+            raise ValueError("Test inspection is no longer current; Load and Inspect again.")
+        test = next((row for row in self.test_rows if row["name"] == test_name), None)
+        if test is None:
+            raise ValueError("Unknown Test: " + test_name)
+        design = {"library": LIB, "cell": "tb_" + test_name.lower(), "view": "schematic"}
+        lines = parse_instance_paths(text, [design])
+        paths = [row["hierarchy_path"] for row in lines if "design" in row]
+        if not paths:
+            return None, {"instance_path_validation": {
+                "schema_version": "crescendo.instance_paths.v1", "lines": lines, "scopes": []}, "cell_scopes": []}
+        with self.lock:
+            source = self._hierarchies.get(test_name)
+        if source is None:
+            index = [row["name"] for row in self.test_rows].index(test_name)
+            source = _Hierarchy(self, index, test_name, parameter_paths=paths)
+        scopes, seen = [], set()
+        for row in lines:
+            if "design" not in row: continue
+            index = source.path_index.get(row["hierarchy_path"])
+            if index is None:
+                device_index = source.device_path_index.get(row["hierarchy_path"])
+                if device_index is None:
+                    row["reason"] = "path not found in the selected Test"
+                    continue
+                device = source.devices[device_index]
+                scope = {"scope_id": "cell_scope:" + _digest(test_name, device["path"])[:20],
+                    "design": dict(source.design), "hierarchy_path": device["path"],
+                    "library": PDK, "cell": device["master"], "view": "symbol",
+                    "master_library": PDK, "master_cell": device["master"], "master_view": "symbol",
+                    "depth": device["depth"], "parent_path": source.cells[device["cell_index"]]["path"],
+                    "selectable": True}
+            else:
+                scope = source.scope_rows[index]
+            row.update(valid=True, scope_id=scope["scope_id"])
+            if scope["scope_id"] not in seen:
+                scopes.append(scope); seen.add(scope["scope_id"])
+        validation = {"schema_version": "crescendo.instance_paths.v1", "lines": lines, "scopes": scopes}
+        if not scopes:
+            return None, {"instance_path_validation": validation, "cell_scopes": []}
+        locator = catalog["setup_locator"]
+        preview = {"setup_path": locator["path"], "setup_locator": copy.deepcopy(locator),
+            "setup": self._setup_block(locator, [test], selected=test_name),
+            "hierarchy": {"designs": []}, "cell_scopes": scopes,
+            "instance_path_validation": validation, "job_policy": self._job_policy(),
+            "eda_context": {"pdk": {"pdk_name": PDK}},
+            "setup_private_session": self._private_session(test_name, locator),
+            "save_options": self._save_options(locator)}
+        token = self._next_id("inspection")
+        with self.lock:
+            self._inspections[token] = {"preview": preview, "test": test_name, "scoped_source": source}
+        self._set_activity("inspection_complete", "Requested instance paths ready", "complete")
+        return token, preview
+
     def inspect_cells(self, path, max_depth=32, backend=None, selected_test=None):
         catalog_id, catalog = self.inspect_tests(path, backend=backend)
         names = [row["name"] for row in catalog["tests"]]
@@ -682,17 +753,33 @@ class DemoService(object):
         if not scope_ids:
             raise ValueError("Select at least one cell before Apply Cells.")
         preview, test_name = record["preview"], record["test"]
-        hierarchy = self._hierarchy(test_name)
-        missing = [s for s in scope_ids if s not in hierarchy.scope_index]
+        hierarchy = record.get("scoped_source") or self._hierarchy(test_name)
+        available = dict((r["scope_id"], r) for r in preview["cell_scopes"])
+        missing = [s for s in scope_ids if s not in available]
         if missing:
             raise ValueError("Selected cell is absent from this inspection; Load Cells again.")
         factor = self._size_factor()
         self._set_activity("parameter_scan", "Reading parameters in selected cells")
         self._pause(1.0 * factor)
-        body, parameters = hierarchy.selection_payload(scope_ids)
+        scopes = [available[s] for s in scope_ids]
+        cells = [s for s in scope_ids if s in hierarchy.scope_index]
+        leaf_paths = set(r["hierarchy_path"] for r in scopes if r["scope_id"] not in hierarchy.scope_index)
+        for path in leaf_paths:
+            device = hierarchy.devices[hierarchy.device_path_index[path]]
+            owner = hierarchy.scope_rows[device["cell_index"]]["scope_id"]
+            if owner not in cells: cells.append(owner)
+        body, parameters = hierarchy.selection_payload(cells)
+        if leaf_paths:
+            cell_paths = [r["hierarchy_path"] for r in scopes if r["scope_id"] in hierarchy.scope_index]
+            def selected(path):
+                return path in leaf_paths or any(p == "/" or path == p or path.startswith(p + "/") for p in cell_paths)
+            parameters = [r for r in parameters if selected(r["hierarchy_path"])]
+            for design in body["designs"]:
+                data = design["hierarchy"]
+                data["parameters"] = [r for r in data["parameters"] if selected(r["hierarchy_path"])]
+                data["instances"] = [r for r in data["instances"] if r["kind"] == "hierarchical" or selected(r["hierarchy_path"])]
         self._set_activity("private_apply", "Applying selected cells to the working setup")
         self._pause(0.5 * factor)
-        scopes = [hierarchy.scope_rows[hierarchy.scope_index[s]] for s in scope_ids]
         prepared = self._prepared_from(preview, hierarchy, scope_ids, scopes, body, parameters)
         self._set_activity("parameters_ready", "{} parameters ready".format(len(parameters)), "complete")
         prepared_id = self._next_id("prepared")
@@ -716,6 +803,8 @@ class DemoService(object):
             "setup_private_session": preview.get("setup_private_session"),
             "save_options": preview.get("save_options"),
         }
+        if preview.get("instance_path_validation"):
+            prepared["cell_selection"]["discovery"] = {"schema_version": "crescendo.scoped_discovery.v1"}
         return prepared
 
     # ------------------------------------------------------------ range check
@@ -1682,3 +1771,81 @@ class DemoService(object):
     def cleanup_workdir(self):
         if self._owns_workdir:
             shutil.rmtree(self.workdir, ignore_errors=True)
+
+
+def three_objective_demo(seed=2045, generations=12, population=64):
+    """Deterministic curved trade-off surface, explicitly synthetic (no solver).
+
+    Two independent design coordinates span a sphere octant in utility space.
+    Its radius improves each generation; gain and margin increase while power
+    decreases. Membership is computed against the cumulative feasible archive,
+    not guessed from generation or from a 2D projection.
+    """
+    from crescendo_engine.gui_state import fallback_pareto_ids
+    if generations < 1 or population < 1:
+        raise ValueError("generations and population must be positive")
+    objectives = [
+        {"name": "Gain (dB)", "output_key": "gain_dB", "direction": "maximize"},
+        {"name": "Power (mW)", "output_key": "power", "direction": "minimize"},
+        {"name": "Phase margin (deg)", "output_key": "pm", "direction": "maximize"},
+    ]
+    rng = random.Random(seed)
+    candidates, frames = [], []
+    side = int(math.ceil(math.sqrt(population)))
+    for generation in range(generations):
+        progress = generation / max(1.0, generations - 1.0)
+        radius = .38 + .60 * (1-(1-progress)**1.35)
+        for index in range(population):
+            # Stratification gives a surface, not a single trade-off curve.
+            theta = 0.12 + 1.32 * ((index % side) + rng.uniform(0.15, 0.85)) / side
+            phi = 0.12 + 1.32 * ((index // side) + rng.uniform(0.15, 0.85)) / side
+            r = radius * rng.uniform(.55+.44*progress, 1.0)
+            a, b, c = r*math.sin(theta)*math.cos(phi), r*math.sin(theta)*math.sin(phi), r*math.cos(theta)
+            values = [round(35 + 55*a, 5), round(2.0 - 1.65*b, 6), round(30 + 60*c, 5)]
+            feasible = rng.random() > 0.08
+            metrics = {"objectives": [dict(definition, value=value, score=(-value if definition["direction"] == "maximize" else value))
+                                      for definition, value in zip(objectives, values)],
+                       "constraints": [], "feasible": feasible,
+                       "total_violation": 0 if feasible else 1}
+            candidates.append({"candidate_id": "g%03d_c%04d" % (generation, index),
+                               "generation": generation, "status": "completed", "values": {}, "metrics": metrics})
+        front = fallback_pareto_ids(candidates, objectives)
+        frames.append({"generation": generation, "pareto_ids": sorted(front)})
+    from crescendo_engine.pareto_geometry import data_bounds, front_triangles
+    points = [dict(candidate_id=row['candidate_id'],
+                   values=[m['value'] for m in row['metrics']['objectives']],
+                   feasible=row['metrics']['feasible'], generation=row['generation']) for row in candidates]
+    bounds = data_bounds(points)
+    indices = {p['candidate_id']: i for i, p in enumerate(points)}
+    for frame in frames:
+        ids = set(frame['pareto_ids'])
+        current = [dict(p, pareto=p['candidate_id'] in ids) for p in points if p['generation'] <= frame['generation']]
+        frame['front_triangles'] = [[indices[cid] for cid in tri] for tri in front_triangles(current, bounds)]
+    # Store each candidate once; frame memberships describe the cumulative view.
+    return {"schema": "crescendo.three-objective-demo.v1", "synthetic": True, "seed": seed,
+            "objectives": objectives, "axis_bounds": bounds,
+            "surface": {"schema": "crescendo.front-triangles.v1", "indices": "candidates",
+                        "method": "Delaunay objective plane", "vertex_limit": 220},
+            "camera": {"yaw": .92, "pitch": .48, "zoom": 1.0, "viewport": [.83, .81]},
+            "frames": frames, "candidates": [
+                {"candidate_id": row["candidate_id"], "generation": row["generation"],
+                 "values": [metric["value"] for metric in row["metrics"]["objectives"]],
+                 "feasible": row["metrics"]["feasible"],
+                 "pareto": row["candidate_id"] in frames[row["generation"]]["pareto_ids"]}
+                for row in candidates]}
+
+
+def three_objective_dataset(document, generation):
+    """Adapt a replay frame to the same read-only result contract as Load Data."""
+    frame = document["frames"][generation]
+    candidates = []
+    for row in document["candidates"]:
+        if row["generation"] > generation:
+            continue
+        candidates.append(dict(candidate_id=row["candidate_id"], generation=row["generation"],
+            status="completed", values={}, metrics={"feasible": row["feasible"], "constraints": [],
+            "total_violation": 0 if row["feasible"] else 1,
+            "objectives": [dict(definition, value=value) for definition, value in zip(document["objectives"], row["values"])]}))
+    return {"metadata": {"display_name": "Three-objective demo (synthetic)",
+                         "spec": {"objectives": document["objectives"], "constraints": []}},
+            "candidates": candidates, "objective_presentation": {"pareto_candidate_ids": frame["pareto_ids"]}}

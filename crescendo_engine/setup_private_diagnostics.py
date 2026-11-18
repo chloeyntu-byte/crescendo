@@ -49,7 +49,7 @@ def write_setup_diagnostic_log(reference, error=None):
                             evidence["script_sha256"] = hashlib.sha256(raw).hexdigest()
                         else:
                             evidence["script_hash_omitted"] = "script exceeds the diagnostic byte bound"
-                evidence["native_error"] = skill_command_diagnostics(command, script_path,
+                evidence["native_error"] = command.get("skill") or skill_command_diagnostics(command, script_path,
                     required_marker=_contract_text("CRESCENDO_SETUP_PRIVATE_BINDING_DONE"), owned_root=control)
                 lines.append("native_binding_failure " + json.dumps(evidence, ensure_ascii=False, sort_keys=True))
             else:

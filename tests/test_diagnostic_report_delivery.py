@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from crescendo_engine.diagnostic_log import read_evidence
 from crescendo_engine.diagnosis_catalog import describe_check
 from crescendo_engine.environment_test import EnvironmentTestManager, _report_truncation_paths
 from crescendo_engine.environment_diagnostics import collect_run_diagnostics
@@ -40,8 +41,11 @@ class ReportDeliveryTests(unittest.TestCase):
                 with open(result['main_log'], encoding='utf-8') as stream:
                     report = stream.read()
             self.assertIn('SECTION BEGIN spectre.maestro_baseline/netlist', report)
-            self.assertIn('ERROR stdout fixture evidence', report)
-            self.assertIn('ERROR stderr fixture evidence', report)
+            evidence = str(read_evidence(result['report_sidecars'][0]['path']))
+            self.assertIn('ERROR stdout fixture evidence', evidence)
+            self.assertIn('ERROR stderr fixture evidence', evidence)
+            self.assertNotIn('ERROR stdout fixture evidence', report)
+            self.assertNotIn('ERROR stderr fixture evidence', report)
             self.assertIn('report_evidence_integrity', report)
             self.assertIn('collector only; writer completion uses report_ready', report)
 

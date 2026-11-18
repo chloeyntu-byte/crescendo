@@ -41,6 +41,13 @@
     "alps_result_reader": null
   },
   "runtime": {
+    "diagnostic_log_detail": "compact",
+    "diagnostic_log_examples": 3,
+    "solver_transient_retries": 2,
+    "native_startup_crash_quiet_seconds": 15,
+    "native_startup_crash_retries": 1,
+    "native_cleanup_proof_timeout_seconds": 15,
+    "solver_transient_last_retry_single_core": false,
     "run_root": null,
     "execution_backend": "auto",
     "scheduler_receipt_grace_seconds": 10,

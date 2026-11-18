@@ -154,6 +154,13 @@ class NativeRunParameterProofTests(unittest.TestCase):
                 with open(task["netlist_path"]) as stream:
                     self.assertIn("RKEEP (a 0) resistor r=FN_gm", stream.read())
 
+    def test_exact_batch_rejects_netlist_drift_inside_legacy_tolerance(self):
+        with tempfile.TemporaryDirectory() as root:
+            task = self.task(root, self.text(dpar="2.000000001"))
+            self.assertTrue(verify_native_parameter_application([self.row()], [task], {"p": 2})["ok"])
+            with self.assertRaisesRegex(ValueError, "changed selected candidate"):
+                verify_native_parameter_application([self.row()], [task], {"p": 2}, exact=True)
+
     def test_range_can_retain_adjustment_but_candidate_cannot_accept_it(self):
         with tempfile.TemporaryDirectory() as root:
             tasks = [self.task(root, self.text(dpar="2"))]

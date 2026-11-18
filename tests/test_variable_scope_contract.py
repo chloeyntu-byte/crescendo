@@ -203,11 +203,12 @@ class VariableExpressionCandidateTests(unittest.TestCase):
             {"parameter_id": row["parameter_id"], "minimum": 2, "maximum": 8}])
         self.assertTrue(report["valid"], report)
 
-    def test_selected_candidate_policy_does_not_expand_direct_variable_backend(self):
+    def test_explicit_global_variable_has_separate_selectable_backend(self):
         setup = scope()
         catalog = parameter_catalog(setup, device())
         variable = next(row for row in catalog if row["backend"] == "design_variable")
-        self.assertFalse(variable["optimizable"])
+        self.assertTrue(variable["optimizable"])
+        self.assertEqual(variable["source_kind"], "global")
 
     def test_inherited_parameter_and_unrecognized_device_field_stay_blocked(self):
         for current, name, prompt in (('pPar("nf")', "nf", "Fingers"),

@@ -17,13 +17,16 @@ from crescendo_engine.runtime import bind_text
 _contract_text = bind_text()
 
 from .candidate_timing import elapsed, measure, save_timing, timed_lock, timestamp
+from .preparation_timing import observe_preparation, preparation_stage, candidate_phases
 from .metrics import evaluate_metrics
+from .output_status import output_statuses
 from .netlist_execution import NetlistExecutionContext, NetlistExecutionError, execution_policy
 from .netlist_providers import prepare_maestro_netlists
 from .netlist_run_ownership import reconcile_run_preparations
 from .private_netlist import (materialize_candidate, prepare_private_netlist,
                              reconcile_preparation, compact_preparation_artifacts,
                              PrivateNetlistUnsupported)
+from .variable_selection_notice import native_capture_crashed, variable_selection_notice
 from .utils import atomic_write_json, ensure_dir, utc_timestamp
 from .workspace import verify_sources_unchanged
 
@@ -62,11 +65,13 @@ class PrivateNetlistOptimizer(object):
         self.maestro_producer = None
         self.native_fallback = None
         self.native_manifests = {}
+        self.generation_preparation_timings = {}
         self.shared_history_references = {}
         self.native_roots = set()
         self.progress = {"schema_version": PROTOCOL, "sequence": 0, "commands": [], "tasks": []}
         self.candidate_progress = {}
         self.point_commit_callback = None
+        self.run_data_version = 1
         from .execution_settings import normalize_execution_settings
         settings = dict(config.get("runtime") or {})
         settings.update((key, spec[key]) for key in ("progress_flush_interval_seconds",) if key in spec)
@@ -224,6 +229,7 @@ class PrivateNetlistOptimizer(object):
                     owned_run_root=self.run_root,
                     prior_ownership_roots=self.prior_ownership_roots,
                     point_commit_callback=self.point_commit_callback,
+                    run_data_version=self.run_data_version,
                 )
                 for boundary in self.prior_ownership_roots + [{"owned_run_root": self.run_root}]:
                     previous = reconcile_run_preparations(boundary["owned_run_root"], request_cancel=True, solver_cleanup_proven=True)
@@ -292,18 +298,25 @@ class PrivateNetlistOptimizer(object):
                                 "task_count": len(self.manifest.get("tasks") or [])})
             except Exception as error:
                 self.prepare_error = error
-                self.fatal_error = "%s: %s" % (error.__class__.__name__, error)
+                detail = getattr(error, "detail", {})
+                message = str(error)
+                notice = (variable_selection_notice(self.source_mode, len(self.selected))
+                          if self.source_mode == "private_netlist" and native_capture_crashed(detail) else "")
+                self.fatal_error = "%s: %s" % (error.__class__.__name__, message)
                 path = os.path.join(self.root, _contract_text("preparation_failure.json"))
                 self.preparation_failure = {
                     "schema_version": _contract_text("crescendo.shared_template_failure.v1"),
-                    "failure_stage": getattr(error, "detail", {}).get("failure_stage") or "native_template_preparation",
-                    "error_type": error.__class__.__name__, "message": str(error),
+                    "failure_stage": detail.get("failure_stage") or "native_template_preparation",
+                    "error_type": error.__class__.__name__, "message": message,
                     "diagnostic_path": path, "execution_started": False,
                     "shared_preparation_failed": True, "preparation_attempt_count": 1,
                     "affected_candidate_count": int(self.spec["population"]),
                 }
+                if notice:
+                    self.preparation_failure["advisory"] = notice
+                    self.fatal_error += "\n" + notice
                 atomic_write_json(path, dict(self.preparation_failure,
-                                            detail=getattr(error, "detail", {}),
+                                            detail=detail,
                                             traceback=traceback.format_exc()))
                 self._progress({"stage": "shared_template_preparation_failed", "state": "infrastructure_failed",
                                 "message": self.fatal_error, "no_candidate_execution": True,
@@ -370,6 +383,14 @@ class PrivateNetlistOptimizer(object):
             atomic_write_json(os.path.join(materialized["root"], name), materialized)
 
     def prepare_generation(self, generation, pending):
+        summary = {}
+        try:
+            with observe_preparation(summary, self.run_root + ':generation:%s' % generation):
+                return self._prepare_generation(generation, pending)
+        finally:
+            self.generation_preparation_timings[generation] = summary
+
+    def _prepare_generation(self, generation, pending):
         """Called once by the generation barrier, before candidate futures."""
         from concurrent.futures import Future
         from .generation_batch import build_generation_plan, BatchUnsupported, HistoryReferences
@@ -422,7 +443,8 @@ class PrivateNetlistOptimizer(object):
         for item in result.values():
             self._apply_native_fallback(item['manifest'])
             validate_manifest(item['manifest'])
-            require_frozen_model_profile(self.spec, item['manifest'])
+            with preparation_stage('model_dependency_freeze'):
+                require_frozen_model_profile(self.spec, item['manifest'])
             self.context.prepare_candidate(item['manifest'])
         self.native_manifests.update({cid: item['manifest'] for cid, item in result.items()})
         self.generation_inputs = result
@@ -484,6 +506,10 @@ class PrivateNetlistOptimizer(object):
             timing.update(schema_version=_contract_text('crescendo.candidate_timing.v1'),
                           candidate_id=cid, shared_batch=row['batch_reference'],
                           physical_execution_candidate=manifest['candidate_id'])
+            summary = getattr(self, 'generation_preparation_timings', {}).get(generation) or {}
+            if summary:
+                timing['netlist_preparation'] = copy.deepcopy(summary)
+                timing['phases'].update(candidate_phases(summary))
             row['timing'] = timing
         root = ensure_dir(os.path.join(self.run_root, 'candidates', cid))
         if row.get('completion_evidence'):
@@ -514,42 +540,45 @@ class PrivateNetlistOptimizer(object):
         materialized = None
         try:
             self._candidate_gate(candidate_id, 0, "Preparing native execution")
-            manifest = self._prepare_once(phases)
-            with measure(phases, "build"):
-                if self.environment_check is not None:
-                    with timed_lock(self.lock, phases, "environment_lock_wait"):
-                        guard = self.environment_check(generation)
-                        if not guard.get("ok"):
-                            raise PrivateNetlistRunError(guard.get("error") or "External EDA environment changed")
-                self._candidate_gate(candidate_id, 1, "Execution context verified; generating netlist")
-                if self._uses_native_generation():
-                    preparation_root = os.path.join(root, "simulation")
-                    with self.lock:
-                        self.native_roots.add(preparation_root)
-                    with measure(phases, "native_generation"):
-                        materialized = pre_generated
-                        if materialized is None:
-                            materialized = self.maestro_producer.generate(values, preparation_root, candidate_id,
-                                                                          phase_timings=phases)
-                    self._apply_native_fallback(materialized)
-                    manifest = materialized
-                    with self.lock:
-                        self.native_manifests[candidate_id] = materialized
-                        if self.manifest is None:
-                            self.manifest = materialized
-                    row["parameter_application"] = copy.deepcopy(materialized["netlist_generation"]["parameter_application"])
-                else:
-                    with measure(phases, "template_materialization"):
-                        materialized = materialize_candidate(
-                            manifest, values, os.path.join(root, "simulation"), candidate_id,
-                        )
-                row["source_guard"] = {"ok": True, "state": "verified_numeric_maestro" if self._uses_native_generation() else "verified_frozen_template",
-                                       "fingerprint": (manifest.get("source_identity") or {}).get("fingerprint"),
-                                       "verification_policy": "native_preparation_and_each_generation_and_final"}
-                row["netlist_generation"] = copy.deepcopy(materialized.get("netlist_generation") or {})
-                from .simulator_profiles import require_frozen_model_profile
-                with timed_lock(self.lock, phases, "model_profile_lock_wait"):
-                    require_frozen_model_profile(self.spec, materialized)
+            preparation_summary = {}
+            with observe_preparation(preparation_summary, self.run_root + ':' + candidate_id):
+                manifest = self._prepare_once(phases)
+                with measure(phases, "build"):
+                    if self.environment_check is not None:
+                        with timed_lock(self.lock, phases, "environment_lock_wait"):
+                            guard = self.environment_check(generation)
+                            if not guard.get("ok"):
+                                raise PrivateNetlistRunError(guard.get("error") or "External EDA environment changed")
+                    self._candidate_gate(candidate_id, 1, "Execution context verified; generating netlist")
+                    if self._uses_native_generation():
+                        preparation_root = os.path.join(root, "simulation")
+                        with self.lock:
+                            self.native_roots.add(preparation_root)
+                        with measure(phases, "native_generation"):
+                            materialized = pre_generated
+                            if materialized is None:
+                                materialized = self.maestro_producer.generate(values, preparation_root, candidate_id,
+                                                                              phase_timings=phases)
+                        self._apply_native_fallback(materialized)
+                        manifest = materialized
+                        with self.lock:
+                            self.native_manifests[candidate_id] = materialized
+                            if self.manifest is None:
+                                self.manifest = materialized
+                        row["parameter_application"] = copy.deepcopy(materialized["netlist_generation"]["parameter_application"])
+                    else:
+                        with measure(phases, "template_materialization"):
+                            materialized = materialize_candidate(
+                                manifest, values, os.path.join(root, "simulation"), candidate_id,
+                            )
+                    row["source_guard"] = {"ok": True, "state": "verified_numeric_maestro" if self._uses_native_generation() else "verified_frozen_template",
+                                           "fingerprint": (manifest.get("source_identity") or {}).get("fingerprint"),
+                                           "verification_policy": "native_preparation_and_each_generation_and_final"}
+                    row["netlist_generation"] = copy.deepcopy(materialized.get("netlist_generation") or {})
+                    from .simulator_profiles import require_frozen_model_profile
+                    with timed_lock(self.lock, phases, "model_profile_lock_wait"):
+                        with preparation_stage('model_dependency_freeze'):
+                            require_frozen_model_profile(self.spec, materialized)
             self._candidate_gate(candidate_id, 2, "Fresh netlist and model profile verified; solving")
             with measure(phases, "execution"):
                 execution = self.context.evaluate(materialized, cancel_check=self._cancelled, timing=timing)
@@ -574,8 +603,10 @@ class PrivateNetlistOptimizer(object):
                 row["completion_evidence"] = completion
                 row["rdb_path"] = os.path.join(materialized.get("root") or os.path.join(root, "simulation"), _contract_text("cli_results.json"))
                 row["native_job_state"] = execution["native_job_state"]
+                row['output_statuses'] = output_statuses(execution['parsed'], self.prepared.get('outputs') or [])
                 row["metrics"] = evaluate_metrics(
                     execution["parsed"], self.spec["objectives"], self.spec.get("constraints", []),
+                    diagnostic=bool(self.spec.get("environment_test")),
                 )
             row["status"] = "completed"
             self._candidate_gate(candidate_id, 4, "Metrics and capture cleanup verified; saving candidate")
@@ -590,14 +621,27 @@ class PrivateNetlistOptimizer(object):
             }
             diagnostic["completion"] = completion
         except Exception as error:
+            capability = (getattr(error, 'detail', {}) or {}).get('result_reader_capability') or {}
+            if getattr(error, 'detail', {}).get('output_statuses'):
+                row['output_statuses'] = copy.deepcopy(error.detail['output_statuses'])
+            if capability:
+                row['output_statuses'] = [dict(output=o['key'], test=capability.get('test'),
+                    corner=capability.get('corner'), point_id=capability.get('point_id'),
+                    status=o['output_status'], first_error=o.get('first_error'))
+                    for o in capability.get('output_diagnostics') or []]
+                row['reader_first_error'] = capability.get('reader_first_error')
             infrastructure = not isinstance(error, NetlistExecutionError) or error.infrastructure
             stopped = self._cancelled()
+            shared_failure = self.prepare_error is error and self.preparation_failure is not None
+            error_message = "%s: %s" % (error.__class__.__name__, error)
+            if shared_failure and self.preparation_failure.get("advisory"):
+                error_message += "\n" + self.preparation_failure["advisory"]
             row.update(status="cancelled" if stopped else "infrastructure_failed" if infrastructure else "failed",
                        failure_class="user_stop" if stopped else "private_netlist_infrastructure" if infrastructure else "design_or_simulation",
                        failure_stage=(getattr(error, "detail", {}).get("failure_stage") or
                                       ("netlist_preparation" if materialized is None else "solver_submission_or_measurement")),
                        spectre_state="not_started" if materialized is None else "see_execution_diagnostics",
-                       error="%s: %s" % (error.__class__.__name__, error))
+                       error=error_message)
             if infrastructure and not stopped:
                 with self.lock:
                     cancelled_error = bool(getattr(error, "detail", {}).get("cancelled") or
@@ -621,7 +665,6 @@ class PrivateNetlistOptimizer(object):
                         if cancelled_error:
                             row["failure_stage"] = "peer_cancellation"
                     row["primary_failure"] = copy.deepcopy(self.primary_failure)
-            shared_failure = self.prepare_error is error and self.preparation_failure is not None
             if shared_failure:
                 row.update(execution_started=False, shared_preparation_failed=True,
                            shared_preparation_failure=dict(self.preparation_failure))
@@ -647,6 +690,18 @@ class PrivateNetlistOptimizer(object):
             if self.manifest is not None and "source_guard" not in row:
                 row["source_guard"] = {"ok": True, "state": "verified_numeric_maestro" if self._uses_native_generation() else "verified_frozen_template"}
         finally:
+            summary = (getattr(self, 'generation_preparation_timings', {}).get(generation)
+                       or locals().get('preparation_summary')) or {}
+            if summary:
+                timing['netlist_preparation'] = copy.deepcopy(summary)
+                phases.update(candidate_phases(summary))
+            from .solver_transient import ATTEMPTS_SCHEMA
+            points = [item["phases"]["solver_transient"] for item in timing.get("tasks", [])
+                      if "solver_transient" in item.get("phases", {})]
+            row["solver_transient"] = {"schema_version": ATTEMPTS_SCHEMA, "points": copy.deepcopy(points)}
+            if any(point.get("outcome") == "transient_crash_exhausted" for point in points):
+                row["failure_reason"] = "transient_crash_exhausted"
+                row["first_cause"] = "transient_crash_exhausted"
             row["finished_at"] = utc_timestamp()
             with self.lock:
                 live = self.candidate_progress.get(candidate_id)

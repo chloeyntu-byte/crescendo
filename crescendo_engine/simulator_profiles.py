@@ -22,6 +22,25 @@ _INCLUDE = re.compile(r'^\s*(?:include|\.include)\s+["\']([^"\']+)["\'](?:\s+sec
 _LIB_INCLUDE = re.compile(r'^\s*\.lib\s+["\']([^"\']+)["\']\s+([A-Za-z0-9_.-]+)\s*$', re.I)
 
 
+# Matching policy lives with the solver profiles, separate from model identity.
+# Adding a signature must never broaden ordinary design-failure handling.
+TRANSIENT_CRASH_SIGNATURES = {
+    "spectre": ({"id": "hierarchy_flattening", "returncodes": (134,),
+                 "allow_signal": True,
+                 "all_text": ("Internal error found in spectre", "SPECTRE-18",
+                              "during hierarchy flattening")},
+                {"id": "initial_setup", "returncodes": (134,),
+                 "allow_signal": True,
+                 "all_text": ("Internal error found in spectre", "SPECTRE-18",
+                              "during initial setup")}),
+    "alps": (),
+}
+
+
+def transient_crash_signatures(simulator):
+    return copy.deepcopy(TRANSIENT_CRASH_SIGNATURES.get(simulator, ()))
+
+
 class ModelProfileError(ValueError):
     pass
 
@@ -642,6 +661,7 @@ def _discover_projected_simulator_profiles(config, setup=None, model_references=
     for simulator in ("spectre", "alps"):
         directory, origin = model_directory(cadence, simulator, capture_source, references)
         profile = {"simulator": simulator, "executable": cadence.get(simulator + "_bin"),
+            "transient_crash_signatures": transient_crash_signatures(simulator),
             "model_dir": directory, "model_dir_origin": origin,
             "capture_source_model_dir": source_directory,
             "source_model_references": copy.deepcopy(references), "target_model_references": [],

@@ -345,7 +345,14 @@ def _state_details(state_path):
                 continue
             seen.add(row["name"])
             outputs.append(row)
-        result[name] = {"analyses": _analysis_rows(test), "outputs": outputs}
+        details = {"analyses": _analysis_rows(test), "outputs": outputs}
+        for name_in_state, key in (("switchViewList", "switch_views"), ("stopViewList", "stop_views")):
+            field = next((field for field in _descendants(test, "field")
+                          if _name(field) == name_in_state), None)
+            text = _text(field)
+            if text.startswith("(") and text.endswith(")"):
+                details[key] = re.findall(r'"([^"\s]+)"', text)
+        result[name] = details
     return result
 
 
@@ -444,6 +451,7 @@ def _test_rows(root, locator, state):
                 details.get("outputs", []),
             ),
         })
+        tests[-1].update({key: details[key] for key in ("switch_views", "stop_views") if key in details})
     if not tests:
         for name, details in state.items():
             tests.append({
@@ -458,6 +466,7 @@ def _test_rows(root, locator, state):
                 "analyses": details.get("analyses", []),
                 "outputs": details.get("outputs", []),
             })
+            tests[-1].update({key: details[key] for key in ("switch_views", "stop_views") if key in details})
     return tests
 
 

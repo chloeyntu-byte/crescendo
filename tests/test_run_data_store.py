@@ -445,15 +445,44 @@ class RunDataStoreTest(unittest.TestCase):
                                 target = path if change == "rewrite" else path + ".replacement"
                                 with open(target, "r+b" if change == "rewrite" else "wb") as output:
                                     output.write(b"!")
-                                if change == "replace":
+                                if change == "rewrite":
+                                    # The scan already read these bytes. Make the
+                                    # metadata change observable even on coarse clocks.
+                                    os.utime(target, (1, 1))
+                                else:
                                     os.replace(target, path)
                             return raw
                     with mock.patch.object(storage, "_open_read", side_effect=lambda _: MutatingFile()):
-                        with self.assertRaises(RunDataError):
+                        with self.assertRaises(RunDataError) as raised:
                             writer.verify_generation(0)
+                    self.assertTrue(mutated)
+                    self.assertEqual(raised.exception.detail["reason"], "unstable_scan")
                     self.assertTrue(writer.failed)
                 finally:
                     writer.close()
+
+    def test_generation_audit_rejects_rewrite_with_unchanged_stamp(self):
+        with tempfile.TemporaryDirectory() as root:
+            path, writer = self.make(root)
+            try:
+                reference = writer.reference()
+                stamp = storage._stat_stamp(os.stat(path))
+                with open(path, "r+b") as stream:
+                    stream.write(b"!")
+
+                # Model a same-tick rewrite without depending on the filesystem
+                # clock. Preserve real file sizes in all of the audit's stat calls.
+                with mock.patch.object(storage, "_stat_stamp",
+                                       side_effect=lambda state: stamp[:2] + (state.st_size,)):
+                    self.assertEqual(storage._stat_stamp(os.stat(path)), stamp)
+                    with count_disk_reads() as counts:
+                        with self.assertRaises(RunDataError) as raised:
+                            writer.verify_generation(0)
+                    self.assertEqual(counts["hash_bytes"], reference["bytes"])
+                self.assertEqual(raised.exception.detail["reason"], "checksum")
+                self.assertTrue(writer.failed)
+            finally:
+                writer.close()
 
     def test_first_reference_load_and_other_threads_verify_full_disk(self):
         import threading
@@ -549,7 +578,7 @@ initialize(identity=ApplicationIdentity(schema_namespace='archive'),
            dialect=ProtocolDialect(procedure_prefix='arch', symbol_prefix='ar_'))
 from crescendo_engine.run_data_store import RunDataStore, dataset_from_reference, CORE_NAME
 path = os.path.join(sys.argv[1], CORE_NAME)
-writer = RunDataStore(path, {'spec': {}})
+writer = RunDataStore(path, {'spec': {}}, format_version=1)
 writer.append_event('point', {'legacy': True})
 reference = writer.reference()
 assert reference['schema_version'] == 'archive.optimization_dataset.v1'

@@ -3,7 +3,6 @@ from __future__ import print_function
 import copy
 import json
 import os
-import re
 import tempfile
 import unittest
 from unittest import mock
@@ -62,7 +61,7 @@ class OptimizedSchematicEvidenceTests(unittest.TestCase):
             with self.assertRaises(export.OptimizedSchematicError):
                 export.build_export_evidence(candidate, rows)
 
-    def test_mock_failed_and_design_variable_candidates_are_rejected(self):
+    def test_mock_failed_and_unscoped_candidates_are_rejected(self):
         rows = [parameter()]
         for key, value in (("execution_backend", "mock"), ("status", "failed")):
             candidate = old_candidate(rows); candidate[key] = value
@@ -81,6 +80,41 @@ class OptimizedSchematicEvidenceTests(unittest.TestCase):
         self.assertEqual(evidence["values"]["p1"], 3.51e-6)
         candidate["completion"]["template_sha256"] = "wrong"
         with self.assertRaises(export.OptimizedSchematicError): export.build_export_evidence(candidate, rows, manifest)
+
+    def test_global_top_and_locked_dependency_are_reported_separately(self):
+        designs = [{"parameter_id": kind, "source_kind": kind, "name": kind + "_bias",
+                    "backend": "design_variable", "variable_test": "dc"} for kind in ("global", "top")]
+        rows = [parameter()] + designs
+        manifest = {"qualification": {"ok": True}, "manifest_sha256": "bound",
+                    "parameter_symbols": {"p1": "CRESCENDO_NL_WIDTH", "global": "G", "top": "T"},
+                    "export_snapshot": snapshot(rows[:1])}
+        candidate = {"candidate_id": "g000_c0001", "status": "completed", "execution_backend": "private_netlist",
+                     "completion": {"ok": True, "template_sha256": "bound",
+                                    "parameters": {"p1": 3.51e-6, "global": 1.2, "top": 1.8}}}
+        locked = [{"hierarchy_path": "/A/M0", "property": "area", "name": "global_bias", "device_parameter": "p2"}]
+        evidence = export.build_export_evidence(candidate, rows, manifest, design_variable_priority={"evidence": locked})
+        self.assertEqual([(r["source_kind"], r["value"]) for r in evidence["design_variables_not_persisted"]],
+                         [("global", 1.2), ("top", 1.8)])
+        self.assertEqual(evidence["locked_device_parameters"], locked)
+        plan = export.build_export_plan(evidence, "separate")
+        self.assertEqual([r["parameter_id"] for r in plan["groups"][0]["assignments"]], ["p1"])
+        self.assertNotIn("area", [r["name"] for r in export._resolved_properties(plan["groups"][0], evidence)])
+        evidence["assignments"] = []
+        self.assertEqual(export.build_export_plan(evidence, "only_design")["groups"], [])
+
+    def test_collision_reason_and_stable_retry_with_existing_suffix(self):
+        rows = [parameter()]
+        evidence = export.build_export_evidence(old_candidate(rows), rows)
+        existing = {("USER", "unit", "schematic_run")}
+        first = export.build_export_plan(evidence, "run", existing)["groups"][0]
+        self.assertEqual(first["view_name_reason"], "existing_view")
+        self.assertRegex(first["target_view"], r"^schematic_run_p[a-f0-9]{10}$")
+        existing.add(("USER", "unit", first["target_view"]))
+        next_group = export.build_export_plan(evidence, "run", existing)["groups"][0]
+        self.assertNotEqual(first["target_view"], next_group["target_view"])
+        self.assertNotIn("nil nil t", export._publish_script({"groups": [
+            dict(next_group, staging_view="cr_stage", fallback_view="schematic_fallback")
+        ]}, "readback", "ready"))
 
     def test_conflicting_occurrences_split_views(self):
         rows = [parameter(), parameter("p2", "/B")]
@@ -175,6 +209,52 @@ class OptimizedSchematicEvidenceTests(unittest.TestCase):
         resolved = {row["name"]:row["value"] for row in export._resolved_properties(group,evidence)}
         self.assertAlmostEqual(float(resolved["w"]),3.5e-6)
         self.assertAlmostEqual(float(resolved["l"]),200e-9)
+
+    def test_one_failed_cell_does_not_hide_another_cell_verified_publication(self):
+        rows = [dict(parameter(), unit="length"), dict(parameter("p2"), owner_cell="broken")]
+        candidate = old_candidate(rows)
+        source = {"schema_version": "fixture.source.v1", "fingerprint": "source"}
+        with tempfile.TemporaryDirectory() as root:
+            for cell in ("unit", "broken"):
+                os.mkdir(os.path.join(root, cell))
+            target = os.path.join(root, "export")
+            spec = {"display_name": "partial", "variables": [{"parameter_id": row["parameter_id"]} for row in rows]}
+
+            def ocean(argv, **kwargs):
+                with open(os.path.join(target, "export_plan.json"), encoding="utf-8") as stream:
+                    groups = json.load(stream)["groups"]
+                group = next(g for g in groups if g["cell"] == "unit")
+                base = ['"USER"', '"unit"', '"schematic_partial"']
+                staged = kwargs["control_root"].endswith("stage")
+                current = json.dumps(group["staging_view"]) if staged else base[-1]
+                records = [("STAGE" if staged else "FINAL", '"p1"', base[0], base[1], current, '"3.5u"', '"3.5u"'),
+                           ("VIEW", *base, current)]
+                if staged:
+                    records += [("PROPERTY", *base, '"original"', '"M0"', '"w"', '"4u"'),
+                                ("FAILURE", '"USER"', '"broken"', '"schematic_partial"', 'nil', '"Cannot open cell"')]
+                with open(os.path.join(kwargs["control_root"], "readback.records"), "w", encoding="utf-8") as stream:
+                    for record in records:
+                        stream.write("\t".join(record) + "\n")
+                return {"returncode": 0, "guardian_cleanup": {"state": "dead"}}
+
+            with mock.patch.object(export, "resolve_copy_libraries", return_value=("USER", None, {"USER": root})), \
+                 mock.patch.object(export, "write_readonly_cds_context"), \
+                 mock.patch.object(export, "source_design_identity", return_value=source), \
+                 mock.patch.object(export, "tree_content_fingerprint", return_value="unchanged"), \
+                 mock.patch.object(export, "run_owned_command", side_effect=ocean):
+                prepared = {"setup": {}, "parameters": rows, "source_identity": source}
+                result = export.export_optimized_schematic(prepared, spec, candidate, {"cadence": {"ocean_bin": "fixture"}}, target)
+            self.assertFalse(result["ok"])
+            self.assertTrue(result["partial"])
+            self.assertEqual(result["failures"][0]["reason"], "Cannot open cell")
+            self.assertEqual(result["failures"][0]["cell"], "broken")
+            group = result["views"][0]["instances"][0]
+            self.assertEqual(group["instance"], "M0")
+            assignment = dict(group["parameters"][0])
+            self.assertAlmostEqual(assignment.pop("new_value"), 3.5e-6, places=15)
+            self.assertEqual(assignment, {"parameter": "w", "old_value": "4u", "unit": "m"})
+            with open(result["evidence_path"], encoding="utf-8") as stream:
+                self.assertEqual(json.load(stream), result)
 
     def test_readback_drift_prevents_publishing_the_wrong_solution(self):
         rows = [parameter()]

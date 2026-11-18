@@ -212,6 +212,18 @@ class ConfigHierarchyTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "config traversal"):
                     validate_native_hierarchy(body, REQUESTED)
 
+    def test_plain_hdl_leaf_records_executable_view_identity(self):
+        hierarchy = normalize_probe([
+            record("DESIGN", "L", "TB", "schematic"),
+            record("CELL", "/", "L", "TB", "schematic", 0),
+            record("INSTANCE", "/VA0", "VA0", "HDL", "device", "symbol", False, "/", 0,
+                   "schematicSymbol", False, None, "veriloga"),
+        ])
+        leaf, = hierarchy["instances"]
+        self.assertFalse(leaf["has_schematic"])
+        self.assertEqual((leaf["resolved_library"], leaf["resolved_cell"], leaf["resolved_view"]),
+                         ("HDL", "device", "veriloga"))
+
     def test_generated_probe_uses_only_public_readonly_hdb_pcdb(self):
         skill = probe_skill("CFG", "TB", "config", "/private/records", 32,
                             cells_only=True)

@@ -125,12 +125,19 @@ def _command_status(result):
 
 def _redact(value, environment):
     """Do not expose complete environments, license endpoints or snapshots."""
+    snapshot_key = _contract_text("CRESCENDO_NATIVE_ENV_SNAPSHOT")
+    native_schema = _contract_text("crescendo.native_environment.v1")
     protected = [source.get(key) for source in (environment, os.environ) for key in source if key in
-                 ("CDS_LIC_FILE", "LM_LICENSE_FILE", _contract_text("CRESCENDO_NATIVE_ENV_SNAPSHOT")) or
+                 ("CDS_LIC_FILE", "LM_LICENSE_FILE", snapshot_key) or
                  re.search(r"(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|COOKIE|API_?KEY)", key, re.I)]
     protected = [item for item in protected if isinstance(item, str) and item]
+    protected = sorted(protected, key=len, reverse=True)
+    return _redact_value(value, protected, native_schema)
+
+
+def _redact_value(value, protected, native_schema):
     if isinstance(value, str):
-        for item in sorted(protected, key=len, reverse=True):
+        for item in protected:
             value = value.replace(item, "<redacted>")
         value = re.sub(r'(?i)(\b(?:token|password|secret|credential|cookie|api[_-]?key)\b\s*[:=]\s*)([^\s,;]+)',
                        r'\1<redacted>', value)
@@ -139,7 +146,7 @@ def _redact(value, environment):
         return value
     if isinstance(value, dict):
         result = {}
-        native_snapshot = (value.get("schema") or value.get("schema_version")) == _contract_text("crescendo.native_environment.v1")
+        native_snapshot = (value.get("schema") or value.get("schema_version")) == native_schema
         for key, item in value.items():
             name = str(key)
             if _PRIVATE_FIELD.search(name) and item is not None and not isinstance(item, bool):
@@ -155,10 +162,10 @@ def _redact(value, environment):
                 result[key] = {field: state if isinstance(state, bool) or state in ('set', 'empty', 'unset')
                                else '<redacted>' for field, state in item.items()}
             else:
-                result[key] = _redact(item, environment)
+                result[key] = _redact_value(item, protected, native_schema)
         return result
     if isinstance(value, (list, tuple)):
-        return [_redact(item, environment) for item in value]
+        return [_redact_value(item, protected, native_schema) for item in value]
     return value
 
 

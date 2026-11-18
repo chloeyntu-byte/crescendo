@@ -1,5 +1,7 @@
 import copy
 import json
+import inspect
+import tempfile
 import unittest
 
 from tests import test_environment_test as fixtures
@@ -80,8 +82,10 @@ class CompactReportIntegrationTests(unittest.TestCase):
 
     def test_default_report_keeps_verdict_and_ui_checks(self):
         payload, text = self.run_report()
-        self.assertIn('concise_case', text)
-        self.assertIn('path_alias', text)
+        self.assertIn('sidecar_manifest', text)
+        self.assertIn('focused_checks_summary', text)
+        self.assertTrue(payload['report_sidecars'])
+        self.assertEqual(payload['sidecar_integrity']['status'], 'PASS')
         self.assertIn('check_group ', text)
         self.assertNotIn('"component":', text)
 
@@ -90,6 +94,91 @@ class CompactReportIntegrationTests(unittest.TestCase):
         self.assertNotIn('concise_case', text)
         self.assertNotIn('@run:', text)
         self.assertIn('"component":', text)
+
+
+class CompactVerdictTests(unittest.TestCase):
+    def render(self, mutate=None, full=False):
+        from tests.test_diagnostic_log_sidecars import synthetic_row, synthetic_focus, render_source
+        from crescendo_engine import environment_test as reports
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        row = synthetic_row(temp.name)
+        if mutate:
+            mutate(row)
+        if full:
+            row['diagnostic_log_detail'] = row['config']['runtime']['diagnostic_log_detail'] = 'full'
+        text = render_source(inspect.getsource(reports), row, synthetic_focus(row))
+        lines = text.splitlines()
+        start = next(i for i, line in enumerate(lines) if line.startswith('1. '))
+        verdicts = [line for line in lines[start:] if line.startswith(('1. ', '2. ', '3. '))][:3]
+        return row, text, verdicts
+
+    def test_verdict_contains_original_first_cause_and_reference(self):
+        message = 'CompletionEvidenceError: ADE point vco_stress/1 has non-complete statusCode=0'
+        def mutate(row):
+            row['case_results']['spectre.maestro_baseline']['first_cause']['message'] = message
+        row, text, verdicts = self.render(mutate)
+        self.assertIn('[SPECTRE] — ' + message, verdicts[0])
+        self.assertIn('first_cause_ref: spectre.maestro_baseline', text)
+        self.assertNotIn('See first cause:', text)
+
+    def test_long_multiline_cause_is_bounded_marked_and_lossless_in_sidecar(self):
+        from crescendo_engine.diagnostic_log import read_evidence
+        message = 'CompletionEvidenceError: ' + 'very long detail\n' * 50
+        def mutate(row):
+            row['case_results']['spectre.maestro_baseline']['first_cause']['message'] = message
+        row, text, verdicts = self.render(mutate)
+        self.assertEqual(len(verdicts[0]), 200)
+        self.assertTrue(verdicts[0].endswith(' [truncated]'))
+        self.assertIn('CompletionEvidenceError:', verdicts[0])
+        evidence = read_evidence(row['report_sidecars'][0]['path'])
+        self.assertEqual(evidence['case_results']['spectre.maestro_baseline']['first_cause']['message'], message)
+        _row, _text, full_verdicts = self.render(mutate, full=True)
+        self.assertNotIn('[truncated]', full_verdicts[0])
+        self.assertGreater(len(full_verdicts[0]), 200)
+
+    def test_verdict_uses_existing_environment_and_inline_secret_redaction(self):
+        sensitive = 'fixture-sensitive-value'
+        def mutate(row):
+            row['config']['cadence'] = {'launch_environment': {'API_TOKEN': sensitive}}
+            row['case_results']['spectre.maestro_baseline']['first_cause']['message'] = (
+                'reader failed: ' + sensitive + ' password=' + 'fixture-password')
+        _row, _text, verdicts = self.render(mutate)
+        self.assertNotIn(sensitive, verdicts[0])
+        self.assertNotIn('fixture-password', verdicts[0])
+        self.assertIn('reader failed: <redacted> password=<redacted>', verdicts[0])
+
+    def test_pass_has_no_first_cause_or_spurious_reference(self):
+        def mutate(row):
+            row['case_results']['spectre.maestro_baseline'].update(state='completed', first_cause=None)
+        row, text, verdicts = self.render(mutate)
+        self.assertEqual(len(verdicts), 3)
+        self.assertTrue(all('[SPECTRE]' in line and ' — ' not in line for line in verdicts))
+        self.assertNotIn('   first_cause_ref:', text)
+
+    def test_each_mode_retains_its_reason_even_when_causes_share_a_reference(self):
+        message = 'Cluster mode requires scheduler_query_template, scheduler_cancel_template'
+        def mutate(row):
+            cases = list(row['case_results'].values())
+            for case in cases[:2]:
+                case.update(state='blocked', first_cause={'message': message})
+            cases[2].update(state='failed', first_cause={'error': 'Independent solver error'})
+        row, text, verdicts = self.render(mutate)
+        self.assertTrue(all(message in line for line in verdicts[:2]))
+        self.assertIn('Independent solver error', verdicts[2])
+        self.assertEqual(text.count('   first_cause_ref: spectre.maestro_baseline'), 2)
+        self.assertTrue(all(len(line) <= 200 for line in verdicts))
+
+    def test_verdict_uses_existing_secret_redaction(self):
+        def mutate(row):
+            row['config']['cadence'] = {'launch_environment': {'API_TOKEN': 'private-fixture-value'},
+                                        'license_file': 'private-license-fixture'}
+            row['case_results']['spectre.maestro_baseline']['first_cause']['message'] = (
+                'Rejected private-fixture-value token=abc private-license-fixture')
+        row, text, verdicts = self.render(mutate)
+        self.assertIn('<redacted>', verdicts[0])
+        for secret in ('private-fixture-value', 'token=abc', 'private-license-fixture'):
+            self.assertNotIn(secret, verdicts[0])
 
 
 if __name__ == '__main__':

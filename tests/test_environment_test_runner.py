@@ -20,6 +20,7 @@ class EnvironmentTestRunnerTests(unittest.TestCase):
             "environment_test": {"schema_version": "crescendo.environment_test.run.v1",
                                  "test_id": "environment_test_owned_123"},
             "evaluator": "real", "algorithm": "random", "seed": 1,
+            "native_candidate_batching": "serial",
             "algorithm_parameters": {"population": 1, "seed": 1},
             "population": 1, "generations": 1, "jobs": 1,
             "variables": [{"parameter_id": "x", "minimum": 0.0, "maximum": 1.0}],

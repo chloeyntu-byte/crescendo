@@ -16,6 +16,7 @@ import uuid
 from crescendo_engine.runtime import bind_text
 _contract_text = bind_text()
 
+from .output_status import scalar_status
 from .cadence import build_guardian_command, child_environment, run_command
 from .legacy_guardian import (
     acquire_legacy_guardian_launch_lock, close_legacy_guardian_launch_lock,
@@ -28,8 +29,9 @@ from .utils import atomic_write_json, atomic_write_text, ensure_dir, is_under
 SCHEMA = _contract_text("crescendo.netlist_measurement.v1")
 PROTOCOL = _contract_text("CRESCENDO_NETLIST_MEASURE_1")
 _EVALUATOR_LOCALS = set((_contract_text("crescPort"), _contract_text("crescOpened"), _contract_text("crescValue"), _contract_text("crescPrinted"), _contract_text("crescFailed"), _contract_text("crescParam"), _contract_text("crescVarFailed"),
-                         _contract_text("crescAnalyses"), _contract_text("crescAnalysis"), _contract_text("crescAnalysisIndex"), _contract_text("crescMissingVars"), _contract_text("crescVariable"), _contract_text("crescBlockedVars")))
+                         _contract_text("crescAnalyses"), _contract_text("crescAnalysis"), _contract_text("crescAnalysisIndex"), _contract_text("crescMissingVars"), _contract_text("crescVariable"), _contract_text("crescBlockedVars"), _contract_text("cr_failed_outputs"), _contract_text("cr_blocked_outputs")))
 CAPABILITY_SCHEMA = _contract_text("crescendo.result_reader_capability.v1")
+OBSERVATION_SCHEMA = _contract_text("crescendo.output_observations.v1")
 MAX_BATCH_TIMEOUT_SECONDS = 3600
 
 
@@ -70,6 +72,7 @@ def run_owned_command(argv, cwd, env, timeout_seconds, control_root, token,
                         guardian_state_path=state_path, guardian_token=token,
                         guardian_launch_lock_fd=owned_descriptor)
         result["guardian_token"] = token
+        result["stdout_path"], result["stderr_path"] = stdout_path, stderr_path
         return result
     finally:
         close_legacy_guardian_launch_lock(descriptor)
@@ -263,12 +266,12 @@ def render_measurement_script(task, records_path, token, required_output_keys=No
     function_name = _contract_text("cr_read_point") if isolated else _contract_text("crescEvaluatePrivateNetlist")
     terminate = "return" if isolated else "exit"
     aliases = [row.get("name") for row in ordered
-               if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", row.get("name") or "")] if isolated else []
+               if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", row.get("name") or "")]
     binding_form = "prog" if isolated else "let"
     lines = ["; Original ADE expressions; no simulation or source writes.",
              "procedure(%s()" % function_name,
-             _contract_text("  %s((crescPort crescOpened crescValue crescPrinted crescFailed crescParam crescVarFailed crescAnalyses crescAnalysis crescAnalysisIndex crescMissingVars crescVariable crescBlockedVars %s)") % (binding_form, " ".join(aliases)),
-             _contract_text("    crescFailed = nil"), _contract_text("    crescVarFailed = nil"), _contract_text("    crescMissingVars = nil")]
+             _contract_text("  %s((crescPort crescOpened crescValue crescPrinted crescFailed crescParam crescVarFailed crescAnalyses crescAnalysis crescAnalysisIndex crescMissingVars crescVariable cr_failed_outputs cr_blocked_outputs crescBlockedVars %s)") % (binding_form, " ".join(aliases)),
+             _contract_text("    crescFailed = nil"), _contract_text("    crescVarFailed = nil"), _contract_text("    crescMissingVars = nil"), _contract_text("    cr_failed_outputs = nil")]
     reader = (task.get("simulator_contract") or {}).get("result_reader", "spectre")
     if reader not in ("spectre", "alps"):
         raise NetlistMeasurementError("Unqualified simulator result reader")
@@ -315,29 +318,51 @@ def render_measurement_script(task, records_path, token, required_output_keys=No
             _contract_text("      crescMissingVars = cons(%s crescMissingVars)") % _quote(name),
             _contract_text("      crescVarFailed = t"), "    )",
         ])
-    for output in ordered:
-        if variable_dependencies[output["key"]]:
-            lines.extend([_contract_text("    crescBlockedVars = setof(crescVariable list(%s) member(crescVariable crescMissingVars))") %
-                          " ".join(_quote(name) for name in sorted(variable_dependencies[output["key"]])),
-                          _contract_text("    if(crescBlockedVars then")])
-            if output["key"] in output_indexes:
-                lines.append(_contract_text('      fprintf(crescPort "E\\t%d\\tparameter_metadata_unavailable\\n")') % output_indexes[output["key"]])
-            lines.append("    else")
-        lines.append(_contract_text("    crescValue = errset(evalstring(%s) t)") % _quote(output.get("expression") or output.get("expr")))
-        name = output.get("name") or ""
-        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+    aliases_by_name = {row['name']: row for row in ordered if row.get('name')}
+    for dependency_index, output in enumerate(ordered):
+        key = output['key']
+        expression = output.get('expression') or output.get('expr') or ''
+        dependencies = sorted(_output_references(expression, aliases_by_name))
+        name = output.get('name') or ''
+        # Failed dependencies must not reuse aliases left by an earlier point
+        # or a previously successful expression in this reader process.
+        if name in aliases:
+            lines.append("    set('%s nil)" % name)
+        lines.extend([
+            _contract_text("    crescBlockedVars = setof(crescVariable list(%s) member(crescVariable crescMissingVars))") %
+                ' '.join(_quote(v) for v in sorted(variable_dependencies[key])),
+            _contract_text("    cr_blocked_outputs = setof(crescVariable list(%s) member(crescVariable cr_failed_outputs))") %
+                ' '.join(_quote(v) for v in dependencies),
+            _contract_text("    if(crescBlockedVars || cr_blocked_outputs then"),
+            _contract_text("      crescValue = nil"),
+            "    else",
+            _contract_text("      crescValue = errset(evalstring(%s) t)") % _quote(expression),
+            "    )",
+            _contract_text("    unless(crescValue && car(crescValue) cr_failed_outputs = cons(%s cr_failed_outputs))") % _quote(name),
+        ])
+        if name in aliases:
             lines.append(_contract_text("    when(crescValue set('%s car(crescValue)))") % name)
-        if output["key"] in output_indexes:
-            index = output_indexes[output["key"]]
+        if key in output_indexes:
+            index = output_indexes[key]
             lines.extend([
                 _contract_text("    if(crescValue && numberp(car(crescValue)) then"),
                 _contract_text('      crescPrinted = errset(fprintf(crescPort "V\\t%d\\t%%.17g\\n" car(crescValue)) t)') % index,
                 _contract_text("      unless(crescPrinted crescFailed = t)"),
-                "    else", _contract_text('      fprintf(crescPort "E\\t%d\\tnon_scalar_or_expression_error\\n")') % index,
+                "    else",
+                _contract_text('      cond((crescBlockedVars fprintf(crescPort "E\\t%d\\tparameter_metadata_unavailable\\n"))') % index,
+                _contract_text('           (cr_blocked_outputs fprintf(crescPort "E\\t%d\\tdependency_evaluation_failed\\n"))') % index,
+                _contract_text('           ((null(crescValue)) fprintf(crescPort "E\\t%d\\texpression_failed\\n"))') % index,
+                _contract_text('           (t fprintf(crescPort "E\\t%d\\tnon_scalar_result\\n")))') % index,
                 _contract_text("      crescFailed = t"), "    )",
             ])
-        if variable_dependencies[output["key"]]:
-            lines.append("    )")
+        else:
+            # Optional dependency observations do not turn waves into required
+            # scalars. Older records without these observations remain valid.
+            lines.extend([
+                _contract_text('    cond((crescValue && numberp(car(crescValue)) fprintf(crescPort "D\\t%d\\t%%.17g\\n" car(crescValue)))') % dependency_index,
+                _contract_text('         ((crescValue && car(crescValue)) fprintf(crescPort "D\\t%d\\twaveform\\n"))') % dependency_index,
+                _contract_text('         (t fprintf(crescPort "D\\t%d\\tevaluation_failed\\n")))') % dependency_index,
+            ])
     lines.extend([_contract_text('    fprintf(crescPort "END\\t%d\\n")') % len(outputs),
                   _contract_text("    close(crescPort)"), _contract_text("    if(crescVarFailed then %s(3) else if(crescFailed then %s(2) else %s(0)))") % (terminate, terminate, terminate),
                   "  )", ")", "errset(%s() t)" % function_name if isolated else function_name + "()", ""])
@@ -358,7 +383,13 @@ def _reader_capability(task, token, outputs, variable_names, parameters,
         error = errors.get(index)
         status = ("PASS" if index in values else "BLOCKED" if error == "parameter_metadata_unavailable"
                   else "FAIL" if error else "NOT_TESTED")
+        output_state = ('available' if index in values else 'non_finite' if error == 'non_finite'
+                        else 'evaluation_failed' if error else 'not_collected')
         diagnostics.append({"key": output["key"], "status": status, "value": values.get(index),
+                            "output_status": output_state, "expression": output.get('expression') or output.get('expr'),
+                            "first_error": error,
+                            "output_dependencies": sorted(_output_references(output.get('expression') or output.get('expr') or '',
+                                {r.get('name') for r in task.get('outputs') or []})),
                             "error": error, "requires_variables": sorted(dependencies[output["key"]])})
     return {"schema_version": CAPABILITY_SCHEMA, "token": token,
             "task_id": task.get("task_id"), "test": task.get("test"), "corner": task.get("corner"),
@@ -371,6 +402,8 @@ def _reader_capability(task, token, outputs, variable_names, parameters,
                 "actual": actual, "missing": missing, "ok": metadata_ok,
                 "missing_reasons": {required[index]: reason for index, reason in missing_parameters.items()}},
             "output_diagnostics": diagnostics,
+            "requested_output_keys": [row['key'] for row in outputs],
+            "evaluation_output_keys": [row['key'] for row in evaluation_plan(task, [o['key'] for o in outputs])[0]],
             "candidate_qualification": {"ok": False,
                 "reason": ("current_result_cannot_open" if open_status == "unavailable" else
                            "diagnostic_readback_is_not_candidate_completion" if metadata_ok else "required_current_result_parameters_missing")}}
@@ -386,17 +419,37 @@ def parse_measurement_records(path, token, outputs, task, variable_names=None, v
     if rows[-1] != "END\t%d" % len(outputs):
         raise NetlistMeasurementError("Measurement protocol did not finish")
     values, errors, parameters, missing_parameters, analyses = {}, {}, {}, {}, []
+    dependency_rows = evaluation_plan(task, [o['key'] for o in outputs])[0]
+    dependency_diagnostics = {}
     inventory = "not_recorded"
     open_status = "not_recorded"
     variable_names = list(variable_names or [])
     for raw in rows[1:-1]:
         fields = raw.split("\t")
-        if len(fields) != 3 or fields[0] not in ("V", "E", "P", "X", "A", "I", "O"):
+        if len(fields) != 3 or fields[0] not in ("V", "E", "P", "X", "A", "I", "O", "D"):
             raise NetlistMeasurementError("Malformed measurement protocol")
         try:
             index = int(fields[1])
         except ValueError:
             raise NetlistMeasurementError("Malformed measurement index")
+        if fields[0] == 'D':
+            if index < 0 or index >= len(dependency_rows) or index in dependency_diagnostics or dependency_rows[index]['key'] in {o['key'] for o in outputs}:
+                raise NetlistMeasurementError('Unexpected dependency observation identity')
+            output = dependency_rows[index]
+            value, error = None, None
+            if fields[2] in ('waveform', 'evaluation_failed'):
+                state = fields[2]
+                error = ('Dependency expression failed: ' + (output.get('expression') or output.get('expr') or '')) if state == 'evaluation_failed' else None
+            else:
+                try:
+                    value = float(fields[2])
+                except ValueError:
+                    raise NetlistMeasurementError('Malformed dependency scalar')
+                state = scalar_status(value)
+                if state == 'non_finite':
+                    value = None
+            dependency_diagnostics[index] = dict(output, value=value, output_status=state, error=error, first_error=error)
+            continue
         if fields[0] == "O":
             if index != 0 or open_status != "not_recorded" or fields[2] not in ("opened", "unavailable"):
                 raise NetlistMeasurementError("Unexpected openResults identity")
@@ -444,12 +497,15 @@ def parse_measurement_records(path, token, outputs, task, variable_names=None, v
             except ValueError:
                 raise NetlistMeasurementError("Measurement is not a numeric scalar")
             if not math.isfinite(value):
-                raise NetlistMeasurementError("Measurement is not a finite scalar")
-            values[index] = value
-    if open_status == "unavailable" and (values or errors or parameters or missing_parameters or analyses or inventory != "not_recorded"):
+                errors[index] = 'non_finite'
+            else:
+                values[index] = value
+    if open_status == "unavailable" and (dependency_diagnostics or values or errors or parameters or missing_parameters or analyses or inventory != "not_recorded"):
         raise NetlistMeasurementError("Conflicting unavailable openResults protocol")
     reader_capability = _reader_capability(task, token, outputs, variable_names, parameters,
                                           missing_parameters, values, errors, analyses, inventory, open_status)
+    reader_capability['dependency_observation_schema'] = OBSERVATION_SCHEMA
+    reader_capability['dependency_diagnostics'] = [dependency_diagnostics[i] for i in sorted(dependency_diagnostics)]
     if capability is not None:
         capability.update(reader_capability)
     if open_status == "unavailable":
@@ -463,11 +519,14 @@ def parse_measurement_records(path, token, outputs, task, variable_names=None, v
             "result_reader_capability": reader_capability})
     if variable_values is not None:
         variable_values.update((variable_names[index], value) for index, value in parameters.items())
-    if len(values) + len(errors) != len(outputs):
-        raise NetlistMeasurementError("Measurement output is missing")
+    if len(values) + len(errors) != len(outputs) or 'non_finite' in errors.values():
+        raise NetlistMeasurementError("Measurement output is missing or not a finite scalar", {
+            'failure_stage': 'result_reader_expression', 'result_reader_capability': reader_capability})
     result = []
     for index, output in enumerate(outputs):
         result.append(dict(output, value=values.get(index), error=errors.get(index),
+                           output_status='available' if index in values else 'evaluation_failed',
+                           first_error=errors.get(index),
                            test=task["test"], point_id=task["point_id"],
                            design_point=task.get("design_point", task["point_id"]), corner=task["corner"]))
     return result
@@ -551,14 +610,68 @@ def evaluate_task_outputs(task, config, candidate_root, timeout_seconds,
     command = run_owned_command(prepared["argv"], cwd=prepared["cwd"], env=prepared["environment"],
         timeout_seconds=timeout_seconds, control_root=prepared["root"], token=_contract_text("cr_netlist_measure_%s") % prepared["token"],
         cancel_check=cancel_check, command_runner=command_runner, before_launch=ownership_callback)
-    return _finish_task_outputs(prepared, command)
+    console = _task_reader_console(prepared["task"], command)
+    from .native_diagnostics import log_ocean_tool_warnings, recorded_ocean_warnings
+    log_ocean_tool_warnings(config, prepared["root"], recorded_ocean_warnings(console))
+    return _finish_task_outputs(prepared, command, console)
 
 
-def _finish_task_outputs(prepared, command):
+def _reader_console_diagnostics(command, simulators=()):
+    """Read the bounded reader console once, keeping tool warnings as evidence."""
+    from .native_diagnostics import (ocean_tool_error, ocean_tool_continuation,
+                                     ocean_tool_error_code, _owned_binary_stream,
+                                     library_init_console_warnings, ocean_warning_lines)
+    warnings, library_warnings = [], []
+    first_error = active_tool_error = None
+    for name in ('stderr', 'stdout'):
+        text = command.get(name) or command.get(name + '_tail') or ''
+        path = command.get(name + '_path')
+        if path:
+            with _owned_binary_stream(path, os.path.dirname(path)) as stream:
+                if stream is not None:
+                    text = stream.read(65536).decode('utf-8', 'replace')
+        lines = text.splitlines()
+        source = 'ocean.' + name
+        classified = library_init_console_warnings(lines, source)
+        skipped = ocean_warning_lines(classified)
+        library_warnings.extend(classified[i] for i in sorted(classified))
+        for i, line in enumerate(lines):
+            if i in skipped:
+                continue
+            tool_error = ocean_tool_error(line, simulators)
+            if tool_error and tool_error['severity'] == 'WARN':
+                if len(warnings) < 12:
+                    if i + 1 < len(lines):
+                        ocean_tool_continuation(tool_error, lines[i + 1])
+                    warnings.append(dict(tool_error, console_source='ocean.' + name, console_line=i + 1))
+                continue
+            if first_error is None and re.search(r'\*Error\*|\bERROR\b|\bError:', line):
+                first_error = line[:2048]
+            if active_tool_error is None and ocean_tool_error_code(line):
+                active_tool_error = line[:2048]
+    evidence = {'reader_first_error': first_error}
+    if warnings:
+        evidence['ocean_tool_warnings'] = warnings
+    if library_warnings:
+        evidence['library_init_warnings'] = library_warnings
+    if active_tool_error:
+        evidence['first_simulator_tool_error'] = active_tool_error
+    return evidence
+
+
+def _task_reader_console(task, command):
+    simulator = (task.get("simulator_contract") or {}).get("execution_simulator",
+                                                           task.get("execution_simulator", "spectre"))
+    return _reader_console_diagnostics(command, (simulator,))
+
+
+def _finish_task_outputs(prepared, command, console=None):
     task, root, psf = prepared["task"], prepared["root"], prepared["psf"]
     token, records, outputs, required = (prepared[key] for key in ("token", "records", "outputs", "required"))
     if command.get("timed_out") or command.get("cancelled") or command.get("termination_failed"):
         raise NetlistMeasurementError("Calculator evaluation was interrupted", {"command": command, "path": root})
+    if console is None:
+        console = _task_reader_console(task, command)
     effective_variables, capability = {}, {}
     capability_path = os.path.join(root, _contract_text("result_reader_capability.json"))
     try:
@@ -569,13 +682,21 @@ def _finish_task_outputs(prepared, command):
             # This complete, token-bound diagnostic record survives a failed
             # parameter qualification. It cannot create metrics or point ACKs.
             capability["command_returncode"] = command.get("returncode")
+            capability.update(console)
             atomic_write_json(capability_path, capability)
             error.detail.update(result_reader_capability=capability, capability_path=capability_path)
+        error.detail.setdefault('output_statuses', [dict(output=o['key'], test=task.get('test'),
+            corner=task.get('corner'), point_id=task.get('point_id'), status='not_collected',
+            first_error=None, collection_error=str(error)) for o in outputs])
         error.detail.setdefault("command", command)
         error.detail.setdefault("path", root)
         raise
     capability["command_returncode"] = command.get("returncode")
+    capability.update(console)
     atomic_write_json(capability_path, capability)
+    if console.get('first_simulator_tool_error'):
+        raise NetlistMeasurementError(console['reader_first_error'],
+            {"failure_stage": "result_reader", "command": command, "path": root, "capability_path": capability_path})
     if command.get("returncode") != 0 or any(row.get("error") for row in measured):
         raise NetlistMeasurementError("Required output did not produce a numeric scalar",
                                       {"failure_stage": "result_reader_expression", "command": command,
@@ -654,6 +775,7 @@ def evaluate_task_outputs_batch(tasks, config, candidate_root, timeout_seconds,
     script_path = os.path.join(batch_root, "batch_%s.il" % first["token"])
     argv = [first["argv"][0], "-nograph", "-restore", script_path]
     manifest = {"schema_version": _contract_text("crescendo.batch_reader.v2"),
+        "dependency_observation_schema": OBSERVATION_SCHEMA,
         "point_timeout_seconds": timeout_seconds, "batch_timeout_seconds": batch_budget, "points": [
         {"task_id": item["task"]["task_id"], "token": item["token"], "records": item["records"]}
         for item in prepared]}
@@ -690,10 +812,13 @@ def evaluate_task_outputs_batch(tasks, config, candidate_root, timeout_seconds,
                       "cleanup_error": str(cleanup_error), "failure_stage": "measurement"}
             raise NetlistMeasurementError(str(error), detail)
         raise
+    from .native_diagnostics import log_ocean_tool_warnings, recorded_ocean_warnings
+    console = _task_reader_console(first["task"], command)
+    log_ocean_tool_warnings(config, batch_root, recorded_ocean_warnings(console))
     results = {}
     for item in prepared:
         try:
-            results[item["task"]["task_id"]] = _finish_task_outputs(item, command)
+            results[item["task"]["task_id"]] = _finish_task_outputs(item, command, console)
         except NetlistMeasurementError as error:
             results[item["task"]["task_id"]] = error
     return results
@@ -712,17 +837,32 @@ def parsed_results(task_results, path=None):
             raise NetlistMeasurementError("One point ID identifies conflicting corners")
         statuses.append({"pointID": point_id, "test_name": task["test"], "statusCode": 3,
                          "status_message": "completed", "provenance": "private_netlist_cli"})
-        for row in (result.get("measurement") or {}).get("outputs", []):
+        measurement = result.get('measurement') or {}
+        observations = list(measurement.get('outputs') or [])
+        observations += (measurement.get('result_reader_capability') or {}).get('dependency_diagnostics') or []
+        for row in observations:
             output = output_map.setdefault(row["key"], {
                 "key": row["key"], "test": task["test"], "name": row["name"],
                 "expression": row.get("expression") or row.get("expr"),
-                "output_type": row.get("output_type", row.get("type")), "values": []})
+                "output_type": row.get("output_type", row.get("type")),
+                "unit": row.get('unit') or row.get('units') or '', "values": []})
             if output["expression"] != (row.get("expression") or row.get("expr")):
                 raise NetlistMeasurementError("Output expression changed across candidate points")
             output["values"].append({"point_id": point_id, "design_point": design_point,
                                      "corner": corner, "source_corner": task.get("source_corner", corner),
-                                     "value": row["value"], "numeric": row["value"],
-                                     "scalar": row["value"] is not None, "error": row.get("error")})
+                                     "value": row["value"], "numeric": row['value'] if scalar_status(row['value'], row.get('error')) == 'available' else None,
+                                     "scalar": row["value"] is not None, "error": row.get("error"),
+                                     "output_status": row.get('output_status') or scalar_status(row['value'], row.get('error')),
+                                     "first_error": row.get('first_error') or row.get('error')})
+        # Retain the reason for unselected outputs, without evaluating idle
+        # expressions or making waveform dependencies mandatory scalars.
+        for row in task.get('outputs') or []:
+            key = row.get('key') or '%s::%s' % (task['test'], row.get('name'))
+            output = output_map.setdefault(key, dict(row, key=key, test=task['test'], values=[]))
+            if not any(p['point_id'] == point_id for p in output['values']):
+                output['values'].append({'point_id': point_id, 'design_point': design_point,
+                    'corner': corner, 'numeric': None, 'value': None, 'scalar': False,
+                    'error': None, 'output_status': 'not_collected', 'first_error': None})
     for output in output_map.values():
         values = [row["numeric"] for row in output["values"] if row["numeric"] is not None]
         output["scalar"] = bool(values) and len(values) == len(output["values"])

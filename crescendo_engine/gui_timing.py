@@ -60,3 +60,109 @@ def generation_timing_lines(rows):
         for phase in row.get('candidate_phase_sums') or []:
             lines.append('  ' + phase_text(phase.get('phase', '?'), phase))
     return lines or ['Generation timing: unavailable.']
+
+
+class GuiHeartbeat(object):
+    """Tk ticks on the main thread; workers read small synchronized windows.
+
+    Pauses are actual gaps between Tk ticks; excess over the 50 ms interval
+    is also retained. Load/Apply windows
+    include their completion callbacks. No unbounded sample history is retained.
+    """
+    def __init__(self, root, clock=None):
+        import threading
+        import time
+        self.clock = clock or time.monotonic
+        self.lock = threading.RLock()
+        self.interval = 0.05
+        self.last = self.clock()
+        self.active, self.latest = {}, {}
+        self.root = root
+        self.closed = False
+        self.job = root.after(50, self.tick)
+        if callable(getattr(root, 'bind', None)):
+            root.bind('<Destroy>', self._destroyed, add='+')
+
+    def begin(self, name):
+        with self.lock:
+            if self.closed:
+                return
+            self.active[name] = {'started': self.clock(), 'samples': 0,
+                                 'max_pause_seconds': 0.0, 'max_excess_seconds': 0.0,
+                                 'over_200ms_count': 0}
+
+    def _sample(self, row, now):
+        pause = max(0.0, now - max(self.last, row['started']))
+        row['max_excess_seconds'] = max(row['max_excess_seconds'], max(0.0, pause - self.interval))
+        row['samples'] += 1
+        row['max_pause_seconds'] = max(row['max_pause_seconds'], pause)
+        row['over_200ms_count'] += int(pause > .2)
+
+    def tick(self):
+        with self.lock:
+            if self.closed:
+                return
+            now = self.clock()
+            for row in self.active.values():
+                self._sample(row, now)
+            self.last = now
+        try:
+            self.job = self.root.after(50, self.tick)
+        except Exception:
+            self.job = None
+
+    def end(self, name):
+        with self.lock:
+            row = self.active.pop(name, None)
+            if row is not None:
+                now = self.clock()
+                # Include a pending delayed tick at the end of an operation.
+                self._sample(row, now)
+                row['elapsed_seconds'] = max(0.0, now - row.pop('started'))
+                self.latest[name] = dict(row)
+            return dict(self.latest.get(name) or {})
+
+    def diagnostic_snapshot(self, identifier):
+        with self.lock:
+            diagnostic = self.end(identifier)
+            # Do not retain previous diagnostic windows as history.
+            self.latest.pop(identifier, None)
+            return {'available': not self.closed, 'interval_seconds': self.interval,
+                    'windows': dict({'diagnostic': diagnostic}, **{
+                        name: dict(self.latest[name]) for name in ('load', 'apply') if name in self.latest})}
+
+    def _destroyed(self, event):
+        if event.widget is self.root:
+            self.close()
+
+    def close(self):
+        """Called by Tk on root destruction; cancel only this observer's timer."""
+        with self.lock:
+            self.closed = True
+            self.active.clear()
+            job, self.job = self.job, None
+        if job is not None:
+            try:
+                self.root.after_cancel(job)
+            except Exception:
+                pass
+
+
+def observe_setup_action(name):
+    """Include synchronous GUI work before submission in Load/Apply windows."""
+    from functools import wraps
+    def decorate(method):
+        @wraps(method)
+        def observed(app, *args, **kwargs):
+            observer = getattr(app, 'diagnostic_heartbeat', None)
+            if observer is None or observer.closed:
+                return method(app, *args, **kwargs)
+            observer.begin(name)
+            try:
+                return method(app, *args, **kwargs)
+            finally:
+                with observer.lock:
+                    if not observer.active.get(name, {}).get('submitted'):
+                        observer.end(name)
+        return observed
+    return decorate

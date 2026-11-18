@@ -23,16 +23,18 @@ class _ResourceSettingsFixture(object):
     _wait = fixture.GuiOptionalSettingsTkTests._wait
 
     def test_resource_fields_roundtrip_configuration_and_pro_visibility(self):
-        values = {"native_candidate_batching": "generation", "local_solver_max_jobs": "3", "measurement_jobs": "2", "progress_flush_interval_seconds": "0.75"}
+        values = {"native_candidate_batching": "generation", "local_solver_max_jobs": "3", "measurement_jobs": "2", "progress_flush_interval_seconds": "0.75",
+                  "solver_transient_retries": "4", "solver_transient_last_retry_single_core": True}
         self.app._restore_execution_resources(values)
         self.assertEqual(self.app._collect_execution_resources(), {
-            "native_candidate_batching": "generation", "local_solver_max_jobs": 3, "measurement_jobs": 2, "progress_flush_interval_seconds": 0.75})
+            "native_candidate_batching": "generation", "local_solver_max_jobs": 3, "measurement_jobs": 2, "progress_flush_interval_seconds": 0.75,
+            "solver_transient_retries": 4, "solver_transient_last_retry_single_core": True})
         raw, unused_context = self.app._snapshot_configuration()
         document = build_configuration(raw)
         normalized = normalize_configuration(document)["settings"]["optimization"]
         for key, value in values.items():
             self.assertEqual(normalized[key], value)
-        self.app._restore_execution_resources(dict.fromkeys(values, "1"))
+        self.app._restore_execution_resources(dict((key, False if key == "solver_transient_last_retry_single_core" else "1") for key in values))
         self.app._restore_execution_resources(normalized)
         self.assertEqual(self.app._execution_resource_values(), values)
         self.root.deiconify()
@@ -47,6 +49,22 @@ class _ResourceSettingsFixture(object):
             self.assertEqual(card.winfo_manager(), "pack" if pro else "")
             self.assertEqual(bool(card.winfo_ismapped()), pro)
         self.assertFalse(self.errors)
+
+
+class ResourceSettingsRestoreTests(unittest.TestCase):
+    def test_restore_missing_batching_uses_current_value_or_default(self):
+        interpreter = fixture.gui.tk.Tcl()
+        app = fixture.gui.OptimizerGui.__new__(fixture.gui.OptimizerGui)
+        batching = fixture.gui.tk.StringVar(master=interpreter)
+        app.execution_resource_vars = {"native_candidate_batching": batching}
+        old_settings = normalize_configuration(build_configuration({}))["settings"]["optimization"]
+        self.assertNotIn("native_candidate_batching", old_settings)
+
+        app._restore_execution_resources(old_settings)
+        self.assertEqual(batching.get(), "generation")
+        app._restore_execution_resources({"native_candidate_batching": "serial"})
+        app._restore_execution_resources(old_settings)
+        self.assertEqual(batching.get(), "serial")
 
 
 @unittest.skipUnless(os.environ.get("DISPLAY"), "Real Tk requires DISPLAY")

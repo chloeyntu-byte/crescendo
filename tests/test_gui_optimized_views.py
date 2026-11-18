@@ -43,6 +43,7 @@ class GuiOptimizedViewsTkTests(unittest.TestCase):
             self.app.live_spec["evaluator"] = evaluator
             self.app._render_candidate_detail()
             self.assertEqual(str(self.app.optimized_schematic_button.cget("state")), "disabled")
+            self.assertTrue(self.app.optimized_schematic_status_var.get())
         self.service.generate_optimized_schematic.assert_not_called()
 
     def test_real_button_passes_selected_identity_and_displays_actual_created_view(self):
@@ -54,6 +55,38 @@ class GuiOptimizedViewsTkTests(unittest.TestCase):
         self.assertIn("fixture_lib/B/schematic_Selected_Solution", self.app.optimized_schematic_status_var.get())
         self.assertIn("g000_c0000", self.app.candidate_detail.get("1.0", "end"))
         self.assertEqual(str(self.app.optimized_schematic_button.cget("state")), "normal")
+
+    def test_report_lists_actual_writes_controls_and_failed_cells_and_copies_every_line(self):
+        self._solution()
+        result = {
+            "candidate_id": "g000_c0000", "partial": True,
+            "views": [{"library": "fixture_lib", "cell": "B", "view": "schematic_Solution_p0123456789",
+                       "view_name_reason": "existing_view", "instances": [{"instance": "R1", "parameters": [
+                           {"parameter": "r", "old_value": "1k", "new_value": 2400.0, "unit": "Ohm"}]}]}],
+            "design_variables_not_persisted": [{"source_kind": "global", "test": "dc", "name": "bias",
+                                               "value": 0.8, "unit": "V"}],
+            "locked_device_parameters": [{"hierarchy_path": "/R2", "property": "r", "name": "bias"}],
+            "failures": [{"library": "fixture_lib", "cell": "C", "requested_view": "schematic_Solution",
+                          "reason": "Missing owner view", "phase": "stage"}],
+            "evidence_path": "/fixture/export_result.json",
+        }
+        self.service.generate_optimized_schematic.return_value = result
+        self.app.optimized_schematic_button.invoke()
+        self._wait(lambda: hasattr(self.app, "optimized_schematic_result_window"))
+        window = self.app.optimized_schematic_result_window
+        output = self.app.optimized_schematic_result_text
+        report = output.get("1.0", "end-1c")
+        for expected in ("fixture_lib/B", "schematic_Solution_p0123456789", "R1",
+                         "r: 1k Ohm \u2192 2400.0 Ohm", "bias = 0.8 V", "/R2.r",
+                         "fixture_lib/C/schematic_Solution", "Missing owner view", result["evidence_path"]):
+            self.assertIn(expected, report)
+        self.assertEqual(str(output.cget("state")), "disabled")
+        self.assertTrue(output.cget("yscrollcommand"))
+        copy_button = next(child for frame in window.winfo_children() for child in frame.winfo_children()
+                           if child.winfo_class() == "TButton" and
+                           child.cget("text") in ("Copy All Text", "\u590d\u5236\u5168\u90e8\u6587\u672c"))
+        copy_button.invoke()
+        self.assertEqual(self.root.clipboard_get(), report)
 
     def test_export_runs_off_tk_thread_and_duplicate_clicks_do_not_write_twice(self):
         self._solution()

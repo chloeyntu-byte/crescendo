@@ -186,6 +186,39 @@ class SetupPrivateServiceIntegrationTests(unittest.TestCase):
         self.assertIn(reference['session_id'], self.service.setup_private_sessions)
         self.assertEqual(result['document']['private_suite']['suite_id'], reference['session_id'])
 
+    def test_compact_suite_update_preserves_parameter_metadata(self):
+        from crescendo_engine.runner import parameter_catalog
+        from crescendo_engine.prepared_store import compact_catalog
+        from crescendo_engine.prepared_freshness import capture_prepared_freshness
+        body = self.fixture.hierarchy['designs'][0]['hierarchy']
+        body['parameters'] = [{'parameter_id': 'synthetic-width', 'name': 'w', 'source': 'cdf',
+            'hierarchy_path': '/M0', 'owner_library': 'design', 'owner_cell': 'TB',
+            'design_library': 'design', 'design_cell': 'TB', 'design_view': 'schematic',
+            'owner_view': 'schematic', 'owner_occurrence_path': '/', 'occurrence_chain': [],
+            'editable': True, 'display': True, 'tunable': True, 'current_value': '2u',
+            'default_value': '1u', 'numeric_value': 2e-6}]
+        self.fixture.prepared['parameters'] = parameter_catalog(self.fixture.prepared['setup'], self.fixture.hierarchy)
+        compact_catalog(self.fixture.prepared)
+        self.assertTrue(self.fixture.prepared['parameters'])
+        self.fixture.prepared['prepared_freshness'] = capture_prepared_freshness(self.fixture.prepared)
+        native_plan = private_config_plan
+        # The fixture has no OA device; this test covers the real suite metadata transaction.
+        with mock.patch(__name__ + '.private_config_plan',
+                        side_effect=lambda workspace, parameters: native_plan(workspace, [])):
+            self.test_selective_update_reuses_hierarchy_and_retains_old_baseline()
+        updated = [value for value in self.service.prepared.values()
+                   if value['setup']['global_variables'][0]['value'] == '9'][-1]
+        self.assertEqual(updated['schema_version'], 'crescendo.prepared.v2')
+        devices = [row for row in updated['parameters'] if row.get('backend') == 'schematic']
+        self.assertEqual(len(devices), 1)
+        self.assertEqual(devices[0]['name'], 'w')
+        self.assertEqual(devices[0]['numeric_value'], 2e-6)
+        controls = [row for row in updated['parameters'] if row.get('source_kind') == 'global']
+        self.assertEqual(len(controls), 1)
+        self.assertEqual(controls[0]['current_value'], '9')
+        self.assertEqual(set(updated['hierarchy']['designs'][0]['hierarchy']['parameters'][0]),
+                         {'parameter_id', 'hierarchy_path'})
+
     def test_selective_update_reuses_hierarchy_and_retains_old_baseline(self):
         from crescendo_engine.setup_baseline import verify_setup_baseline
         token, preview = self.inspect()
